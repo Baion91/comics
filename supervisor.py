@@ -241,7 +241,7 @@ class Supervisor:
                                 else "Chưa có link (server đang khởi động). Thử lại chút nữa.",
                         "disable_web_page_preview": "true"})
                 elif text.startswith("/update"):
-                    self.handle_update(token, cid)
+                    self._run_bg(self.handle_update, token, cid)
                 elif text.startswith("/start") or is_new:
                     tg_api(token, "sendMessage", {"chat_id": cid,
                         "text": "✅ Đã đăng ký nhận link đọc truyện.\n"
@@ -286,11 +286,22 @@ class Supervisor:
 
     # --- Lệnh /update: kéo code mới từ git rồi restart reader --------------
     @staticmethod
-    def _git(*args):
-        """Chạy 1 lệnh git trong thư mục dự án; lỗi -> raise. Cần git trong PATH."""
-        r = subprocess.run(["git", "-C", BASE_DIR, *args],
-                           capture_output=True, text=True, encoding="utf-8",
-                           errors="replace", creationflags=NO_WINDOW)
+    def _run_bg(fn, *a):
+        """Chạy fn ở luồng nền để việc chậm (git/tải) không chặn vòng nghe Telegram."""
+        threading.Thread(target=fn, args=a, daemon=True).start()
+
+    @staticmethod
+    def _git(*args, timeout=120):
+        """Chạy 1 lệnh git trong thư mục dự án. GIT_TERMINAL_PROMPT=0 để KHÔNG bao giờ
+        treo chờ nhập mật khẩu; có timeout để mạng nghẽn không kẹt vô hạn."""
+        env = dict(os.environ, GIT_TERMINAL_PROMPT="0", GCM_INTERACTIVE="never")
+        try:
+            r = subprocess.run(["git", "-C", BASE_DIR, *args],
+                               capture_output=True, text=True, encoding="utf-8",
+                               errors="replace", creationflags=NO_WINDOW,
+                               timeout=timeout, env=env)
+        except subprocess.TimeoutExpired:
+            raise RuntimeError("git quá thời gian (mạng server ra GitHub chậm/nghẽn).")
         if r.returncode != 0:
             raise RuntimeError((r.stderr or r.stdout or "git error").strip()[:300])
         return (r.stdout or "").strip()
@@ -306,32 +317,40 @@ class Supervisor:
             tg_api(token, "sendMessage", {"chat_id": cid,
                 "text": "⛔ Bạn không có quyền dùng /update."})
             return
-        tg_api(token, "sendMessage", {"chat_id": cid, "text": "⏳ Đang kéo code mới (git)..."})
-        try:
-            before = self._git("rev-parse", "HEAD")
-            self._git("fetch", "origin", "--quiet")
-            self._git("reset", "--hard", "origin/main")
-            after = self._git("rev-parse", "HEAD")
-        except Exception as e:
-            log(f"! /update lỗi git: {e}")
-            tg_api(token, "sendMessage", {"chat_id": cid, "text": f"❌ Lỗi git:\n{e}"})
-            return
-        if before == after:
+        if getattr(self, "_updating", False):
             tg_api(token, "sendMessage", {"chat_id": cid,
-                "text": "✔ Không có gì mới — code đã là bản mới nhất."})
+                "text": "⏳ Đang có một lần cập nhật chạy dở — đợi nó xong đã."})
             return
+        self._updating = True
         try:
-            files = [f for f in self._git("diff", "--name-only", before, after).splitlines()
-                     if f.strip()]
-        except Exception:
-            files = []
-        warn = ("\n⚠️ supervisor.py đã đổi — cần restart tay (server-BAT) để nạp phần này."
-                if any("supervisor.py" in f for f in files) else "")
-        log(f"/update: {before[:7]} -> {after[:7]} ({len(files)} file). Khởi động lại reader.")
-        self._kill(self.reader)     # run_reader tự bật lại với code mới trên đĩa
-        tg_api(token, "sendMessage", {"chat_id": cid,
-            "text": f"✅ Đã cập nhật {len(files)} file, đang khởi động lại reader.{warn}",
-            "disable_web_page_preview": "true"})
+            tg_api(token, "sendMessage", {"chat_id": cid, "text": "⏳ Đang kéo code mới (git)..."})
+            try:
+                before = self._git("rev-parse", "HEAD")
+                self._git("fetch", "origin", "--quiet")
+                self._git("reset", "--hard", "origin/main")
+                after = self._git("rev-parse", "HEAD")
+            except Exception as e:
+                log(f"! /update lỗi git: {e}")
+                tg_api(token, "sendMessage", {"chat_id": cid, "text": f"❌ Lỗi git:\n{e}"})
+                return
+            if before == after:
+                tg_api(token, "sendMessage", {"chat_id": cid,
+                    "text": "✔ Không có gì mới — code đã là bản mới nhất."})
+                return
+            try:
+                files = [f for f in self._git("diff", "--name-only", before, after).splitlines()
+                         if f.strip()]
+            except Exception:
+                files = []
+            warn = ("\n⚠️ supervisor.py đã đổi — cần restart tay (server-BAT) để nạp phần này."
+                    if any("supervisor.py" in f for f in files) else "")
+            log(f"/update: {before[:7]} -> {after[:7]} ({len(files)} file). Restart reader.")
+            self._kill(self.reader)     # run_reader tự bật lại với code mới trên đĩa
+            tg_api(token, "sendMessage", {"chat_id": cid,
+                "text": f"✅ Đã cập nhật {len(files)} file, đang khởi động lại reader.{warn}",
+                "disable_web_page_preview": "true"})
+        finally:
+            self._updating = False
 
     def run(self):
         log("=== Supervisor khởi động ===")
