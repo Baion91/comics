@@ -765,7 +765,7 @@ body.jmode .sctl{display:flex}
 .brandmini img{height:34px;width:auto;object-fit:contain}
 .acct{margin-left:auto;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
 .uname{background:#15161c;border:1px solid #2c2d37;border-radius:10px;color:#eee;
-  padding:8px 11px;font-size:14px;width:150px;max-width:44vw;outline:none}
+  padding:8px 11px;font-size:16px;width:150px;max-width:44vw;outline:none}
 .uname:focus{border-color:#7c5cff}
 .uname.flash{animation:unflash .7s ease}
 @keyframes unflash{0%,100%{box-shadow:0 0 0 0 rgba(124,92,255,0)}
@@ -1079,7 +1079,7 @@ def account_header(user):
     else:
         acc = ('<form class="acct" id="loginform">'
                f'<input id="uname" class="uname" type="text" autocomplete="username" '
-               f'maxlength="{NAME_MAX}" placeholder="Tên của bạn">'
+               f'maxlength="{NAME_MAX}" placeholder="Username">'
                '<button type="submit" class="accbtn primary">Login</button>'
                '<span class="accerr" id="accerr"></span></form>')
     return (f'<header class="apphead"><a class="brandmini" href="/">'
@@ -1123,7 +1123,7 @@ def html_home(lib, user=None):
     body = ('<div class="wrap">' + account_header(user) + slider + grid + '</div>' + TOTOP_HTML
             + f'<script>const FOLLOWDATA={js(followdata)};let BM={js(list(bmset))};'
             f'const LOGGEDIN={js(bool(user))};</script>'
-            f'<script>{ACCT_JS}</script><script>{HOME_JS}</script>')
+            f'<script>{LS_JS}</script><script>{ACCT_JS}</script><script>{HOME_JS}</script>')
     return page("TOONY READER", body)
 
 
@@ -1194,7 +1194,7 @@ def html_series(s, user=None):
             + '<div id="chapters" data-order="new">' + "".join(sections) + "</div></div>"
             + TOTOP_HTML
             + f'<script>const SDATA={js(sdata)};const LOGGEDIN={js(bool(user))};</script>'
-            f'<script>{ACCT_JS}</script><script>{SERIES_JS}</script>')
+            f'<script>{LS_JS}</script><script>{ACCT_JS}</script><script>{SERIES_JS}</script>')
     return page(s["title"], body)
 
 
@@ -1331,9 +1331,30 @@ def html_reader(s, rel, user=None):
         + navbtn(next_url, "Next ›", acc=True)
         + "</footer>"
         f"<script>const D={js(data)};const LOGGEDIN={js(bool(user))};</script>"
-        f"<script>{READER_JS}</script>")
+        f"<script>{LS_JS}</script><script>{READER_JS}</script>")
     return page(f'{info["name"]} - {s["title"]}', body, body_class="reader")
 
+
+# Kho localStorage per-device cho GUEST (chưa đăng nhập): bookmark / tiến trình /
+# đã-đọc. Đã đăng nhập thì dùng server per-account, KHÔNG đụng localStorage. Không
+# di trú qua lại (mỗi bên riêng). Nạp trên cả 3 trang trước HOME/SERIES/READER JS.
+LS_JS = """
+(function(){
+  function rd(k,d){try{var v=localStorage.getItem(k);return v?JSON.parse(v):d;}catch(e){return d;}}
+  function wr(k,v){try{localStorage.setItem(k,JSON.stringify(v));}catch(e){}}
+  window.LS={
+    bms:function(){return rd('toony_bm',[]);},
+    isBm:function(sid){return this.bms().indexOf(sid)>=0;},
+    toggleBm:function(sid,on){var a=this.bms(),i=a.indexOf(sid);
+      if(on&&i<0)a.push(sid); if(!on&&i>=0)a.splice(i,1); wr('toony_bm',a); return a;},
+    getProg:function(sid){return rd('toony_prog',{})[sid]||null;},
+    setProg:function(sid,rel,y){var p=rd('toony_prog',{});p[sid]={rel:rel,y:y};wr('toony_prog',p);},
+    reads:function(sid){return rd('toony_read',{})[sid]||[];},
+    addRead:function(sid,rel){var r=rd('toony_read',{}),a=r[sid]||[];
+      if(a.indexOf(rel)<0){a.push(rel);r[sid]=a;wr('toony_read',r);}}
+  };
+})();
+"""
 
 ACCT_JS = """
 (function(){
@@ -1416,24 +1437,33 @@ HOME_JS = """
     var t=b.querySelector('.bktext'); if(t) t.textContent=on?'Bookmarked':'Bookmark';
   }
   // bấm bookmark: guest -> mời đăng nhập; đã đăng nhập -> ghi server + cập nhật slider
+  function afterToggle(sid,on,b){
+    setBk(b,on);
+    if(on){if(BM.indexOf(sid)<0)BM.push(sid);}
+    else BM=BM.filter(function(x){return x!==sid;});
+    renderFollows();
+  }
   grid.addEventListener('click',function(e){
     var b=e.target.closest('.bkbtn'); if(!b) return;
     e.preventDefault();
-    if(!LOGGEDIN){ if(window.TOONY_LOGIN) TOONY_LOGIN(); return; }
     var sid=b.closest('.card').dataset.sid, on=!b.classList.contains('on');
+    if(!LOGGEDIN){ LS.toggleBm(sid,on); afterToggle(sid,on,b); return; }
     b.disabled=true;
     fetch('/api/state',{method:'POST',headers:{'Content-Type':'application/json'},
       body:JSON.stringify({op:'bookmark',sid:sid,on:on})})
     .then(function(r){return r.json();}).then(function(res){
       b.disabled=false;
-      if(res&&res.ok){
-        setBk(b,on);
-        if(on){if(BM.indexOf(sid)<0)BM.push(sid);}
-        else BM=BM.filter(function(x){return x!==sid;});
-        renderFollows();
-      }
+      if(res&&res.ok) afterToggle(sid,on,b);
     }).catch(function(){b.disabled=false;});
   });
+  // guest: hydrate bookmark từ localStorage (server render trung tính cho guest)
+  if(!LOGGEDIN){
+    BM=LS.bms();
+    [].forEach.call(grid.querySelectorAll('.card'),function(c){
+      var b=c.querySelector('.bkbtn'); if(b) setBk(b,BM.indexOf(c.dataset.sid)>=0);
+    });
+    renderFollows();
+  }
 })();
 """
 
@@ -1443,23 +1473,25 @@ SERIES_JS = """
   // làm mờ chương đã đọc (server nhúng danh sách read của tài khoản)
   try{
     var read=new Set(SDATA.read||[]);
+    if(!LOGGEDIN){ LS.reads(sid).forEach(function(r){read.add(r);}); }
     document.querySelectorAll('a.ch').forEach(function(a){
       if(read.has(a.dataset.rel)) a.classList.add('read'); });
   }catch(e){}
 
-  // nút theo dõi (bookmark): guest -> mời đăng nhập; đã đăng nhập -> ghi server
+  // nút theo dõi (bookmark): guest -> localStorage; đã đăng nhập -> ghi server
   var sbk=document.getElementById('sbk');
+  function setSbk(on){ sbk.classList.toggle('on',on);
+    var t=sbk.querySelector('.bktext'); if(t) t.textContent=on?'Bookmarked':'Bookmark'; }
+  if(sbk && !LOGGEDIN && LS.isBm(sid)) setSbk(true);   // hydrate trạng thái guest
   if(sbk) sbk.addEventListener('click',function(){
-    if(!LOGGEDIN){ if(window.TOONY_LOGIN) TOONY_LOGIN(); return; }
-    var on=!sbk.classList.contains('on'); sbk.disabled=true;
+    var on=!sbk.classList.contains('on');
+    if(!LOGGEDIN){ LS.toggleBm(sid,on); setSbk(on); return; }
+    sbk.disabled=true;
     fetch('/api/state',{method:'POST',headers:{'Content-Type':'application/json'},
       body:JSON.stringify({op:'bookmark',sid:sid,on:on})})
     .then(function(r){return r.json();}).then(function(res){
       sbk.disabled=false;
-      if(res&&res.ok){
-        sbk.classList.toggle('on',on);
-        var t=sbk.querySelector('.bktext'); if(t) t.textContent=on?'Bookmarked':'Bookmark';
-      }
+      if(res&&res.ok) setSbk(on);
     }).catch(function(){sbk.disabled=false;});
   });
 
@@ -1518,7 +1550,7 @@ READER_JS = """
   function sendPos(){
     netT=Date.now();
     if(netTimer){clearTimeout(netTimer);netTimer=null;}
-    if(!LOGGEDIN) return;
+    if(!LOGGEDIN){ try{LS.setProg(D.sid,D.rel,Math.round(scrollY));}catch(e){} return; }
     try{
       fetch('/api/state',{method:'POST',keepalive:true,
         headers:{'Content-Type':'application/json'},
@@ -1567,7 +1599,7 @@ READER_JS = """
     var dh=document.documentElement.scrollHeight;
     if(scrollY+innerHeight<dh*0.85) return;
     marked=true;
-    if(!LOGGEDIN) return;
+    if(!LOGGEDIN){ try{LS.addRead(D.sid,D.rel);}catch(e){} return; }
     try{
       fetch('/api/state',{method:'POST',keepalive:true,
         headers:{'Content-Type':'application/json'},
@@ -1627,12 +1659,15 @@ READER_JS = """
   // khôi phục vị trí đọc dở (server nhúng vào D.y theo tài khoản). Tắt auto-restore
   // của trình duyệt (nó reset về 0 sau RAF sớm) và bám đích vài frame tới khi tới
   // nơi — chiều cao đã được aspect-ratio giữ sẵn.
-  try{ if(D.y>200){
-    if('scrollRestoration' in history) history.scrollRestoration='manual';
-    var ty=D.y, tries=0;
-    (function hop(){ scrollTo(0,ty);
-      if(++tries<12 && Math.abs(scrollY-ty)>2) requestAnimationFrame(hop); })();
-  }}catch(e){}
+  try{ var _gy=D.y;
+    if(!LOGGEDIN){ var gp=LS.getProg(D.sid); _gy=(gp&&gp.rel===D.rel)?gp.y:0; }
+    if(_gy>200){
+      if('scrollRestoration' in history) history.scrollRestoration='manual';
+      var ty=_gy, tries=0;
+      (function hop(){ scrollTo(0,ty);
+        if(++tries<12 && Math.abs(scrollY-ty)>2) requestAnimationFrame(hop); })();
+    }
+  }catch(e){}
   markRead(); // chương ngắn hiện trọn trong 1 màn hình
   // --- bộ nạp tuần tự: tải dần cả chương, ưu tiên ảnh từ vị trí đọc trở xuống.
   // Ảnh lỗi tự thử lại 3 lần (1s-3s-8s); hết lượt thì thành ô "chạm để tải

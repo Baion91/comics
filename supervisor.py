@@ -232,7 +232,8 @@ class Supervisor:
                 if cid is None:
                     continue
                 is_new = add_chat(self.cfg, cid)       # tự đăng ký người nhận
-                text = (msg.get("text") or "").strip().lower()
+                raw = (msg.get("text") or "").strip()  # GIỮ nguyên hoa/thường cho URL/tham số
+                text = raw.lower()                     # chỉ để so khớp từ khóa lệnh
                 link = self.cur_link()
                 if text.startswith("/link") or text.startswith("/latest"):
                     tg_api(token, "sendMessage", {"chat_id": cid,
