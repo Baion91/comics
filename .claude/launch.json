@@ -1,0 +1,17 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "reader",
+      "runtimeExecutable": "python",
+      "runtimeArgs": ["reader_server.py"],
+      "port": 8080
+    },
+    {
+      "name": "reader-test",
+      "runtimeExecutable": "python",
+      "runtimeArgs": ["reader_server.py", "--port", "8099"],
+      "port": 8099
+    }
+  ]
+}

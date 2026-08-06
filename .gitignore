@@ -1,0 +1,23 @@
+# ==== Dữ liệu / cache (KHÔNG đưa lên repo) ====
+downloads/
+__pycache__/
+*.pyc
+.venv/
+download-queue.txt
+
+# Cấu hình Claude Code riêng theo máy
+.claude/settings.local.json
+
+# ==== .reader-meta: bỏ toàn bộ data + secret + binary lớn, CHỈ GIỮ icon/brand ====
+.reader-meta/*
+!.reader-meta/brand.png
+!.reader-meta/icon-180.png
+!.reader-meta/icon-192.png
+!.reader-meta/icon-512.png
+!.reader-meta/icon-512-maskable.png
+!.reader-meta/icon-src.png
+!.reader-meta/reader.ico
+!.reader-meta/reader-manga.ico
+!.reader-meta/og-image.png
+!.reader-meta/og-image.jpg
+!.reader-meta/og-image-wide.jpg

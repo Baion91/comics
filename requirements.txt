@@ -1,0 +1,7 @@
+# Thư viện cho TOOL TẢI TRUYỆN (comic_downloader.py, check_library.py, convert_webp.py).
+# Reader (reader_server.py) + supervisor (supervisor.py) chỉ dùng thư viện chuẩn,
+# KHÔNG cần cài gì. Server chỉ chạy reader thì có thể bỏ qua file này.
+#   python -m venv .venv
+#   .venv\Scripts\pip install -r requirements.txt
+requests
+Pillow
