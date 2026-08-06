@@ -182,6 +182,10 @@ def get_library():
                 s = build_series(e.path, e.name)
                 if s:
                     series[s["id"]] = s
+        # có bản "<tên>_webp" thì bỏ bản gốc "<tên>" (tránh 2 card trùng tên)
+        for sid in list(series):
+            if sid + "_webp" in series:
+                series.pop(sid, None)
         series = dict(sorted(series.items(), key=lambda kv: natkey(kv[1]["title"])))
         sync_series_meta(series)  # tự thêm truyện mới + đánh số order vào series-meta.json
         _lib_cache = (time.time(), series)
@@ -391,6 +395,15 @@ def normalize_name(name):
     return clean_display(name).casefold()
 
 
+# Username (đã chuẩn hóa) có quyền admin trên web (toggle trạng thái, sắp thứ tự,
+# dọn/refresh list). Thêm tên vào set này nếu muốn nhiều admin.
+ADMIN_USERS = {"admin"}
+
+
+def is_admin(user):
+    return bool(user) and normalize_name(user.get("display", "")) in ADMIN_USERS
+
+
 def validate_name(raw):
     """Trả (display, None) nếu hợp lệ, hoặc (None, thông_báo_lỗi)."""
     disp = clean_display(raw)
@@ -552,6 +565,85 @@ def ordered_library(lib):
     """Thư viện theo thứ tự trang chủ: xếp theo trường 'order' trong series-meta.json
     (sửa tay), truyện thiếu order rơi xuống cuối theo tên A→Z."""
     return sorted(lib.values(), key=lambda s: (series_order(s["id"]), natkey(s["title"])))
+
+
+def bust_library_cache():
+    """Xóa cache thư viện để lần quét sau đọc lại folder thật ngay."""
+    global _lib_cache
+    with _lib_lock:
+        _lib_cache = None
+
+
+def _write_series_meta(meta):
+    """Ghi đè series-meta.json (dùng cho các thao tác admin), cập nhật cache mtime."""
+    global _smeta, _smeta_mtime
+    with _smeta_lock:
+        merged = {k: meta[k] for k in sorted(meta)}
+        os.makedirs(META_DIR, exist_ok=True)
+        tmp = SERIES_META_FILE + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(merged, f, ensure_ascii=False, indent=2)
+        os.replace(tmp, SERIES_META_FILE)
+        _smeta = merged
+        try:
+            _smeta_mtime = os.path.getmtime(SERIES_META_FILE)
+        except OSError:
+            _smeta_mtime = None
+
+
+def set_series_status(sid, status):
+    """Đặt trạng thái complete/ongoing cho 1 truyện."""
+    if status not in ("complete", "ongoing"):
+        return False
+    meta = dict(load_series_meta())
+    m = dict(meta.get(sid) or {})
+    m["status"] = status
+    meta[sid] = m
+    _write_series_meta(meta)
+    return True
+
+
+def reorder_series(sid, move):
+    """Sắp thứ tự trang chủ: move ∈ up/down/top. Đánh lại order 1..N cho toàn thư
+    viện theo thứ tự mới (đơn giản, không lỗ hổng số)."""
+    lib = get_library()
+    ordered = [s["id"] for s in ordered_library(lib)]
+    if sid not in ordered:
+        return False
+    i = ordered.index(sid)
+    if move == "up" and i > 0:
+        ordered[i - 1], ordered[i] = ordered[i], ordered[i - 1]
+    elif move == "down" and i < len(ordered) - 1:
+        ordered[i + 1], ordered[i] = ordered[i], ordered[i + 1]
+    elif move == "top":
+        ordered.insert(0, ordered.pop(i))
+    else:
+        return False
+    meta = dict(load_series_meta())
+    for pos, s2 in enumerate(ordered, start=1):
+        m = dict(meta.get(s2) or {})
+        m["order"] = pos
+        meta[s2] = m
+    _write_series_meta(meta)
+    bust_library_cache()
+    return True
+
+
+def prune_series_meta():
+    """Bỏ khỏi series-meta.json mọi mục không còn folder (bao gồm bản gốc đã bị ẩn
+    vì có _webp). Backup ra .bak trước. Trả danh sách id đã bỏ."""
+    lib = get_library()
+    meta = load_series_meta()
+    dead = [sid for sid in meta if sid not in lib]
+    if not dead:
+        return []
+    try:
+        import shutil
+        shutil.copyfile(SERIES_META_FILE, SERIES_META_FILE + ".bak")
+    except OSError:
+        pass
+    _write_series_meta({k: v for k, v in meta.items() if k in lib})
+    return dead
 
 
 def continue_info(s, progress=None):
@@ -776,6 +868,16 @@ body.jmode .sctl{display:flex}
 .accbtn.primary{background:#7c5cff;border-color:#7c5cff;color:#fff}
 .accbtn.primary:hover{background:#6a49f2}
 .accbtn:disabled{opacity:.6;cursor:default}
+/* Admin (chỉ user 'admin'): toolbar trên lưới + hàng nút trên card */
+.admbar{display:flex;gap:8px;align-items:center;margin:0 0 12px;flex-wrap:wrap}
+.admmsg{font-size:13px;color:#8a8b96}
+.adm{display:flex;gap:4px;margin-top:6px;flex-wrap:wrap}
+.admbtn,.admstatus{border:1px solid #2c2d37;background:#1a1b22;color:#e8e8ea;border-radius:8px;
+  padding:5px 9px;font-size:13px;font-weight:600;cursor:pointer;line-height:1}
+.admbtn:hover,.admstatus:hover{background:#22232c}
+.admbtn:disabled,.admstatus:disabled{opacity:.5;cursor:default}
+.admstatus{background:#2a2130;border-color:#4a3a52}
+.admstatus.complete{background:#123024;border-color:#1f5a3f;color:#8ef0c0}
 .whoami{font-size:14px;color:#cdd0d8;max-width:40vw;overflow:hidden;text-overflow:ellipsis;
   white-space:nowrap;font-weight:600}
 .accerr{color:#ff6b6b;font-size:12.5px;flex-basis:100%;text-align:right;min-height:0}
@@ -1086,7 +1188,18 @@ def account_header(user):
             f'<img src="/brand" alt="Toony"></a>{acc}</header>')
 
 
-def home_card_html(s, bookmarked):
+def admin_card_ctrl(st):
+    """Hàng nút admin trên mỗi card: đổi trạng thái + sắp thứ tự."""
+    cls = "admstatus complete" if st == "complete" else "admstatus"
+    return ('<div class="adm">'
+            f'<button type="button" class="{cls}" data-op="status">{STATUS_LABELS[st]}</button>'
+            '<button type="button" class="admbtn" data-op="top" title="Lên đầu">⤒</button>'
+            '<button type="button" class="admbtn" data-op="up" title="Lên">▲</button>'
+            '<button type="button" class="admbtn" data-op="down" title="Xuống">▼</button>'
+            '</div>')
+
+
+def home_card_html(s, bookmarked, admin=False):
     sid = s["id"]
     st = series_status(sid)
     t = html.escape(s["title"])
@@ -1096,11 +1209,12 @@ def home_card_html(s, bookmarked):
             f'<div class="cbody"><div class="ct" title="{t}">{t}</div>'
             f'<div class="cm">{s["total"]} chaps · '
             f'<span class="st {st}">{STATUS_LABELS[st]}</span></div></div></a>'
-            + bookmark_btn(bookmarked) + '</div>')
+            + bookmark_btn(bookmarked) + (admin_card_ctrl(st) if admin else "") + '</div>')
 
 
 def html_home(lib, user=None):
     ordered = ordered_library(lib)
+    admin = is_admin(user)
     ud = user_data(user["id"]) if user else _default_udata()
     bmset = set(ud["bookmarks"])                       # bookmark của tài khoản đang đăng nhập
     follows = [s for s in ordered if s["id"] in bmset]
@@ -1110,9 +1224,12 @@ def html_home(lib, user=None):
               + '<div class="frow" id="frow">'
               + "".join(follow_card_html(s, ud["progress"]) for s in follows)
               + '</div></div></section>')
-    grid = ('<section>' + sect_head("all", SECT_BOOK_SVG, "All Comics")
+    admbar = ('<div class="admbar"><button type="button" id="admrefresh" class="admbtn">↻ Refresh</button>'
+              '<button type="button" id="admprune" class="admbtn">🧹 Dọn list</button>'
+              '<span id="admmsg" class="admmsg"></span></div>') if admin else ""
+    grid = ('<section>' + sect_head("all", SECT_BOOK_SVG, "All Comics") + admbar
             + '<div class="grid" id="grid">'
-            + "".join(home_card_html(s, s["id"] in bmset) for s in ordered)
+            + "".join(home_card_html(s, s["id"] in bmset, admin) for s in ordered)
             + '</div></section>')
     # dữ liệu để JS dựng lại slider khi bấm bookmark (không tải lại trang)
     followdata = {}
@@ -1122,8 +1239,9 @@ def html_home(lib, user=None):
                                "url": url, "label": label}
     body = ('<div class="wrap">' + account_header(user) + slider + grid + '</div>' + TOTOP_HTML
             + f'<script>const FOLLOWDATA={js(followdata)};let BM={js(list(bmset))};'
-            f'const LOGGEDIN={js(bool(user))};</script>'
-            f'<script>{LS_JS}</script><script>{ACCT_JS}</script><script>{HOME_JS}</script>')
+            f'const LOGGEDIN={js(bool(user))};const ADMIN={js(admin)};</script>'
+            f'<script>{LS_JS}</script><script>{ACCT_JS}</script><script>{HOME_JS}</script>'
+            + (f'<script>{ADMIN_JS}</script>' if admin else ''))
     return page("TOONY READER", body)
 
 
@@ -1464,6 +1582,42 @@ HOME_JS = """
     });
     renderFollows();
   }
+})();
+"""
+
+ADMIN_JS = """
+(function(){
+  if(typeof ADMIN==='undefined' || !ADMIN) return;
+  function post(body){ return fetch('/api/admin',{method:'POST',
+    headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
+    .then(function(r){return r.json();}); }
+  var grid=document.getElementById('grid');
+  if(grid) grid.addEventListener('click',function(e){
+    var b=e.target.closest('.adm button'); if(!b) return;
+    e.preventDefault();
+    var card=b.closest('.card'), sid=card?card.dataset.sid:null; if(!sid) return;
+    var op=b.dataset.op, body={sid:sid};
+    if(op==='status'){ body.op='status';
+      body.status=b.classList.contains('complete')?'ongoing':'complete'; }
+    else { body.op='order'; body.move=op; }
+    b.disabled=true;
+    post(body).then(function(res){ if(res&&res.ok) location.reload(); else b.disabled=false; })
+      .catch(function(){b.disabled=false;});
+  });
+  var pr=document.getElementById('admprune'), msg=document.getElementById('admmsg');
+  if(pr) pr.addEventListener('click',function(){
+    pr.disabled=true;
+    post({op:'prune'}).then(function(res){
+      if(res&&res.ok){ if(msg) msg.textContent='Đã bỏ '+res.removed+' mục'; location.reload(); }
+      else pr.disabled=false;
+    }).catch(function(){pr.disabled=false;});
+  });
+  var rf=document.getElementById('admrefresh');
+  if(rf) rf.addEventListener('click',function(){
+    rf.disabled=true;
+    post({op:'refresh'}).then(function(){location.reload();})
+      .catch(function(){rf.disabled=false;});
+  });
 })();
 """
 
@@ -1893,7 +2047,7 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/logout":
                 return self.send_json({"ok": True},
                                       set_cookie="uid=; Path=/; Max-Age=0; SameSite=Lax")
-            if path not in ("/api/spread", "/api/state", "/api/login"):
+            if path not in ("/api/spread", "/api/state", "/api/login", "/api/admin"):
                 return self.send_json({"ok": False, "error": "Not found"}, 404)
             length = int(self.headers.get("Content-Length") or 0)
             if not 0 < length <= 200000:
@@ -1911,6 +2065,24 @@ class Handler(BaseHTTPRequestHandler):
                     return self.send_json({"ok": False, "error": "Not logged in"}, 401)
                 update_user_data(user["id"], data)
                 return self.send_json({"ok": True})
+            if path == "/api/admin":
+                if not is_admin(self.current_user()):
+                    return self.send_json({"ok": False, "error": "Not admin"}, 403)
+                op = data.get("op")
+                if op == "prune":
+                    removed = prune_series_meta()
+                    bust_library_cache()
+                    return self.send_json({"ok": True, "removed": len(removed)})
+                if op == "refresh":
+                    bust_library_cache()
+                    return self.send_json({"ok": True})
+                if op == "status":
+                    ok = set_series_status(data.get("sid"), data.get("status"))
+                elif op == "order":
+                    ok = reorder_series(data.get("sid"), data.get("move"))
+                else:
+                    ok = False
+                return self.send_json({"ok": bool(ok)}, 200 if ok else 400)
             sid, rel = data.get("sid"), data.get("rel")
             action, a, b = data.get("action"), data.get("a"), data.get("b")
             s = get_library().get(sid)
