@@ -140,10 +140,10 @@ HELP_TEXT = (
     "Admin:\n"
     "/tai <link> — tải truyện (nhiều link cách nhau dấu cách)\n"
     "/update — cập nhật code + restart reader\n"
-    "/admin list — xem chat đã đăng ký / admin\n"
-    "/admin claim — nhận quyền admin (khi chưa có ai)\n"
-    "/admin add <id> — thêm admin\n"
-    "/admin remove <id> — bỏ admin"
+    "/adminlist — xem chat đã đăng ký / admin\n"
+    "/adminclaim — nhận quyền admin (khi chưa có ai)\n"
+    "/adminadd <id> — thêm admin\n"
+    "/adminremove <id> — bỏ admin"
 )
 
 
@@ -236,7 +236,10 @@ class Supervisor:
             {"command": "whoami", "description": "Xem chat_id của bạn"},
             {"command": "tai", "description": "Tải truyện: /tai <link> (admin)"},
             {"command": "update", "description": "Cập nhật code (admin)"},
-            {"command": "admin", "description": "Quản lý admin: list/claim/add/remove"},
+            {"command": "adminlist", "description": "Xem chat đã đăng ký / admin"},
+            {"command": "adminclaim", "description": "Nhận quyền admin (khi chưa có ai)"},
+            {"command": "adminadd", "description": "Thêm admin: /adminadd <id>"},
+            {"command": "adminremove", "description": "Bỏ admin: /adminremove <id>"},
             {"command": "help", "description": "Danh sách lệnh"},
             {"command": "start", "description": "Đăng ký nhận link"},
         ]
@@ -280,8 +283,14 @@ class Supervisor:
                 elif text.startswith("/help"):
                     tg_api(token, "sendMessage", {"chat_id": cid, "text": HELP_TEXT,
                         "disable_web_page_preview": "true"})
-                elif text.startswith("/admin"):
-                    self.handle_admin(token, cid, raw)
+                elif text.startswith("/adminclaim"):
+                    self.handle_admin(token, cid, "claim", raw)
+                elif text.startswith("/adminlist"):
+                    self.handle_admin(token, cid, "list", raw)
+                elif text.startswith("/adminadd"):
+                    self.handle_admin(token, cid, "add", raw)
+                elif text.startswith("/adminremove"):
+                    self.handle_admin(token, cid, "remove", raw)
                 elif text.startswith("/tai"):
                     self.handle_tai(token, cid, raw)
                 elif text.startswith("/start") or is_new:
@@ -410,20 +419,21 @@ class Supervisor:
         self.cfg["admin_chat_ids"] = out
         save_config(self.cfg)
 
-    def handle_admin(self, token, cid, raw):
-        """/admin list|claim|add <id>|remove <id> — quản lý admin_chat_ids."""
+    def handle_admin(self, token, cid, sub, raw):
+        """Quản lý admin_chat_ids qua các lệnh 1 TỪ (Telegram chỉ nhận lệnh không dấu
+        cách): /adminclaim /adminlist /adminadd <id> /adminremove <id>."""
         parts = raw.split()
-        sub = parts[1].lower() if len(parts) > 1 else "list"
+        arg = parts[1] if len(parts) > 1 else None
         admins = self._admins()
         if sub == "claim":
             if admins:
                 tg_api(token, "sendMessage", {"chat_id": cid,
-                    "text": "Đã có admin rồi — nhờ admin dùng /admin add <id>."})
+                    "text": "Đã có admin rồi — nhờ admin dùng /adminadd <id>."})
             else:
                 self._set_admins([cid])
                 tg_api(token, "sendMessage", {"chat_id": cid,
-                    "text": "✅ Bạn là admin đầu tiên. /admin add <id> để thêm người, "
-                            "/admin list để xem các chat đã nhắn bot."})
+                    "text": "✅ Bạn là admin đầu tiên. /adminadd <id> để thêm người, "
+                            "/adminlist để xem các chat đã nhắn bot."})
             return
         if not self._is_admin(cid):
             tg_api(token, "sendMessage", {"chat_id": cid, "text": "⛔ Bạn không phải admin."})
@@ -433,16 +443,16 @@ class Supervisor:
             lines = [("⭐ " if i in admins else "• ") + i for i in ids] or ["(chưa ai nhắn bot)"]
             tg_api(token, "sendMessage", {"chat_id": cid,
                 "text": "Chat đã đăng ký (⭐ = admin):\n" + "\n".join(lines)
-                        + "\n\n/admin add <id> | remove <id>"})
-        elif sub == "add" and len(parts) > 2:
-            self._set_admins(admins + [parts[2]])
-            tg_api(token, "sendMessage", {"chat_id": cid, "text": "✅ Thêm admin: " + parts[2]})
-        elif sub == "remove" and len(parts) > 2:
-            self._set_admins([a for a in admins if a != parts[2]])
-            tg_api(token, "sendMessage", {"chat_id": cid, "text": "✅ Bỏ admin: " + parts[2]})
+                        + "\n\n/adminadd <id> | /adminremove <id>"})
+        elif sub == "add" and arg:
+            self._set_admins(admins + [arg])
+            tg_api(token, "sendMessage", {"chat_id": cid, "text": "✅ Thêm admin: " + arg})
+        elif sub == "remove" and arg:
+            self._set_admins([a for a in admins if a != arg])
+            tg_api(token, "sendMessage", {"chat_id": cid, "text": "✅ Bỏ admin: " + arg})
         else:
             tg_api(token, "sendMessage", {"chat_id": cid,
-                "text": "Cú pháp: /admin list | claim | add <id> | remove <id>"})
+                "text": "Cú pháp: /adminlist | /adminclaim | /adminadd <id> | /adminremove <id>"})
 
     # --- Tải truyện qua bot (/tai <url...>) -> hàng đợi, worker chạy nền ----
     def handle_tai(self, token, cid, raw):

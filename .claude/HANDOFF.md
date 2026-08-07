@@ -1,64 +1,78 @@
-# Handoff — cập nhật lần cuối: 2026-08-05
+# Handoff — cập nhật lần cuối: 2026-08-07
 
 ## Đang làm / dở dang
-- Không có việc code dở.
-- **Vừa xong (05/08): 3 tinh chỉnh UI reader (trên nền reader "v2")**
-  - **Hết giật dòng "Bookmarked" ở Home**: bỏ bật/tắt `hidden` (chèn/rút ~300px tức
-    thời) → mục **co/giãn có animation** bằng `grid-template-rows:0fr↔1fr` + wrapper
-    `.follows-inner` (overflow:hidden) + toggle class `.open`. Server render sẵn `.open`
-    khi có bookmark; mỗi `fcard` có `data-sid`.
-  - **`renderFollows` incremental**: không dựng lại `innerHTML` nữa — **chèn/gỡ/di chuyển
-    từng card** (dùng `appendChild` để move node sẵn có → ảnh không tải lại/chớp); dọn
-    card sót ở `transitionend` (có guard chống mất card khi bấm lại giữa chừng).
-  - **Độ êm animation = Preset A**: `cubic-bezier(.37,0,.63,1)` (easeInOutSine) `.45s`,
-    opacity đồng bộ `.45s`. (Đã thử easeOutExpo `.32s` → user thấy "đập/mạnh", đổi sang
-    ease-in-out mềm mới thật nhẹ.) `prefers-reduced-motion` vẫn nhảy thẳng.
-  - **Nút "lên đầu trang" `#totop` kiểu Liquid Glass**: tròn 54px góc phải-dưới, mũi tên
-    **LÊN**, `backdrop-filter:blur(20px) saturate(180%)` (+`-webkit-`) + nền mờ sáng +
-    viền/highlight/bóng. **Chỉ Home + trang truyện (series)**; trang đọc ảnh KHÔNG có nút.
-    Hiện khi cuộn `>0.5·vh`, ẩn khi `<0.45·vh` (hysteresis). Bấm = `scrollTo top` native
-    smooth (reduced-motion → `auto`). JS gate `#totop`, chạy mọi trang tự no-op.
-  - **CHƯA nghiệm thu LIVE** trên trình duyệt — mới verify server-side render + parse
-    Python. User tự mở bằng shortcut "Toony" (ràng buộc không auto-start).
+- Không có việc code dở. Vừa hoàn tất đợt lớn: **hệ tài khoản + đồng bộ code bằng git +
+  điều khiển qua Telegram bot + web admin**. Tất cả đã verify (trình duyệt / unit test),
+  đã push GitHub. Chờ **user deploy lên server bằng `cap-nhat.bat`** và nghiệm thu LIVE.
 
-## Quyết định gần đây (tối đa ~10 dòng, mỗi dòng 1 quyết định)
-- 05/08: **Dòng Bookmarked co/giãn có animation thay cho toggle `hidden`** — vì `hidden`
-  chèn/rút cả khối ~300px tức thời gây giật ở mốc 0↔1 bookmark.
-- 05/08: **Animation Bookmarked chốt Preset A (easeInOutSine `.45s`)** — easeOutExpo bung
-  nhanh lúc đầu = "đập/mạnh"; ease-in-out khởi động từ tốn mới thật nhẹ nhàng.
-- 05/08: **`renderFollows` chuyển sang incremental (chèn/gỡ từng card)** — tránh dựng lại
-  innerHTML làm ảnh trong slider tải lại/chớp mỗi lần bấm.
-- 05/08: **Nút lên-đầu-trang: mũi tên LÊN + native smooth scroll** — đơn giản trước, để
-  ngỏ nâng cấp rAF ease-out nếu chưa đủ êm.
-- 05/08: **Hồ sơ đọc = 1 JSON CHUNG server-side** (`user-data.json`), không login/cookie/
-  device-id — vì localStorage chết theo origin (link trycloudflare đổi URL → mất tiến trình).
-- 05/08: **Thứ tự Home vào `series-meta.json` (`order`), bỏ kéo-thả**; truyện mới auto `max+1`.
-- 05/08: **Sort chương thành TOGGLE Newest/Oldest (client) + Search chương**.
-- 05/08: **UI reader sang tiếng Anh**; giữ comment/log tiếng Việt.
-- 05/08: **Feedback: nhún = nền mọi nút; loé sáng chỉ cho dòng danh sách + toggle tại chỗ**.
-- 04/08: **Trạng thái truyện = JSON tập trung + sửa tay live (mtime)** `series-meta.json`.
+## Kiến trúc hiện tại (đã đổi nhiều so với bản 05/08)
+- **Lưu dữ liệu đọc — HAI đường, tách riêng, KHÔNG di trú:**
+  - **Đã đăng nhập** → server per-account trong `.reader-meta/users.json`
+    (`byname` chuẩn-hoá→id, `users[id]` = display/bookmarks/progress/read). Login = nhập
+    username (không mật khẩu, chỉ để tách người). Cookie `uid` (1 năm).
+  - **Guest (chưa đăng nhập)** → localStorage per-device (`LS_JS`: `toony_bm`,
+    `toony_prog`, `toony_read`). Bookmark/tiến trình/đọc-mờ đều chạy client-side.
+- **Web admin**: đăng nhập username `admin` (trong `ADMIN_USERS`, KHÔNG mật khẩu — user đã
+  từ chối PIN, chấp nhận rủi ro cho 2 anh em). Trang chủ hiện: toggle Complete/Ongoing,
+  sắp thứ tự (⤒ lên đầu / ▲ / ▼ — đánh lại `order` 1..N), **Dọn list** (prune mục chết
+  trong `series-meta.json`, backup `.bak`), **Refresh** (xoá cache). Endpoint POST
+  `/api/admin` gate bằng `is_admin`.
+- **Thư viện**: `get_library` **tự ẩn bản gốc `<tên>` khi có `<tên>_webp`**. Home có ô
+  **Search comics** (lọc theo tên, client-side). Ô nhập tên + 2 ô search đều `font-size:16px`
+  để iOS không tự zoom.
+- **supervisor.py** (server): giữ reader + cloudflared sống, health-check, bắt link, gửi
+  Telegram. **Vòng nghe getUpdates** xử lý lệnh bot (xem dưới). Có **hàng đợi tải** (`/tai`)
+  chạy ở 1 luồng worker riêng.
+
+## Đồng bộ code bằng git (thay copy tay/zip)
+- Repo **Public**: https://github.com/Baion91/comics (nhánh `main`). `.gitignore` loại
+  `downloads/`, secret/data trong `.reader-meta` (giữ icon/brand/og). Token thật CHỈ ở
+  `.reader-meta/notify-config.json` (gitignore); `notify-config.example.json` để token rỗng.
+- **Máy dev push**: `day-len.bat` (add+commit+push). **Server cập nhật**: `cap-nhat.bat`
+  (git fetch + reset --hard origin/main → gọi `server-BAT`), HOẶC `/update` qua bot.
+- **Server setup git lần đầu** (giữ nguyên truyện/token): trong folder tool chạy
+  `git init -b main` → `git remote add origin <url>` → `git fetch` → `git reset --hard
+  origin/main` (KHÔNG clone folder mới). Public nên khỏi đăng nhập.
+
+## Lệnh Telegram bot (đều là lệnh 1 TỪ — Telegram không nhận lệnh có dấu cách)
+- `/link` link hiện tại · `/whoami` chat_id · `/help` list lệnh · `/start` đăng ký nhận link.
+- **Admin**: `/update` (git pull + restart reader, KHÔNG đổi link cloudflared) ·
+  `/tai <link…>` (xếp hàng đợi, worker tải 1 lượt/lúc, báo bắt đầu/xong) ·
+  `/adminclaim` (người đầu tiên → admin gốc) · `/adminlist` · `/adminadd <id>` ·
+  `/adminremove <id>`. Đăng ký menu qua `setMyCommands` lúc khởi động.
+- **Quyền**: `admin_chat_ids` trong notify-config. Rỗng → tạm ai cũng được (tới khi có
+  người `/adminclaim`), sau đó strict theo danh sách. `_is_admin` gác `/update`,`/tai`,`/admin*`.
+
+## Quyết định gần đây (mới nhất trước)
+- 07/08: **Lệnh admin đổi thành 1 từ** (`/adminclaim/list/add/remove`) — Telegram bấm lệnh
+  có dấu cách chỉ gửi phần trước dấu cách.
+- 07/08: **`/update` chỉ restart reader, KHÔNG đụng cloudflared** → link giữ nguyên (đúng ý:
+  cập nhật khỏi mất link). `/update` chạy luồng nền + timeout git + `GIT_TERMINAL_PROMPT=0`
+  (trước bị treo khi mạng server nghẽn).
+- 07/08: **server-BAT tự kill supervisor/reader cũ trước khi bật** (lọc đúng
+  supervisor.py/reader_server.py) → hết lỗi 2 tiến trình song song (Telegram 409).
+- 06/08: **Đồng bộ code bằng git/GitHub (repo Public)** thay copy tay/zip.
+- 06/08: **Login username-only + dữ liệu per-account server-side**; **guest dùng localStorage**;
+  hai bên tách riêng, không di trú → ĐẢO quyết định 05/08 "hồ sơ chung server-side".
+- 06/08: **Web admin** (username `admin`, không PIN) cho status/thứ tự/prune/refresh.
+- 06/08: **Ẩn bản gốc khi có `_webp`**; **Search comics** ở home.
 
 ## Việc tiếp theo
-- **User nghiệm thu LIVE 3 tinh chỉnh mới** (restart Toony + F5): (1) bookmark/bỏ bookmark
-  mốc 0↔1 ở Home có êm không; (2) nút kính lên-đầu-trang hiện/ẩn đúng nửa màn + cuộn êm,
-  ở cả Home lẫn trang truyện; (3) trang đọc ảnh không có nút. Đặc biệt xem hiệu ứng kính
-  `backdrop-filter` trên iPhone thật.
-- (Nếu vẫn thấy animation Bookmarked hơi mạnh) lever tiếp = **giảm chiều cao shelf** (thu
-  nhỏ card theo dõi) để quãng dịch lưới dưới ngắn lại — chưa làm.
-- **User nghiệm thu LIVE reader v2** trên iPhone + PC (nhún/loé, bố cục trang truyện, English).
-- (Tùy chọn) dịch nốt **log terminal** (`main()`) sang tiếng Anh.
-- Backlog tải (CHƯA XÁC MINH lại phiên này — số cũ 25/07): Rankers Return còn ~77 chương;
-  Overgeared local 517 ảnh / nguồn 332 chương.
+- **User deploy `cap-nhat.bat`** trên server (đợt này sửa cả supervisor → không dùng
+  `/update` được) rồi nghiệm thu LIVE: `/help`, `/adminclaim`, `/tai`, search home, nút
+  admin 2 hàng, guest bookmark/đọc-dở trên iPhone.
+- Server mạng ra internet chập chờn (getUpdates/tunnel hay timeout) — nếu kéo dài, cân nhắc
+  **Tailscale/LAN** thay quick-tunnel cho ổn định.
+- (Tùy chọn) đồng hồ server nhanh ~5 phút — sync giờ Windows nếu muốn log khớp.
 
 ## Lưu ý / rủi ro đang mở
-- **Nút `#totop` dùng `backdrop-filter`**: cần bản `-webkit-` cho Safari iOS (đã có).
-  Hiệu ứng kính CHƯA nghiệm thu trên iPhone thật.
-- **Animation `grid-template-rows` là layout-bound** (không GPU) → máy yếu / Home nặng có
-  thể micro-stutter nhẹ; trần vật lý: shelf cao ~300px nên lưới dưới vẫn dịch một quãng dài.
-- **Reset hồ sơ đọc**: xoá cả file `.reader-meta/user-data.json` — NHƯNG phải **TẮT server
-  trước** (xoá lúc đang chạy có thể bị ghi đè lại data cũ từ cache RAM `_udata`).
-- **Hồ sơ CHUNG, không mật khẩu**: khách qua link tunnel thấy & sửa được bookmark/tiến
-  trình → bật tunnel chỉ khi cần, tắt (`Tat chia se link.bat`) khi xong.
-- Sửa **CODE** `reader_server.py` phải RESTART Toony; sửa tay **`series-meta.json`** thì F5 (mtime).
-- `check-report.html` là ảnh chụp; `.bad` trên đĩa mới là sự thật. `--black` là quét SÂU (chậm).
+- **Admin không mật khẩu** + tunnel public → người lạ có link về lý thuyết gõ tên `admin`
+  là vào admin. Chấp nhận cho phạm vi 2 anh em (bot/link obscure). Muốn siết → thêm PIN.
+- **Sửa `supervisor.py`** phải deploy bằng `cap-nhat.bat`/`server-BAT` (`/update` chỉ nạp
+  lại reader, không nạp lại chính supervisor — bot có cảnh báo dòng này).
+- **Đừng bấm `server-BAT` khi đã có supervisor chạy** trừ khi muốn restart (bản mới tự kill
+  cũ nên an toàn, nhưng nhớ chỉ để 1 supervisor poll 1 token, kẻo 409).
+- Sửa **CODE** `reader_server.py` phải restart reader; sửa tay **`series-meta.json`** thì F5
+  (mtime tự nạp). Prune/reorder/status trong web admin ăn ngay (không cần restart).
+- `.reader-meta/notify-config.json` chứa **token thật** — không commit (đã gitignore).
 - Script ad-hoc in tiếng Việt cần `PYTHONIOENCODING=utf-8` (console cp1252).

@@ -24,7 +24,7 @@ Các script trong thư mục này, mỗi cái một việc:
 
 ## 1. Tải truyện — `comic_downloader.py` (hoặc bấm `Tai truyen.bat`)
 
-Một tool cho MỌI site, tự nhận site theo link (hiện hỗ trợ **Asura** và **Raven**).
+Một tool cho MỌI site, tự nhận site theo link (hiện hỗ trợ **Asura**, **Raven**, **Dilib**).
 
 Cách nhanh nhất: **double-click `Tai truyen.bat`** → dán link → chọn chương → xong
 hỏi tải tiếp. Hoặc chạy lệnh:
@@ -191,15 +191,19 @@ python reader_server.py --port 8081
   mới nhất, nền xanh dương); nếu đang đọc dở thì nút thứ 2 thành **"Chapter X -
   reading"** (nền xanh lá) mở đúng chỗ đọc dở. Ô **Search chapters…** lọc theo
   số/tên tức thì; nút **Newest ⇄ Oldest** đảo thứ tự danh sách chương.
-- **Nhớ chỗ đọc chung mọi máy**: vị trí đọc dở, chương đã đọc và danh sách theo dõi
-  được lưu **trên server** (file `.reader-meta\user-data.json`), nên **PC và điện
-  thoại thấy giống nhau** và **không mất khi đổi link/IP hay restart server**. Cỡ
-  ảnh và kiểu sort chương thì để riêng từng máy (trong trình duyệt).
-  **Reset**: **tắt server**, xoá tay file `.reader-meta\user-data.json`, bật lại
-  (phải tắt trước — xoá lúc đang chạy có thể bị ghi đè lại data cũ từ bộ nhớ).
-  ⚠️ Vì là **một hồ sơ chung** (không đăng nhập), khi bạn bật link chia sẻ tạm thì
-  người đọc thử cũng thấy/sửa được danh sách này — tắt link (`Tat chia se link.bat`)
-  là chỉ máy của bạn vào được.
+- **Tài khoản & nhớ chỗ đọc**: góc trên phải có ô **Username** — nhập tên rồi **Login**
+  (không mật khẩu, chỉ để tách người). Khi **đã đăng nhập**, bookmark / vị trí đọc dở /
+  chương đã đọc lưu **trên server theo tài khoản** (`.reader-meta\users.json`) → đăng nhập
+  lại ở máy nào cũng thấy, không mất khi đổi link/restart. **Chưa đăng nhập (guest)** thì
+  mấy dữ liệu này lưu **trong trình duyệt máy đó** (localStorage) — mỗi máy riêng, không
+  đụng người khác. Hai bên **tách riêng**, không trộn. Cỡ ảnh + kiểu sort chương luôn để
+  riêng từng máy.
+- **Tìm truyện**: ô **Search comics** ở trang chủ lọc theo tên tức thì.
+- **Web admin** (đăng nhập đúng username `admin`): trang chủ hiện thêm **Refresh** +
+  **Dọn list** (bỏ mục truyện đã xoá khỏi danh sách), và mỗi truyện có nút đổi
+  **Completed/Ongoing** + **⤒/▲/▼** sắp thứ tự — bấm là đổi ngay, khỏi sửa file tay.
+  (Sửa tay `series-meta.json` vẫn dùng được như mô tả trên/dưới.)
+- Có cả folder `<tên>` lẫn `<tên>_webp` thì reader **tự ẩn bản gốc**, chỉ hiện bản `_webp`.
 - **Ảnh bìa**: đặt file `cover.jpg`/`cover.png`/`cover.webp` vào folder truyện
   là bìa hiện đúng ảnh đó (truyện Asura được downloader tự tải bìa sẵn).
   Không có thì lấy trang đầu chương đầu.
@@ -224,6 +228,32 @@ python reader_server.py --port 8081
   **tự xuất hiện**, không phải cấu hình gì. Không sửa/ghi gì vào folder truyện.
 - Server **bật thủ công** bằng shortcut Desktop **"Toony"** (không đặt tự chạy cùng
   Windows — giữ toàn quyền bật/tắt trên máy làm việc).
+
+---
+
+## 6. Chạy trên SERVER (tự động) + đồng bộ code + điều khiển qua Telegram
+
+Ngoài chạy tay ở trên, bộ này dựng được thành **server đọc chung** (vd máy khác) tự bật
+khi đăng nhập Windows, tự tạo link đọc từ xa và báo qua Telegram.
+
+- **Bật/tắt trên server**: `server-BAT-tudong.bat` (đăng ký chạy-khi-đăng-nhập + bật ngay
+  reader + cloudflared + Telegram; **tự kill tiến trình cũ** nên bấm lại an toàn) /
+  `server-TAT-tudong.bat` (tắt hết + gỡ đăng ký).
+- **Link đọc từ xa**: cloudflared quick-tunnel tự tạo link `…trycloudflare.com` và gửi qua
+  **Telegram bot** cho ai đã nhắn bot. Link **đổi mỗi lần server/tunnel khởi động lại**.
+  Trên server chạy `get-cloudflared.bat` một lần để tải cloudflared.
+- **Đồng bộ code bằng git** (repo GitHub `Baion91/comics`, Public — không chứa secret):
+  - Máy dev: **`day-len.bat`** = đẩy code lên GitHub (git add + commit + push).
+  - Server: **`cap-nhat.bat`** = kéo code mới + restart, HOẶC nhắn **`/update`** cho bot
+    (chỉ restart reader, **giữ nguyên link**). Sửa `supervisor.py` thì phải dùng `cap-nhat.bat`.
+- **Lệnh Telegram bot** (gõ **`/help`** để xem đủ; mỗi lệnh là **1 từ liền**):
+  - `/link` link hiện tại · `/whoami` xem chat_id của bạn · `/help` danh sách lệnh.
+  - **Admin**: `/tai <link>` tải truyện (xếp hàng đợi, báo bắt đầu/xong) · `/update` cập
+    nhật code · `/adminclaim` (người đầu tiên → admin gốc) · `/adminlist` ·
+    `/adminadd <id>` · `/adminremove <id>`.
+- Token bot để trong `.reader-meta\notify-config.json` (**không** commit lên git).
+- **Tải hàng loạt** (chạy tay): `Tai hang loat.bat` — dán nhiều link vào `download-queue.txt`
+  rồi chạy lần lượt (bỏ qua chương đã đủ nhờ dấu `.done`).
 
 ---
 
