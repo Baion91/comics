@@ -56,7 +56,11 @@
   trường `title` trong `series-meta.json`; `get_library` đè `s["title"]` trước sort. sid/folder
   giữ nguyên → không mất bookmark/tiến-trình, không đụng downloader (nó đặt tên folder theo slug).
   Tên rỗng = xoá override. `set_series_title()` + op `title` trong `/api/admin`.
-- 07/08: **Web admin đổi BÌA**: nút 🖼️ → chọn file → JS đọc base64 (data URL) → POST op `cover`.
+- 07/08: **UI nút admin (theo mẫu user)**: icon Lucide **ImagePlus** nổi góc trên-phải ảnh bìa
+  (`.covedit`, absolute, ngoài `.cardlink`) + **SquarePen** cuối tên truyện (`.titleedit`, trong
+  `.ct` flex, TRONG thẻ `<a>` nên handler phải `preventDefault` chặn điều hướng). Bỏ 2 nút emoji
+  cũ khỏi `.admrow`. SVG hằng `IMAGEPLUS_SVG`/`SQUAREPEN_SVG`.
+- 07/08: **Web admin đổi BÌA**: chọn file → JS đọc base64 (data URL) → POST op `cover`.
   `/api/admin` nâng giới hạn body 200KB→12MB. `save_cover()` nén về JPEG 3:4 @480px (dùng lại
   logic `cover_jpeg`), ghi `cover.jpg`, XOÁ cover.* đuôi khác (giữ đúng 1 bìa), xoá `_cover_cache`.
   `cover_url?v=mtime` sẵn nên PWA tự tải bìa mới. Ảnh ngang giữ nguyên tỉ lệ (khung 3:4 cắt lúc

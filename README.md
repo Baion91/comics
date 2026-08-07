@@ -204,13 +204,14 @@ python reader_server.py --port 8081
 - **Tìm truyện**: ô **Search comics** ở trang chủ lọc theo tên tức thì.
 - **Web admin** (đăng nhập đúng username `admin`): trang chủ hiện thêm **Refresh** +
   **Dọn list** (bỏ mục truyện đã xoá khỏi danh sách), và mỗi truyện có nút đổi
-  **Completed/Ongoing** + **⤒/▲/▼** sắp thứ tự + **✏️ đổi tên** + **🖼️ đổi bìa** — bấm là
+  **Completed/Ongoing** + **⤒/▲/▼** sắp thứ tự + **đổi tên** + **đổi bìa** — bấm là
   đổi ngay, khỏi sửa file tay. (Sửa tay `series-meta.json` vẫn dùng được như mô tả trên/dưới.)
-  - **✏️ Đổi tên**: nhập tên hiển thị mới (để trống = về lại tên gốc theo folder). Chỉ đổi
-    **tên hiển thị trên web**, lưu vào `series-meta.json` — **folder trên server GIỮ NGUYÊN**
-    nên bookmark/tiến-trình đọc không bị mất.
-  - **🖼️ Đổi bìa**: chọn 1 ảnh từ máy → server tự chuẩn hoá và ghi thành `cover.jpg` trong
-    folder truyện (thay bìa cũ). Nên chọn ảnh **tỉ lệ 3:4** (xem mục Ảnh bìa) để không bị cắt.
+  - **Đổi tên** (icon bút vuông cạnh tên truyện): nhập tên hiển thị mới (để trống = về lại
+    tên gốc theo folder). Chỉ đổi **tên hiển thị trên web**, lưu vào `series-meta.json` —
+    **folder trên server GIỮ NGUYÊN** nên bookmark/tiến-trình đọc không bị mất.
+  - **Đổi bìa** (icon ảnh-dấu-cộng ở góc trên-phải ảnh bìa): chọn 1 ảnh từ máy → server tự
+    chuẩn hoá và ghi thành `cover.jpg` trong folder truyện (thay bìa cũ). Nên chọn ảnh
+    **tỉ lệ 3:4** (xem mục Ảnh bìa) để không bị cắt.
 - Có cả folder `<tên>` lẫn `<tên>_webp` thì reader **tự ẩn bản gốc**, chỉ hiện bản `_webp`.
 - **Ảnh bìa**: đặt file `cover.jpg`/`cover.png`/`cover.webp` vào folder truyện
   là bìa hiện đúng ảnh đó (truyện Asura được downloader tự tải bìa sẵn), hoặc dùng nút

@@ -966,12 +966,27 @@ body.jmode .sctl{display:flex}
 h1{font-size:22px;margin:6px 0 18px;line-height:1.3}
 .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:14px}
 .card{background:#15161c;border:1px solid #25262e;border-radius:14px;overflow:hidden;
-  display:block}
+  display:block;position:relative}
 .card img{width:100%;aspect-ratio:3/4;object-fit:cover;display:block;background:#101116}
 .cbody{padding:10px 12px}
 .ct{font-size:14px;font-weight:600;line-height:1.35;
-  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  display:flex;align-items:center;gap:6px}
+.ct .cttext{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
 .cm{font-size:12px;color:#9a9aa5;margin-top:4px}
+/* nút admin đổi bìa (ImagePlus): nổi góc trên-phải ảnh bìa */
+.covedit{position:absolute;top:8px;right:8px;z-index:3;width:36px;height:36px;padding:0;
+  display:flex;align-items:center;justify-content:center;border-radius:10px;cursor:pointer;
+  background:rgba(19,20,25,.72);border:1px solid rgba(255,255,255,.16);color:#fff;
+  -webkit-backdrop-filter:blur(4px);backdrop-filter:blur(4px)}
+.covedit svg{width:19px;height:19px}
+.covedit:hover{background:rgba(19,20,25,.92)}
+.covedit:disabled{opacity:.5;cursor:default}
+/* nút admin đổi tên (SquarePen): icon nhỏ cuối tên truyện */
+.titleedit{flex:none;display:inline-flex;align-items:center;justify-content:center;
+  width:22px;height:22px;padding:0;border:0;background:transparent;color:#9a9aa5;cursor:pointer}
+.titleedit svg{width:16px;height:16px}
+.titleedit:hover{color:#e8e8ea}
+.titleedit:disabled{opacity:.5;cursor:default}
 .st{font-weight:600}
 .st.complete{color:#4ade80}
 .st.ongoing{color:#60a5fa}
@@ -1279,19 +1294,38 @@ def admin_card_ctrl(st):
             '<button type="button" class="admbtn" data-op="top" title="Lên đầu">⤒</button>'
             '<button type="button" class="admbtn" data-op="up" title="Lên">▲</button>'
             '<button type="button" class="admbtn" data-op="down" title="Xuống">▼</button>'
-            '<button type="button" class="admbtn" data-op="title" title="Đổi tên">✏️</button>'
-            '<button type="button" class="admbtn" data-op="cover" title="Đổi bìa">🖼️</button>'
             '</div></div>')
+
+
+# Icon Lucide cho nút admin đổi bìa/tên (dùng currentColor để theo màu chữ)
+IMAGEPLUS_SVG = ('<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" '
+                 'stroke-width="2" stroke-linecap="round" stroke-linejoin="round">'
+                 '<path d="M16 5h6"/><path d="M19 2v6"/>'
+                 '<path d="M21 11.5V19a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h7.5"/>'
+                 '<path d="m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21"/>'
+                 '<circle cx="9" cy="9" r="2"/></svg>')
+
+SQUAREPEN_SVG = ('<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" '
+                 'stroke-width="2" stroke-linecap="round" stroke-linejoin="round">'
+                 '<path d="M12 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>'
+                 '<path d="M18.375 2.625a1 1 0 0 1 3 3l-9.013 9.014a2 2 0 0 1-.853.505'
+                 'l-2.873.84a.5.5 0 0 1-.62-.62l.84-2.873a2 2 0 0 1 .506-.852z"/></svg>')
 
 
 def home_card_html(s, bookmarked, admin=False):
     sid = s["id"]
     st = series_status(sid)
     t = html.escape(s["title"])
+    pen = (f'<button type="button" class="titleedit" data-op="title" '
+           f'title="Đổi tên">{SQUAREPEN_SVG}</button>') if admin else ""
+    covbtn = (f'<button type="button" class="covedit" data-op="cover" '
+              f'title="Đổi bìa">{IMAGEPLUS_SVG}</button>') if admin else ""
     return (f'<div class="card" data-sid="{html.escape(sid, quote=True)}">'
-            f'<a class="cardlink" href="{u("series", sid)}">'
+            + covbtn
+            + f'<a class="cardlink" href="{u("series", sid)}">'
             f'<img src="{cover_url(s)}" loading="lazy" alt="">'
-            f'<div class="cbody"><div class="ct" title="{t}">{t}</div>'
+            f'<div class="cbody"><div class="ct"><span class="cttext" title="{t}">{t}</span>'
+            + pen + '</div>'
             f'<div class="cm">{s["total"]} chaps · '
             f'<span class="st {st}">{STATUS_LABELS[st]}</span></div></div></a>'
             + bookmark_btn(bookmarked) + (admin_card_ctrl(st) if admin else "") + '</div>')
@@ -1707,21 +1741,28 @@ ADMIN_JS = """
     covin.value='';
   });
   if(grid) grid.addEventListener('click',function(e){
+    // Đổi bìa (ImagePlus, nổi trên ảnh) — nút nằm NGOÀI .cardlink
+    var cov=e.target.closest('.covedit');
+    if(cov){ e.preventDefault();
+      var ccard=cov.closest('.card'); if(!ccard) return;
+      covBtn=cov; covin.click(); return; }
+    // Đổi tên (SquarePen, cuối tên) — nút nằm TRONG thẻ <a> nên phải chặn điều hướng
+    var te=e.target.closest('.titleedit');
+    if(te){ e.preventDefault();
+      var tcard=te.closest('.card'), tsid=tcard?tcard.dataset.sid:null; if(!tsid) return;
+      var cur=((tcard.querySelector('.cttext')||{}).textContent||'').trim();
+      var nv=prompt('Tên hiển thị mới (để trống = về tên gốc theo folder):',cur);
+      if(nv===null) return;               // bấm Cancel
+      te.disabled=true;
+      post({op:'title',sid:tsid,title:nv}).then(function(res){
+        if(res&&res.ok) location.reload(); else { te.disabled=false; alert('Đổi tên thất bại.'); }
+      }).catch(function(){te.disabled=false;});
+      return;
+    }
     var b=e.target.closest('.adm button'); if(!b) return;
     e.preventDefault();
     var card=b.closest('.card'), sid=card?card.dataset.sid:null; if(!sid) return;
     var op=b.dataset.op;
-    if(op==='cover'){ covBtn=b; covin.click(); return; }
-    if(op==='title'){
-      var cur=((card.querySelector('.ct')||{}).textContent||'').trim();
-      var nv=prompt('Tên hiển thị mới (để trống = về tên gốc theo folder):',cur);
-      if(nv===null) return;               // bấm Cancel
-      b.disabled=true;
-      post({op:'title',sid:sid,title:nv}).then(function(res){
-        if(res&&res.ok) location.reload(); else { b.disabled=false; alert('Đổi tên thất bại.'); }
-      }).catch(function(){b.disabled=false;});
-      return;
-    }
     var body={sid:sid};
     if(op==='status'){ body.op='status';
       body.status=b.classList.contains('complete')?'ongoing':'complete'; }
