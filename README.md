@@ -26,12 +26,15 @@ Các script trong thư mục này, mỗi cái một việc:
 
 Một tool cho MỌI site, tự nhận site theo link (hiện hỗ trợ **Asura**, **Raven**, **Dilib**).
 
+> **Raven Scans đã đổi `ravenscans.org` → `ravenscans.net`** (và đổi cấu trúc URL chương) —
+> dùng link `.net` mới; link `.org` cũ vẫn được nhận.
+
 Cách nhanh nhất: **double-click `Tai truyen.bat`** → dán link → chọn chương → xong
 hỏi tải tiếp. Hoặc chạy lệnh:
 
 ```bat
 :: Tải cả bộ (chạy lại = tải bù chương mới, tự bỏ qua ảnh đã có)
-python comic_downloader.py https://ravenscans.org/series/rankers-return-remake/
+python comic_downloader.py https://ravenscans.net/series/rankers-return-remake/
 python comic_downloader.py https://asurascans.com/comics/overgeared-1d35e5bd
 
 :: Từ chương 1 đến 50 / chọn chương lẻ / kèm đóng .cbz
@@ -251,6 +254,10 @@ khi đăng nhập Windows, tự tạo link đọc từ xa và báo qua Telegram.
   - **Admin**: `/tai <link>` tải truyện (xếp hàng đợi, báo bắt đầu/xong) · `/update` cập
     nhật code · `/adminclaim` (người đầu tiên → admin gốc) · `/adminlist` ·
     `/adminadd <id>` · `/adminremove <id>`.
+- **`/tai` tải TUẦN TỰ**: mọi lệnh `/tai` (bất kỳ admin nào) vào **chung 1 hàng đợi**, tải
+  **1 bộ/lúc** (giữ nhịp chống chặn IP), chạy **ẩn** (không cửa sổ), báo "Tải xong" khi hoàn
+  tất. ⚠️ Đừng bấm `Tai hang loat.bat`/`Tai truyen.bat` tay lúc bot đang tải — 2 cái đó nằm
+  ngoài hàng đợi bot nên chạy **song song**, gấp đôi request → dễ bị chặn IP.
 - Token bot để trong `.reader-meta\notify-config.json` (**không** commit lên git).
 - **Tải hàng loạt** (chạy tay): `Tai hang loat.bat` — dán nhiều link vào `download-queue.txt`
   rồi chạy lần lượt (bỏ qua chương đã đủ nhờ dấu `.done`).
