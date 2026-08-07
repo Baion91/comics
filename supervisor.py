@@ -213,10 +213,24 @@ class Supervisor:
 
     # vòng NGHE Telegram: long-poll getUpdates, tự gom chat_id (cả 2 anh em) và trả
     # lời lệnh /link, /start. CHỈ một tiến trình được poll 1 token (đừng chạy 2 nơi).
+    @staticmethod
+    def _register_commands(token):
+        """Đăng ký danh sách lệnh -> Telegram hiện menu gợi ý khi gõ '/'."""
+        cmds = [
+            {"command": "link", "description": "Lấy link đọc hiện tại"},
+            {"command": "whoami", "description": "Xem chat_id của bạn"},
+            {"command": "tai", "description": "Tải truyện: /tai <link> (admin)"},
+            {"command": "update", "description": "Cập nhật code (admin)"},
+            {"command": "admin", "description": "Quản lý admin: list/claim/add/remove"},
+            {"command": "start", "description": "Đăng ký nhận link"},
+        ]
+        tg_api(token, "setMyCommands", {"commands": json.dumps(cmds, ensure_ascii=False)})
+
     def telegram_loop(self):
         token = self.cfg.get("bot_token")
         if not token:
             return
+        self._register_commands(token)
         offset = None
         while not self.stop.is_set():
             params = {"timeout": 25}
