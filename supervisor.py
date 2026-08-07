@@ -18,6 +18,7 @@ chat_id để trống -> supervisor tự điền khi bạn nhắn /start cho bot
 
 import json
 import os
+import queue
 import re
 import subprocess
 import sys
@@ -141,6 +142,7 @@ class Supervisor:
         self.tunnel = None
         self.link = None
         self.lock = threading.Lock()
+        self._dlq = queue.Queue()   # hàng đợi tải truyện qua bot (/tai)
 
     def reader_url(self):
         return f"http://127.0.0.1:{self.cfg.get('reader_port', 8080)}"
@@ -242,6 +244,13 @@ class Supervisor:
                         "disable_web_page_preview": "true"})
                 elif text.startswith("/update"):
                     self._run_bg(self.handle_update, token, cid)
+                elif text.startswith("/whoami"):
+                    tg_api(token, "sendMessage", {"chat_id": cid,
+                        "text": f"chat_id của bạn: {cid}"})
+                elif text.startswith("/admin"):
+                    self.handle_admin(token, cid, raw)
+                elif text.startswith("/tai"):
+                    self.handle_tai(token, cid, raw)
                 elif text.startswith("/start") or is_new:
                     tg_api(token, "sendMessage", {"chat_id": cid,
                         "text": "✅ Đã đăng ký nhận link đọc truyện.\n"
@@ -311,9 +320,7 @@ class Supervisor:
         lại reader để áp dụng. CHỈ cho chat có quyền: admin_chat_ids nếu được cấu
         hình, không thì mọi chat_ids đã đăng ký (bot ẩn danh nên đủ dùng cho 2 anh em;
         muốn siết thì thêm "admin_chat_ids": ["<chat_id_cua_ban>"] vào notify-config)."""
-        admins = [str(x) for x in (self.cfg.get("admin_chat_ids")
-                                   or self.cfg.get("chat_ids") or [])]
-        if str(cid) not in admins:
+        if not self._is_admin(cid):
             tg_api(token, "sendMessage", {"chat_id": cid,
                 "text": "⛔ Bạn không có quyền dùng /update."})
             return
@@ -347,10 +354,106 @@ class Supervisor:
             log(f"/update: {before[:7]} -> {after[:7]} ({len(files)} file). Restart reader.")
             self._kill(self.reader)     # run_reader tự bật lại với code mới trên đĩa
             tg_api(token, "sendMessage", {"chat_id": cid,
-                "text": f"✅ Đã cập nhật {len(files)} file, đang khởi động lại reader.{warn}",
+                "text": f"✅ Đã cập nhật {len(files)} file — reader chạy lại. "
+                        f"Link cũ vẫn dùng được (không đổi).{warn}",
                 "disable_web_page_preview": "true"})
         finally:
             self._updating = False
+
+    # --- Quyền admin (admin_chat_ids trong notify-config.json) -------------
+    def _admins(self):
+        return [str(x) for x in (self.cfg.get("admin_chat_ids") or [])]
+
+    def _is_admin(self, cid):
+        admins = self._admins()
+        return (not admins) or (str(cid) in admins)   # chưa set admin -> tạm ai cũng được
+
+    def _set_admins(self, ids):
+        seen, out = set(), []
+        for x in ids:
+            x = str(x)
+            if x and x not in seen:
+                seen.add(x); out.append(x)
+        self.cfg["admin_chat_ids"] = out
+        save_config(self.cfg)
+
+    def handle_admin(self, token, cid, raw):
+        """/admin list|claim|add <id>|remove <id> — quản lý admin_chat_ids."""
+        parts = raw.split()
+        sub = parts[1].lower() if len(parts) > 1 else "list"
+        admins = self._admins()
+        if sub == "claim":
+            if admins:
+                tg_api(token, "sendMessage", {"chat_id": cid,
+                    "text": "Đã có admin rồi — nhờ admin dùng /admin add <id>."})
+            else:
+                self._set_admins([cid])
+                tg_api(token, "sendMessage", {"chat_id": cid,
+                    "text": "✅ Bạn là admin đầu tiên. /admin add <id> để thêm người, "
+                            "/admin list để xem các chat đã nhắn bot."})
+            return
+        if not self._is_admin(cid):
+            tg_api(token, "sendMessage", {"chat_id": cid, "text": "⛔ Bạn không phải admin."})
+            return
+        if sub == "list":
+            ids = [str(x) for x in (self.cfg.get("chat_ids") or [])]
+            lines = [("⭐ " if i in admins else "• ") + i for i in ids] or ["(chưa ai nhắn bot)"]
+            tg_api(token, "sendMessage", {"chat_id": cid,
+                "text": "Chat đã đăng ký (⭐ = admin):\n" + "\n".join(lines)
+                        + "\n\n/admin add <id> | remove <id>"})
+        elif sub == "add" and len(parts) > 2:
+            self._set_admins(admins + [parts[2]])
+            tg_api(token, "sendMessage", {"chat_id": cid, "text": "✅ Thêm admin: " + parts[2]})
+        elif sub == "remove" and len(parts) > 2:
+            self._set_admins([a for a in admins if a != parts[2]])
+            tg_api(token, "sendMessage", {"chat_id": cid, "text": "✅ Bỏ admin: " + parts[2]})
+        else:
+            tg_api(token, "sendMessage", {"chat_id": cid,
+                "text": "Cú pháp: /admin list | claim | add <id> | remove <id>"})
+
+    # --- Tải truyện qua bot (/tai <url...>) -> hàng đợi, worker chạy nền ----
+    def handle_tai(self, token, cid, raw):
+        if not self._is_admin(cid):
+            tg_api(token, "sendMessage", {"chat_id": cid, "text": "⛔ Bạn không phải admin."})
+            return
+        urls = [w for w in raw.split()[1:] if w.startswith("http")]
+        if not urls:
+            tg_api(token, "sendMessage", {"chat_id": cid,
+                "text": "Gửi: /tai <link truyện> [link2 ...]"})
+            return
+        for u in urls:
+            self._dlq.put((u, cid))
+        tg_api(token, "sendMessage", {"chat_id": cid,
+            "text": f"📥 Đã thêm {len(urls)} truyện vào hàng đợi "
+                    f"(đang chờ: {self._dlq.qsize()})."})
+
+    def download_loop(self):
+        """Worker: lần lượt tải từng truyện trong hàng đợi (1 lượt/lúc), báo bắt
+        đầu/xong về đúng người gửi. Tải rất lâu nên chạy nền, KHÔNG timeout."""
+        while not self.stop.is_set():
+            try:
+                url, cid = self._dlq.get(timeout=1)
+            except queue.Empty:
+                continue
+            token = self.cfg.get("bot_token")
+            if token:
+                tg_api(token, "sendMessage", {"chat_id": cid,
+                    "text": f"⏳ Bắt đầu tải:\n{url}", "disable_web_page_preview": "true"})
+            try:
+                r = subprocess.run(
+                    [sys.executable, os.path.join(BASE_DIR, "comic_downloader.py"), url],
+                    cwd=BASE_DIR, creationflags=NO_WINDOW,
+                    capture_output=True, text=True, encoding="utf-8", errors="replace")
+                if r.returncode == 0:
+                    msg = f"✅ Tải xong:\n{url}"
+                else:
+                    tail = (r.stderr or r.stdout or "").strip().splitlines()
+                    msg = f"❌ Lỗi tải:\n{url}" + (("\n" + tail[-1]) if tail else "")
+            except Exception as e:
+                msg = f"❌ Lỗi tải:\n{url}\n{e}"
+            if token:
+                tg_api(token, "sendMessage", {"chat_id": cid, "text": msg,
+                    "disable_web_page_preview": "true"})
 
     def run(self):
         log("=== Supervisor khởi động ===")
@@ -366,7 +469,8 @@ class Supervisor:
         threads = [threading.Thread(target=self.run_reader, daemon=True),
                    threading.Thread(target=self.run_tunnel, daemon=True),
                    threading.Thread(target=self.health_loop, daemon=True),
-                   threading.Thread(target=self.telegram_loop, daemon=True)]
+                   threading.Thread(target=self.telegram_loop, daemon=True),
+                   threading.Thread(target=self.download_loop, daemon=True)]
         for t in threads:
             t.start()
         try:

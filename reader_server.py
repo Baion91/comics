@@ -871,9 +871,12 @@ body.jmode .sctl{display:flex}
 /* Admin (chỉ user 'admin'): toolbar trên lưới + hàng nút trên card */
 .admbar{display:flex;gap:8px;align-items:center;margin:0 0 12px;flex-wrap:wrap}
 .admmsg{font-size:13px;color:#8a8b96}
-.adm{display:flex;gap:4px;margin-top:6px;flex-wrap:wrap}
+.adm{display:flex;flex-direction:column;gap:6px;margin-top:6px}
+.adm .admstatus{width:100%}
+.admrow{display:flex;gap:6px}
+.admrow .admbtn{flex:1}
 .admbtn,.admstatus{border:1px solid #2c2d37;background:#1a1b22;color:#e8e8ea;border-radius:8px;
-  padding:5px 9px;font-size:13px;font-weight:600;cursor:pointer;line-height:1}
+  padding:6px 8px;font-size:13px;font-weight:600;cursor:pointer;line-height:1;text-align:center}
 .admbtn:hover,.admstatus:hover{background:#22232c}
 .admbtn:disabled,.admstatus:disabled{opacity:.5;cursor:default}
 .admstatus{background:#2a2130;border-color:#4a3a52}
@@ -1193,10 +1196,11 @@ def admin_card_ctrl(st):
     cls = "admstatus complete" if st == "complete" else "admstatus"
     return ('<div class="adm">'
             f'<button type="button" class="{cls}" data-op="status">{STATUS_LABELS[st]}</button>'
+            '<div class="admrow">'
             '<button type="button" class="admbtn" data-op="top" title="Lên đầu">⤒</button>'
             '<button type="button" class="admbtn" data-op="up" title="Lên">▲</button>'
             '<button type="button" class="admbtn" data-op="down" title="Xuống">▼</button>'
-            '</div>')
+            '</div></div>')
 
 
 def home_card_html(s, bookmarked, admin=False):
