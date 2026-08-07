@@ -998,7 +998,7 @@ a.ch.read{opacity:.45}
 @media(hover:hover){.sortbtn:hover{border-color:#7c3aed}}
 .chsearch{position:relative;margin-bottom:16px}
 .chsearch input{width:100%;background:#15161c;border:1px solid #2b2c34;color:#e8e8ea;
-  border-radius:12px;padding:13px 44px 13px 15px;font-size:15px;outline:none}
+  border-radius:12px;padding:13px 44px 13px 15px;font-size:16px;outline:none}
 .chsearch input:focus{border-color:#7c3aed}
 .chsearch input::placeholder{color:#6b6c78}
 .chsearch-ic{position:absolute;right:15px;top:50%;transform:translateY(-50%);
@@ -1231,7 +1231,9 @@ def html_home(lib, user=None):
     admbar = ('<div class="admbar"><button type="button" id="admrefresh" class="admbtn">↻ Refresh</button>'
               '<button type="button" id="admprune" class="admbtn">🧹 Dọn list</button>'
               '<span id="admmsg" class="admmsg"></span></div>') if admin else ""
-    grid = ('<section>' + sect_head("all", SECT_BOOK_SVG, "All Comics") + admbar
+    homesearch = ('<div class="chsearch"><input id="homeq" type="text" inputmode="search" '
+                  'autocomplete="off" placeholder="Search comics…">' + SEARCH_SVG + '</div>')
+    grid = ('<section>' + sect_head("all", SECT_BOOK_SVG, "All Comics") + homesearch + admbar
             + '<div class="grid" id="grid">'
             + "".join(home_card_html(s, s["id"] in bmset, admin) for s in ordered)
             + '</div></section>')
@@ -1586,6 +1588,15 @@ HOME_JS = """
     });
     renderFollows();
   }
+  // tìm truyện theo tên trong lưới All Comics
+  var hq=document.getElementById('homeq');
+  if(hq) hq.addEventListener('input',function(){
+    var term=hq.value.trim().toLowerCase();
+    [].forEach.call(grid.querySelectorAll('.card'),function(c){
+      var t=((c.querySelector('.ct')||{}).textContent||'').toLowerCase();
+      c.style.display=(!term || t.indexOf(term)>=0)?'':'none';
+    });
+  });
 })();
 """
 

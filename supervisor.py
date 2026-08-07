@@ -132,6 +132,21 @@ def notify_all(cfg, text):
                                       "disable_web_page_preview": "true"})
 
 
+HELP_TEXT = (
+    "📖 Toony bot — các lệnh:\n"
+    "/link — link đọc hiện tại\n"
+    "/whoami — xem chat_id của bạn\n"
+    "/help — danh sách lệnh\n\n"
+    "Admin:\n"
+    "/tai <link> — tải truyện (nhiều link cách nhau dấu cách)\n"
+    "/update — cập nhật code + restart reader\n"
+    "/admin list — xem chat đã đăng ký / admin\n"
+    "/admin claim — nhận quyền admin (khi chưa có ai)\n"
+    "/admin add <id> — thêm admin\n"
+    "/admin remove <id> — bỏ admin"
+)
+
+
 # --- Reader + cloudflared ---------------------------------------------------
 
 class Supervisor:
@@ -222,6 +237,7 @@ class Supervisor:
             {"command": "tai", "description": "Tải truyện: /tai <link> (admin)"},
             {"command": "update", "description": "Cập nhật code (admin)"},
             {"command": "admin", "description": "Quản lý admin: list/claim/add/remove"},
+            {"command": "help", "description": "Danh sách lệnh"},
             {"command": "start", "description": "Đăng ký nhận link"},
         ]
         tg_api(token, "setMyCommands", {"commands": json.dumps(cmds, ensure_ascii=False)})
@@ -261,6 +277,9 @@ class Supervisor:
                 elif text.startswith("/whoami"):
                     tg_api(token, "sendMessage", {"chat_id": cid,
                         "text": f"chat_id của bạn: {cid}"})
+                elif text.startswith("/help"):
+                    tg_api(token, "sendMessage", {"chat_id": cid, "text": HELP_TEXT,
+                        "disable_web_page_preview": "true"})
                 elif text.startswith("/admin"):
                     self.handle_admin(token, cid, raw)
                 elif text.startswith("/tai"):
