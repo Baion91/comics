@@ -276,6 +276,10 @@ khi đăng nhập Windows, tự tạo link đọc từ xa và báo qua Telegram.
   ngoài hàng đợi bot nên chạy **song song**, gấp đôi request → dễ bị chặn IP.
 - **Huỷ xong tải lại vẫn an toàn**: chương đã tải xong được đánh dấu `.done`, nên lần sau
   `/tai` lại đúng link đó sẽ **tự bỏ qua chương cũ**, chỉ tải tiếp phần còn dở.
+- **Sống qua restart server**: hàng đợi tải được **lưu ra đĩa** (`.reader-meta\bot-download-queue.json`),
+  nên khi cập nhật code (`cap-nhat.bat`) hay bật lại server, **truyện đang tải dở + hàng chờ
+  KHÔNG mất** — lên lại là bot tự tải tiếp (báo *"🔄 Đang tiếp tục"*), bỏ qua chương đã xong.
+  Muốn xem tiến độ real-time: mở/tail file **`.reader-meta\tai-run.log`** (output downloader).
 - Token bot để trong `.reader-meta\notify-config.json` (**không** commit lên git).
 - **Tải hàng loạt** (chạy tay): `Tai hang loat.bat` — dán nhiều link vào `download-queue.txt`
   rồi chạy lần lượt (bỏ qua chương đã đủ nhờ dấu `.done`).

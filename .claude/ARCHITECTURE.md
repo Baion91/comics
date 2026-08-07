@@ -105,6 +105,11 @@ cách chạy thật + decode thử ảnh.
   mtime+size), `check-ignore.txt` (trang một-màu đã duyệt là OK), `image-issues.json` (sổ
   ảnh cứu-vớt / hỏng-tại-nguồn, downloader + tool quét dùng chung), `download-log.txt`
   (nhật ký chương thiếu trang / hỏng nguồn khi tải),
+  `bot-download-queue.json` (**hàng đợi tải `/tai` BỀN HOÁ** — {jobs:[{url,cid,state:
+  pending|running,resumed}]}; supervisor ghi nguyên tử mỗi lần đổi, đọc lại lúc khởi động để
+  **tải tiếp qua restart**; job xong/lỗi/huỷ-lệnh bị xoá, job bị restart-giết ở lại → resume),
+  `tai-run.log` (output tiến trình `comic_downloader.py` do bot chạy — ghi thẳng ra file thay
+  PIPE để supervisor chết không vỡ pipe + tail xem real-time; tự cắt khi >2MB),
   `spreads.json` (cặp trang đôi đã ghép {left,right} theo sid/chương),
   `series-meta.json` ({sid: {status: complete|ongoing, order: N, title?: "tên hiển thị"}},
   key=tên folder; status thiếu=ongoing; `order` = thứ tự Home, sửa tay được, truyện mới

@@ -2,9 +2,13 @@
 
 ## Đang làm / dở dang
 - Không có việc code dở. Vừa xong đợt: **(1) 4 lệnh huỷ tải qua bot; (2) web admin đổi tên
-  hiển thị + đổi ảnh bìa**. Verify xong (reader chạy live port 8099: title override + cover
-  upload OK; unit test drain queue + routing OK). **CHƯA push GitHub, CHƯA deploy.** Vì đã sửa
-  `supervisor.py` → deploy phải bằng `cap-nhat.bat`/`server-BAT` (không dùng `/update` được).
+  hiển thị + đổi ảnh bìa (UI icon ImagePlus/SquarePen); (3) hàng đợi tải BỀN HOÁ ra đĩa +
+  tự tải tiếp sau khi restart supervisor + ghi log downloader ra file.** Verify xong (unit +
+  integration test cho queue/resume/cancel/log-file; reader live 8099 cho title/cover).
+  **CHƯA push GitHub, CHƯA deploy.** Sửa `supervisor.py` → deploy bằng `cap-nhat.bat`.
+- **Hiện trạng server**: hôm nay tải spirit-farmer + dilib bị mất do các lần deploy hôm nay
+  giết supervisor (bản CŨ chưa có persist). Sau khi deploy bản mới, `/tai` lại 2 link đó (hoặc
+  đã tự có nếu... không, hàng đợi cũ đã mất) — cần tải lại thủ công 1 lần.
 - Đợt trước đó: hệ tài khoản + đồng bộ git + Telegram bot + web admin (đã push GitHub).
 
 ## Kiến trúc hiện tại (đã đổi nhiều so với bản 05/08)
@@ -46,6 +50,18 @@
   người `/adminclaim`), sau đó strict theo danh sách. `_is_admin` gác `/update`,`/tai`,`/admin*`.
 
 ## Quyết định gần đây (mới nhất trước)
+- 07/08: **Hàng đợi tải BỀN HOÁ + tự resume qua restart** (`supervisor.py`). Vì sao: mỗi
+  `cap-nhat.bat` → `call server-BAT` → dòng 30 `Stop-Process` giết supervisor cũ → downloader
+  (con) vỡ pipe stdout chết + hàng đợi RAM mất sạch (đó là lý do spirit-farmer đứt 11:54).
+  Sửa: bỏ `queue.Queue` → **danh sách `_jobs` bền hoá ra `.reader-meta\bot-download-queue.json`**
+  (ghi nguyên tử, Condition thay Lock để đánh thức worker). Job xong/lỗi/huỷ-lệnh → xoá khỏi
+  file; job bị **restart giết đột ngột** → code xoá không kịp chạy → **ở lại file → khởi động
+  sau tự tải tiếp** (resume bỏ qua `.done`). Lúc boot `resume_jobs()`: **giết downloader lạc**
+  (`_kill_stray_downloaders`, vì server-BAT KHÔNG dọn comic_downloader.py → chống tải trùng)
+  rồi nạp lại hàng đợi. Job từng 'running' báo **"🔄 Đang tiếp tục"**, khác 'pending' báo "⏳".
+  **Output downloader ghi ra FILE** `.reader-meta\tai-run.log` (Popen `-u`, `stdout=file` thay
+  PIPE) → supervisor chết không vỡ pipe + tail xem real-time + đọc đuôi lỗi từ file. File queue
+  nằm trong `.reader-meta/*` (gitignore) nên `git reset --hard` không đụng.
 - 07/08: **4 lệnh huỷ tải bot** (`/stop` dừng+xoá-hàng-chờ của mình, `/killnow` chỉ kill,
   `/clearq` chỉ xoá hàng chờ, `/stopall` dừng+xoá tất cả của mọi người). Worker chuyển
   `subprocess.run`→**Popen** để kill được (`self._dl_proc`/`_dl_cur`/`_dl_cancelled`); huỷ báo
@@ -87,7 +103,10 @@
 ## Việc tiếp theo
 - **Push GitHub (`day-len.bat`) rồi deploy `cap-nhat.bat`** trên server — đợt này sửa
   `supervisor.py` nên KHÔNG dùng `/update` được. Nghiệm thu LIVE: 4 lệnh huỷ (`/stop`,
-  `/killnow`, `/clearq`, `/stopall`), nút web admin ✏️ đổi tên + 🖼️ đổi bìa.
+  `/killnow`, `/clearq`, `/stopall`), nút web admin đổi tên/đổi bìa, và **thử hàng đợi sống
+  qua restart**: `/tai` 1 truyện → chạy `cap-nhat.bat` giữa chừng → sau khi lên lại bot phải
+  báo "🔄 Đang tiếp tục". Tail `.reader-meta\tai-run.log` xem tiến độ.
+- **Tải lại spirit-farmer + dilib** (mất trong các lần deploy hôm nay, trước khi có persist).
 - Đợt cũ chờ nghiệm thu LIVE: `/help`, `/adminclaim`, `/tai`, search home, guest bookmark iPhone.
 - Server mạng ra internet chập chờn (getUpdates/tunnel hay timeout) — nếu kéo dài, cân nhắc
   **Tailscale/LAN** thay quick-tunnel cho ổn định.
@@ -99,14 +118,18 @@
 - **Sửa `supervisor.py`** phải deploy bằng `cap-nhat.bat`/`server-BAT` (`/update` chỉ nạp
   lại reader, không nạp lại chính supervisor — bot có cảnh báo dòng này).
 - **Đừng bấm `server-BAT` khi đã có supervisor chạy** trừ khi muốn restart (bản mới tự kill
-  cũ nên an toàn, nhưng nhớ chỉ để 1 supervisor poll 1 token, kẻo 409).
+  cũ nên an toàn, nhưng nhớ chỉ để 1 supervisor poll 1 token, kẻo 409). Từ nay restart
+  KHÔNG còn mất tải: hàng đợi bền hoá + tự resume (job đang chạy sẽ tải tiếp từ chỗ dở).
 - Sửa **CODE** `reader_server.py` phải restart reader; sửa tay **`series-meta.json`** thì F5
   (mtime tự nạp). Prune/reorder/status trong web admin ăn ngay (không cần restart).
 - `.reader-meta/notify-config.json` chứa **token thật** — không commit (đã gitignore).
-- **Tải song song**: `/tai` qua bot dùng **1 hàng đợi + 1 worker → tuần tự** (giữ đúng van
-  điều tốc, "1 ảnh 1 lần"). NHƯNG `Tai hang loat.bat`/`Tai truyen.bat` bấm tay là tiến trình
-  NGOÀI hàng đợi bot → chạy song song với worker bot = gấp đôi request, tăng rủi ro chặn IP.
-  Đừng chạy tay lúc bot đang tải (và ngược lại).
+- **Tải song song**: `/tai` qua bot dùng **1 hàng đợi (bền hoá) + 1 worker → tuần tự** (giữ
+  đúng van điều tốc, "1 ảnh 1 lần"). NHƯNG `Tai hang loat.bat`/`Tai truyen.bat` bấm tay là tiến
+  trình NGOÀI hàng đợi bot → chạy song song với worker bot = gấp đôi request, tăng rủi ro chặn
+  IP. Đừng chạy tay lúc bot đang tải (và ngược lại). Lúc supervisor **khởi động** nó tự **giết
+  mọi `comic_downloader.py` lạc** trước khi resume (chống 2 tiến trình cùng tải) — nên tránh
+  chạy tay đúng lúc supervisor đang bật lại.
 - Download qua bot chạy **ẩn (CREATE_NO_WINDOW)** — không có cửa sổ là bình thường; theo dõi
-  bằng tin Telegram "Tải xong"/"Lỗi" hoặc folder `downloads\`.
+  bằng tin Telegram "Tải xong"/"Lỗi", folder `downloads\`, hoặc **tail `.reader-meta\tai-run.log`**
+  (output downloader ghi vào file này, real-time).
 - Script ad-hoc in tiếng Việt cần `PYTHONIOENCODING=utf-8` (console cp1252).

@@ -18,7 +18,6 @@ chat_id để trống -> supervisor tự điền khi bạn nhắn /start cho bot
 
 import json
 import os
-import queue
 import re
 import subprocess
 import sys
@@ -35,6 +34,12 @@ LINK_FILE = os.path.join(META_DIR, "current-link.txt")
 LOG_FILE = os.path.join(META_DIR, "supervisor-log.txt")
 PID_FILE = os.path.join(META_DIR, "supervisor.pid")
 CLOUDFLARED = os.path.join(META_DIR, "cloudflared.exe")
+# Hàng đợi tải BỀN HOÁ ra đĩa (sống qua restart supervisor). Gitignore .reader-meta/*
+# nên git reset --hard của cap-nhat.bat KHÔNG đụng file này. Tên khác download-queue.txt
+# (file của tool tải-tay Tai hang loat.bat) để khỏi lẫn.
+QUEUE_FILE = os.path.join(META_DIR, "bot-download-queue.json")
+DL_LOG_FILE = os.path.join(META_DIR, "tai-run.log")   # output downloader (tail xem tiến độ)
+DL_LOG_MAX = 2_000_000    # cắt log khi vượt ~2MB
 
 TUNNEL_RE = re.compile(r"https://[a-z0-9-]+\.trycloudflare\.com")
 HEALTH_EVERY = 60          # giây giữa 2 lần health-check
@@ -161,10 +166,13 @@ class Supervisor:
         self.tunnel = None
         self.link = None
         self.lock = threading.Lock()
-        self._dlq = queue.Queue()   # hàng đợi tải truyện qua bot (/tai)
-        self._dlq_lock = threading.Lock()  # gác thao tác gom/lọc hàng đợi (cancel)
+        # Hàng đợi tải = DANH SÁCH bền hoá (không dùng queue.Queue để lưu ra đĩa được).
+        # _jobs: [{"url","cid","state":pending|running,"resumed":bool}]. Condition vừa
+        # làm khoá vừa đánh thức worker khi có job mới.
+        self._dlq_lock = threading.Condition()
+        self._jobs = []
         self._dl_proc = None        # tiến trình comic_downloader đang chạy (để kill)
-        self._dl_cur = None         # (url, cid) truyện đang tải — để biết 'của ai'
+        self._dl_cur = None         # job dict đang tải — để biết 'của ai'
         self._dl_cancelled = False  # cờ: lần kill này là do người dùng huỷ (không phải lỗi)
 
     def reader_url(self):
@@ -482,6 +490,67 @@ class Supervisor:
             tg_api(token, "sendMessage", {"chat_id": cid,
                 "text": "Cú pháp: /adminlist | /adminclaim | /adminadd <id> | /adminremove <id>"})
 
+    # --- Hàng đợi tải BỀN HOÁ (sống qua restart supervisor) -----------------
+    def _save_jobs_locked(self):
+        """Ghi _jobs ra đĩa (nguyên tử). PHẢI đang giữ self._dlq_lock khi gọi."""
+        try:
+            os.makedirs(META_DIR, exist_ok=True)
+            tmp = QUEUE_FILE + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump({"jobs": self._jobs}, f, ensure_ascii=False, indent=1)
+            os.replace(tmp, QUEUE_FILE)
+        except OSError as e:
+            log(f"! Không ghi được hàng đợi tải: {e}")
+
+    @staticmethod
+    def _load_jobs():
+        """Đọc hàng đợi đã bền hoá lúc khởi động. Job 'running' (bị restart cắt giữa
+        chừng) -> đánh 'resumed' để báo 'đang tiếp tục'. Tất cả về 'pending' để chạy lại."""
+        try:
+            with open(QUEUE_FILE, encoding="utf-8") as f:
+                data = json.load(f)
+        except (OSError, ValueError):
+            return []
+        raw = data.get("jobs") if isinstance(data, dict) else None
+        out = []
+        if isinstance(raw, list):
+            for j in raw:
+                if isinstance(j, dict) and j.get("url"):
+                    out.append({"url": str(j["url"]), "cid": j.get("cid"),
+                                "state": "pending",
+                                "resumed": j.get("state") == "running"})
+        return out
+
+    def _kill_stray_downloaders(self):
+        """Giết mọi comic_downloader.py còn sót từ supervisor phiên trước — server-BAT
+        KHÔNG dọn nó (chỉ giết supervisor.py/reader_server.py) nên con mồ côi có thể còn
+        sống. Dọn TRƯỚC khi resume để không có 2 tiến trình cùng tải 1 truyện (chống trùng
+        request -> chặn IP). Windows-only (server là Windows)."""
+        if os.name != "nt":
+            return
+        try:
+            subprocess.run(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
+                "-Command",
+                "Get-CimInstance Win32_Process -Filter \"Name='python.exe' OR "
+                "Name='pythonw.exe'\" | Where-Object { $_.CommandLine -match "
+                "'comic_downloader\\.py' } | ForEach-Object { Stop-Process -Id "
+                "$_.ProcessId -Force -ErrorAction SilentlyContinue }"],
+                creationflags=NO_WINDOW, timeout=30,
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except Exception as e:
+            log(f"! Không dọn được downloader lạc: {e}")
+
+    def resume_jobs(self):
+        """Lúc khởi động: dọn downloader lạc rồi nạp lại hàng đợi đã bền hoá -> worker
+        tự tải tiếp (resume bỏ qua chương .done). Gọi TRƯỚC khi start các luồng."""
+        self._kill_stray_downloaders()
+        loaded = self._load_jobs()
+        if loaded:
+            with self._dlq_lock:
+                self._jobs = loaded
+                self._save_jobs_locked()
+            log(f"Nạp lại {len(loaded)} truyện trong hàng đợi từ phiên trước -> tải tiếp.")
+
     # --- Tải truyện qua bot (/tai <url...>) -> hàng đợi, worker chạy nền ----
     def handle_tai(self, token, cid, raw):
         if not self._is_admin(cid):
@@ -492,29 +561,29 @@ class Supervisor:
             tg_api(token, "sendMessage", {"chat_id": cid,
                 "text": "Gửi: /tai <link truyện> [link2 ...]"})
             return
-        for u in urls:
-            self._dlq.put((u, cid))
+        with self._dlq_lock:
+            for u in urls:
+                self._jobs.append({"url": u, "cid": cid, "state": "pending", "resumed": False})
+            self._save_jobs_locked()
+            pending = sum(1 for j in self._jobs if j["state"] == "pending")
+            self._dlq_lock.notify()   # đánh thức worker
         tg_api(token, "sendMessage", {"chat_id": cid,
-            "text": f"📥 Đã thêm {len(urls)} truyện vào hàng đợi "
-                    f"(đang chờ: {self._dlq.qsize()})."})
+            "text": f"📥 Đã thêm {len(urls)} truyện vào hàng đợi (đang chờ: {pending})."})
 
     def _drain_queue(self, cid=None):
-        """Lấy hết hàng đợi ra, GIỮ LẠI các URL không thuộc diện huỷ (bỏ lại vào
-        hàng đợi), trả về số URL đã xoá. cid=None -> xoá tất cả; có cid -> chỉ xoá
-        URL do chat đó gửi. Có khoá để không giẫm chân worker/lệnh khác."""
-        removed, keep = 0, []
+        """Xoá các job ĐANG CHỜ (pending) khỏi hàng đợi + file, trả số đã xoá.
+        cid=None -> xoá tất cả; có cid -> chỉ của chat đó. KHÔNG đụng job đang chạy
+        (việc kill do handle_cancel lo). Có khoá để không giẫm worker/lệnh khác."""
+        removed = 0
         with self._dlq_lock:
-            while True:
-                try:
-                    item = self._dlq.get_nowait()
-                except queue.Empty:
-                    break
-                if cid is None or str(item[1]) == str(cid):
+            keep = []
+            for j in self._jobs:
+                if j["state"] == "pending" and (cid is None or str(j["cid"]) == str(cid)):
                     removed += 1
                 else:
-                    keep.append(item)
-            for item in keep:
-                self._dlq.put(item)
+                    keep.append(j)
+            self._jobs = keep
+            self._save_jobs_locked()
         return removed
 
     def handle_cancel(self, token, cid, kill, clear, scope_all):
@@ -526,71 +595,117 @@ class Supervisor:
         parts = []
         # 1) Kill truyện đang tải (nếu yêu cầu)
         if kill:
-            with self.lock:
+            with self._dlq_lock:
                 cur = self._dl_cur
                 proc = self._dl_proc
             if not cur or not proc:
                 parts.append("Không có truyện nào đang tải.")
-            elif not scope_all and str(cur[1]) != str(cid):
+            elif not scope_all and str(cur.get("cid")) != str(cid):
                 parts.append("Truyện đang tải không phải của bạn "
                              "(dùng /stopall nếu muốn dừng tất cả).")
             else:
-                self._dl_cancelled = True
+                self._dl_cancelled = True     # huỷ tay -> worker xoá job khỏi file (khỏi resume)
                 self._kill(proc)
-                parts.append(f"⏹ Đã dừng truyện đang tải:\n{cur[0]}")
+                parts.append(f"⏹ Đã dừng truyện đang tải:\n{cur['url']}")
         # 2) Xoá hàng chờ (nếu yêu cầu)
         if clear:
             n = self._drain_queue(cid=None if scope_all else cid)
+            with self._dlq_lock:
+                left = sum(1 for j in self._jobs if j["state"] == "pending")
             scope_txt = "" if scope_all else " của bạn"
-            parts.append(f"🗑 Đã xoá {n} truyện trong hàng chờ{scope_txt} "
-                         f"(còn lại: {self._dlq.qsize()}).")
+            parts.append(f"🗑 Đã xoá {n} truyện trong hàng chờ{scope_txt} (còn lại: {left}).")
         tg_api(token, "sendMessage", {"chat_id": cid,
             "text": "\n".join(parts) if parts else "Không có gì để huỷ.",
             "disable_web_page_preview": "true"})
 
+    @staticmethod
+    def _read_log_tail(start_pos, maxchars=200):
+        """Đọc phần log downloader ghi TỪ vị trí start_pos (đầu của job này) -> lấy
+        dòng cuối có nội dung làm đuôi báo lỗi. Bỏ \\r (downloader ghi đè tiến độ)."""
+        try:
+            with open(DL_LOG_FILE, "r", encoding="utf-8", errors="replace") as f:
+                f.seek(start_pos)
+                text = f.read()
+        except OSError:
+            return ""
+        lines = [l for l in text.replace("\r", "\n").splitlines() if l.strip()]
+        return lines[-1][:maxchars] if lines else ""
+
     def download_loop(self):
-        """Worker: lần lượt tải từng truyện trong hàng đợi (1 lượt/lúc), báo bắt
-        đầu/xong về đúng người gửi. Tải rất lâu nên chạy nền, KHÔNG timeout.
-        Dùng Popen (không phải run) để lệnh /stop, /killnow kill được tiến trình."""
+        """Worker: tải tuần tự từng job trong _jobs (bền hoá ra đĩa), 1 lượt/lúc.
+        Output downloader ghi ra FILE (không PIPE) -> supervisor chết không làm vỡ pipe
+        + tail xem tiến độ real-time. Job xong (kể cả lỗi) -> xoá khỏi file; job bị
+        RESTART giết đột ngột -> code xoá không kịp chạy -> ở lại file -> phiên sau resume."""
         while not self.stop.is_set():
-            try:
-                url, cid = self._dlq.get(timeout=1)
-            except queue.Empty:
-                continue
+            with self._dlq_lock:
+                job = next((j for j in self._jobs if j["state"] == "pending"), None)
+                if job is None:
+                    self._dlq_lock.wait(timeout=1)     # ngủ tới khi có job mới / hết 1s
+                    continue
+                job["state"] = "running"
+                self._save_jobs_locked()
+                self._dl_proc = None
+                self._dl_cur = job
+                self._dl_cancelled = False
+            url, cid = job["url"], job.get("cid")
             token = self.cfg.get("bot_token")
-            if token:
+            if token and cid is not None:
                 tg_api(token, "sendMessage", {"chat_id": cid,
-                    "text": f"⏳ Bắt đầu tải:\n{url}", "disable_web_page_preview": "true"})
-            self._dl_cancelled = False
+                    "text": (f"🔄 Đang tiếp tục truyện bị gián đoạn:\n{url}"
+                             if job.get("resumed") else f"⏳ Bắt đầu tải:\n{url}"),
+                    "disable_web_page_preview": "true"})
+            start_pos = 0
             try:
-                proc = subprocess.Popen(
-                    [sys.executable, os.path.join(BASE_DIR, "comic_downloader.py"), url],
-                    cwd=BASE_DIR, creationflags=NO_WINDOW,
-                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                    text=True, encoding="utf-8", errors="replace")
-                with self.lock:
-                    self._dl_proc, self._dl_cur = proc, (url, cid)
-                out, _ = proc.communicate()            # chờ tải xong (không timeout)
-                rc = proc.returncode
+                try:      # cắt log nếu phình to
+                    if os.path.getsize(DL_LOG_FILE) > DL_LOG_MAX:
+                        open(DL_LOG_FILE, "w", encoding="utf-8").close()
+                except OSError:
+                    pass
+                stamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                with open(DL_LOG_FILE, "a", encoding="utf-8") as f:
+                    f.write(f"\n=== [{stamp}] "
+                            f"{'TIẾP TỤC' if job.get('resumed') else 'BẮT ĐẦU'}: {url} ===\n")
+                try:
+                    start_pos = os.path.getsize(DL_LOG_FILE)
+                except OSError:
+                    start_pos = 0
+                logf = open(DL_LOG_FILE, "ab")            # con ghi thẳng vào file (nối tiếp)
+                try:
+                    proc = subprocess.Popen(              # -u: không buffer -> tail real-time
+                        [sys.executable, "-u",
+                         os.path.join(BASE_DIR, "comic_downloader.py"), url],
+                        cwd=BASE_DIR, creationflags=NO_WINDOW,
+                        stdout=logf, stderr=subprocess.STDOUT)
+                    with self._dlq_lock:
+                        self._dl_proc = proc
+                    proc.wait()                           # chờ tải xong (không timeout)
+                    rc = proc.returncode
+                finally:
+                    logf.close()
                 if self._dl_cancelled:
-                    # Bị huỷ tay: chương đã xong đã đánh dấu .done -> lần sau /tai lại tự
-                    # bỏ qua chương cũ, chỉ tải tiếp phần dở. Không coi là lỗi.
                     msg = (f"⏹ Đã huỷ tải:\n{url}\n"
                            "(Tải lại bằng /tai sẽ tự bỏ qua chương đã xong, "
                            "tiếp tục từ chỗ dở.)")
                 elif rc == 0:
                     msg = f"✅ Tải xong:\n{url}"
                 else:
-                    tail = (out or "").strip().splitlines()
-                    msg = f"❌ Lỗi tải:\n{url}" + (("\n" + tail[-1]) if tail else "")
+                    tail = self._read_log_tail(start_pos)
+                    msg = f"❌ Lỗi tải:\n{url}" + (("\n" + tail) if tail else "")
             except Exception as e:
                 msg = f"❌ Lỗi tải:\n{url}\n{e}"
-            finally:
-                with self.lock:
-                    self._dl_proc, self._dl_cur = None, None
-            if token:
+            # Gửi báo TRƯỚC, rồi mới xoá job khỏi file: nếu bị giết giữa 2 việc thì thà
+            # báo trùng (resume chạy lại thấy .done -> báo 'xong' lần nữa) còn hơn mất tin.
+            if token and cid is not None:
                 tg_api(token, "sendMessage", {"chat_id": cid, "text": msg,
                     "disable_web_page_preview": "true"})
+            with self._dlq_lock:
+                self._dl_proc = None
+                self._dl_cur = None
+                try:
+                    self._jobs.remove(job)
+                except ValueError:
+                    pass
+                self._save_jobs_locked()
 
     def run(self):
         log("=== Supervisor khởi động ===")
@@ -603,6 +718,7 @@ class Supervisor:
         if not self.cfg.get("bot_token"):
             log("! LƯU Ý: notify-config.json chưa có bot_token — reader vẫn chạy, "
                 "chỉ là không gửi Telegram được.")
+        self.resume_jobs()   # dọn downloader lạc + nạp lại hàng đợi -> tải tiếp sau restart
         threads = [threading.Thread(target=self.run_reader, daemon=True),
                    threading.Thread(target=self.run_tunnel, daemon=True),
                    threading.Thread(target=self.health_loop, daemon=True),
