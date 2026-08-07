@@ -260,46 +260,54 @@ class Supervisor:
                 self.stop.wait(5)   # lỗi/mạng -> nghỉ chút rồi thử lại
                 continue
             for upd in res.get("result", []):
-                offset = upd["update_id"] + 1          # xác nhận đã xử lý
-                msg = upd.get("message") or upd.get("channel_post") or {}
-                chat = msg.get("chat") or {}
-                cid = chat.get("id")
-                if cid is None:
-                    continue
-                is_new = add_chat(self.cfg, cid)       # tự đăng ký người nhận
-                raw = (msg.get("text") or "").strip()  # GIỮ nguyên hoa/thường cho URL/tham số
-                text = raw.lower()                     # chỉ để so khớp từ khóa lệnh
-                link = self.cur_link()
-                if text.startswith("/link") or text.startswith("/latest"):
-                    tg_api(token, "sendMessage", {"chat_id": cid,
-                        "text": f"📖 Link hiện tại:\n{link}" if link
-                                else "Chưa có link (server đang khởi động). Thử lại chút nữa.",
-                        "disable_web_page_preview": "true"})
-                elif text.startswith("/update"):
-                    self._run_bg(self.handle_update, token, cid)
-                elif text.startswith("/whoami"):
-                    tg_api(token, "sendMessage", {"chat_id": cid,
-                        "text": f"chat_id của bạn: {cid}"})
-                elif text.startswith("/help"):
-                    tg_api(token, "sendMessage", {"chat_id": cid, "text": HELP_TEXT,
-                        "disable_web_page_preview": "true"})
-                elif text.startswith("/adminclaim"):
-                    self.handle_admin(token, cid, "claim", raw)
-                elif text.startswith("/adminlist"):
-                    self.handle_admin(token, cid, "list", raw)
-                elif text.startswith("/adminadd"):
-                    self.handle_admin(token, cid, "add", raw)
-                elif text.startswith("/adminremove"):
-                    self.handle_admin(token, cid, "remove", raw)
-                elif text.startswith("/tai"):
-                    self.handle_tai(token, cid, raw)
-                elif text.startswith("/start") or is_new:
-                    tg_api(token, "sendMessage", {"chat_id": cid,
-                        "text": "✅ Đã đăng ký nhận link đọc truyện.\n"
-                                + (f"📖 Link hiện tại:\n{link}" if link
-                                   else "Sẽ gửi link khi có.")
-                                + "\n\nGõ /link bất cứ lúc nào để lấy link mới nhất.",
-                        "disable_web_page_preview": "true"})
+                offset = upd["update_id"] + 1          # xác nhận đã xử lý (kể cả lệnh lỗi)
+                try:
+                    self._process_update(token, upd)
+                except Exception as e:
+                    log(f"! Lỗi xử lý lệnh Telegram: {e}")   # 1 lệnh lỗi KHÔNG làm chết bot
+
+    def _process_update(self, token, upd):
+        msg = upd.get("message") or upd.get("channel_post") or {}
+        chat = msg.get("chat") or {}
+        cid = chat.get("id")
+        if cid is None:
+            return
+        is_new = add_chat(self.cfg, cid)       # tự đăng ký người nhận
+        raw = (msg.get("text") or "").strip()  # GIỮ nguyên hoa/thường cho URL/tham số
+        text = raw.lower()                     # chỉ để so khớp từ khóa lệnh
+        if text.startswith("/"):
+            log(f"Lệnh Telegram từ {cid}: {text[:50]}")
+        link = self.cur_link()
+        if text.startswith("/link") or text.startswith("/latest"):
+            tg_api(token, "sendMessage", {"chat_id": cid,
+                "text": f"📖 Link hiện tại:\n{link}" if link
+                        else "Chưa có link (server đang khởi động). Thử lại chút nữa.",
+                "disable_web_page_preview": "true"})
+        elif text.startswith("/update"):
+            self._run_bg(self.handle_update, token, cid)
+        elif text.startswith("/whoami"):
+            tg_api(token, "sendMessage", {"chat_id": cid,
+                "text": f"chat_id của bạn: {cid}"})
+        elif text.startswith("/help"):
+            tg_api(token, "sendMessage", {"chat_id": cid, "text": HELP_TEXT,
+                "disable_web_page_preview": "true"})
+        elif text.startswith("/adminclaim"):
+            self.handle_admin(token, cid, "claim", raw)
+        elif text.startswith("/adminlist"):
+            self.handle_admin(token, cid, "list", raw)
+        elif text.startswith("/adminadd"):
+            self.handle_admin(token, cid, "add", raw)
+        elif text.startswith("/adminremove"):
+            self.handle_admin(token, cid, "remove", raw)
+        elif text.startswith("/tai"):
+            self.handle_tai(token, cid, raw)
+        elif text.startswith("/start") or is_new:
+            tg_api(token, "sendMessage", {"chat_id": cid,
+                "text": "✅ Đã đăng ký nhận link đọc truyện.\n"
+                        + (f"📖 Link hiện tại:\n{link}" if link
+                           else "Sẽ gửi link khi có.")
+                        + "\n\nGõ /link bất cứ lúc nào để lấy link mới nhất.",
+                "disable_web_page_preview": "true"})
 
     # health-check: tunnel còn sống thật không (khác với 'tiến trình còn chạy')
     def health_loop(self):
