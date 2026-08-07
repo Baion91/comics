@@ -106,9 +106,12 @@ cách chạy thật + decode thử ảnh.
   ảnh cứu-vớt / hỏng-tại-nguồn, downloader + tool quét dùng chung), `download-log.txt`
   (nhật ký chương thiếu trang / hỏng nguồn khi tải),
   `spreads.json` (cặp trang đôi đã ghép {left,right} theo sid/chương),
-  `series-meta.json` ({sid: {status: complete|ongoing, order: N}}, key=tên folder;
-  status thiếu=ongoing; `order` = thứ tự Home, sửa tay được, truyện mới auto=max+1;
-  server nạp lại theo mtime + thêm truyện mới append-only — không đè giá trị sửa tay),
+  `series-meta.json` ({sid: {status: complete|ongoing, order: N, title?: "tên hiển thị"}},
+  key=tên folder; status thiếu=ongoing; `order` = thứ tự Home, sửa tay được, truyện mới
+  auto=max+1; `title` (tùy chọn) = tên hiển thị đè lên tên-suy-từ-folder, do web admin đặt —
+  đổi TÊN HIỂN THỊ chứ KHÔNG đổi folder/sid nên không mất bookmark/tiến-trình; rỗng/không có
+  = dùng tên folder. server nạp lại theo mtime + thêm truyện mới append-only — không đè giá
+  trị sửa tay),
   `user-data.json` (HỒ SƠ ĐỌC CHUNG: {bookmarks:[sid], progress:{sid:{rel,y,name}},
   read:{sid:[rel]}}; 1 hồ sơ cho mọi client, ghi qua `/api/state`, nạp theo mtime.
   **Reset = xoá cả file khi server ĐANG TẮT** — xoá lúc chạy có thể bị ghi đè lại từ

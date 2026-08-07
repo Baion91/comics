@@ -12,6 +12,8 @@ Chạy:  python reader_server.py  (tùy chọn: --port 8080)
 """
 
 import argparse
+import base64
+import binascii
 import html
 import io
 import json
@@ -186,6 +188,11 @@ def get_library():
         for sid in list(series):
             if sid + "_webp" in series:
                 series.pop(sid, None)
+        # tên hiển thị do admin đặt (nếu có) -> đè lên tên suy từ folder, TRƯỚC khi sort
+        for sid, s in series.items():
+            ov = series_title_override(sid)
+            if ov:
+                s["title"] = ov
         series = dict(sorted(series.items(), key=lambda kv: natkey(kv[1]["title"])))
         sync_series_meta(series)  # tự thêm truyện mới + đánh số order vào series-meta.json
         _lib_cache = (time.time(), series)
@@ -303,6 +310,17 @@ def series_status(sid):
     """'complete' nếu đã đánh dấu hoàn thành, ngược lại 'ongoing' (mặc định)."""
     m = load_series_meta().get(sid)
     return "complete" if isinstance(m, dict) and m.get("status") == "complete" else "ongoing"
+
+
+def series_title_override(sid):
+    """Tên hiển thị do admin đặt trong series-meta.json (trường 'title'), hoặc None.
+    Chỉ ĐỔI TÊN HIỂN THỊ — sid/folder giữ nguyên nên không đụng bookmark/tiến trình."""
+    m = load_series_meta().get(sid)
+    if isinstance(m, dict):
+        t = m.get("title")
+        if isinstance(t, str) and t.strip():
+            return t.strip()
+    return None
 
 
 def _order_value(m):
@@ -629,6 +647,67 @@ def reorder_series(sid, move):
     return True
 
 
+def set_series_title(sid, title):
+    """Đặt tên hiển thị cho 1 truyện (chỉ đổi trường 'title' trong series-meta.json,
+    KHÔNG đổi folder/sid). title rỗng -> xoá override, quay về tên suy từ folder."""
+    if sid not in get_library():
+        return False
+    t = clean_display(title)
+    if len(t) > 120:
+        return False
+    meta = dict(load_series_meta())
+    m = dict(meta.get(sid) or {})
+    if t:
+        m["title"] = t
+    else:
+        m.pop("title", None)
+    meta[sid] = m
+    _write_series_meta(meta)
+    bust_library_cache()
+    return True
+
+
+def save_cover(series, raw):
+    """Ghi ảnh bìa mới cho 1 truyện: chuẩn hoá về JPEG 3:4 @COVER_WIDTH (như bìa
+    thu nhỏ), lưu thành cover.jpg trong folder truyện, xoá các cover.* cũ để chỉ
+    còn đúng 1 bìa. Trả True nếu thành công."""
+    if Image is None:
+        return False
+    try:
+        with Image.open(io.BytesIO(raw)) as im:
+            im = im.convert("RGB")
+            if im.width > COVER_WIDTH:
+                im = im.resize((COVER_WIDTH, round(im.height * COVER_WIDTH / im.width)))
+            if im.height > im.width * 4 // 3:      # quá cao -> cắt còn 3:4 từ đỉnh
+                im = im.crop((0, 0, im.width, im.width * 4 // 3))
+            buf = io.BytesIO()
+            im.save(buf, "JPEG", quality=85)
+            data = buf.getvalue()
+    except Exception:
+        return False
+    folder = series["path"]
+    try:
+        dest = os.path.join(folder, "cover.jpg")
+        tmp = dest + ".tmp"
+        with open(tmp, "wb") as f:
+            f.write(data)
+        os.replace(tmp, dest)
+        # xoá các bìa cũ đuôi khác (cover.png/webp...) -> cover_source xác định
+        for e in os.scandir(folder):
+            if e.is_file():
+                stem, ext = os.path.splitext(e.name)
+                if stem.lower() == "cover" and ext.lower() != ".jpg" and ext.lower() in IMG_EXTS:
+                    try:
+                        os.remove(e.path)
+                    except OSError:
+                        pass
+    except OSError:
+        return False
+    with _cover_lock:
+        _cover_cache.pop(series["id"], None)   # bỏ bìa cũ trong cache RAM
+    return True
+
+
 def prune_series_meta():
     """Bỏ khỏi series-meta.json mọi mục không còn folder (bao gồm bản gốc đã bị ẩn
     vì có _webp). Backup ra .bak trước. Trả danh sách id đã bỏ."""
@@ -873,8 +952,8 @@ body.jmode .sctl{display:flex}
 .admmsg{font-size:13px;color:#8a8b96}
 .adm{display:flex;flex-direction:column;gap:6px;margin-top:6px}
 .adm .admstatus{width:100%}
-.admrow{display:flex;gap:6px}
-.admrow .admbtn{flex:1}
+.admrow{display:flex;gap:6px;flex-wrap:wrap}
+.admrow .admbtn{flex:1 1 22px;min-width:22px}
 .admbtn,.admstatus{border:1px solid #2c2d37;background:#1a1b22;color:#e8e8ea;border-radius:8px;
   padding:6px 8px;font-size:13px;font-weight:600;cursor:pointer;line-height:1;text-align:center}
 .admbtn:hover,.admstatus:hover{background:#22232c}
@@ -1200,6 +1279,8 @@ def admin_card_ctrl(st):
             '<button type="button" class="admbtn" data-op="top" title="Lên đầu">⤒</button>'
             '<button type="button" class="admbtn" data-op="up" title="Lên">▲</button>'
             '<button type="button" class="admbtn" data-op="down" title="Xuống">▼</button>'
+            '<button type="button" class="admbtn" data-op="title" title="Đổi tên">✏️</button>'
+            '<button type="button" class="admbtn" data-op="cover" title="Đổi bìa">🖼️</button>'
             '</div></div>')
 
 
@@ -1607,11 +1688,41 @@ ADMIN_JS = """
     headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
     .then(function(r){return r.json();}); }
   var grid=document.getElementById('grid');
+  // đổi bìa: 1 input file dùng chung, nhớ card đang thao tác
+  var covin=document.createElement('input');
+  covin.type='file'; covin.accept='image/*'; covin.style.display='none';
+  document.body.appendChild(covin);
+  var covBtn=null;
+  covin.addEventListener('change',function(){
+    var f=covin.files&&covin.files[0]; if(!f||!covBtn){covin.value='';return;}
+    var sid=covBtn.closest('.card').dataset.sid, b=covBtn;
+    var rd=new FileReader();
+    rd.onload=function(){
+      b.disabled=true;
+      post({op:'cover',sid:sid,data:rd.result}).then(function(res){
+        if(res&&res.ok) location.reload(); else { b.disabled=false; alert('Đổi bìa thất bại (ảnh lỗi hoặc quá lớn).'); }
+      }).catch(function(){b.disabled=false;});
+    };
+    rd.readAsDataURL(f);
+    covin.value='';
+  });
   if(grid) grid.addEventListener('click',function(e){
     var b=e.target.closest('.adm button'); if(!b) return;
     e.preventDefault();
     var card=b.closest('.card'), sid=card?card.dataset.sid:null; if(!sid) return;
-    var op=b.dataset.op, body={sid:sid};
+    var op=b.dataset.op;
+    if(op==='cover'){ covBtn=b; covin.click(); return; }
+    if(op==='title'){
+      var cur=((card.querySelector('.ct')||{}).textContent||'').trim();
+      var nv=prompt('Tên hiển thị mới (để trống = về tên gốc theo folder):',cur);
+      if(nv===null) return;               // bấm Cancel
+      b.disabled=true;
+      post({op:'title',sid:sid,title:nv}).then(function(res){
+        if(res&&res.ok) location.reload(); else { b.disabled=false; alert('Đổi tên thất bại.'); }
+      }).catch(function(){b.disabled=false;});
+      return;
+    }
+    var body={sid:sid};
     if(op==='status'){ body.op='status';
       body.status=b.classList.contains('complete')?'ongoing':'complete'; }
     else { body.op='order'; body.move=op; }
@@ -2065,7 +2176,9 @@ class Handler(BaseHTTPRequestHandler):
             if path not in ("/api/spread", "/api/state", "/api/login", "/api/admin"):
                 return self.send_json({"ok": False, "error": "Not found"}, 404)
             length = int(self.headers.get("Content-Length") or 0)
-            if not 0 < length <= 200000:
+            # /api/admin có thể tải ảnh bìa (base64) -> cho phép lớn hơn nhiều
+            limit = 12_000_000 if path == "/api/admin" else 200000
+            if not 0 < length <= limit:
                 return self.send_json({"ok": False, "error": "Invalid content"}, 400)
             data = json.loads(self.rfile.read(length).decode("utf-8"))
             if path == "/api/login":
@@ -2095,6 +2208,24 @@ class Handler(BaseHTTPRequestHandler):
                     ok = set_series_status(data.get("sid"), data.get("status"))
                 elif op == "order":
                     ok = reorder_series(data.get("sid"), data.get("move"))
+                elif op == "title":
+                    ok = set_series_title(data.get("sid"), data.get("title") or "")
+                elif op == "cover":
+                    s = get_library().get(data.get("sid"))
+                    raw = None
+                    b64 = data.get("data") or ""
+                    if isinstance(b64, str):
+                        b64 = b64.split(",", 1)[-1]   # bỏ tiền tố data:image/...;base64,
+                        try:
+                            raw = base64.b64decode(b64, validate=True)
+                        except (binascii.Error, ValueError):
+                            raw = None
+                    if s and raw:
+                        ok = save_cover(s, raw)
+                        if ok:
+                            bust_library_cache()
+                    else:
+                        ok = False
                 else:
                     ok = False
                 return self.send_json({"ok": bool(ok)}, 200 if ok else 400)

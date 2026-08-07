@@ -1,9 +1,11 @@
 # Handoff — cập nhật lần cuối: 2026-08-07
 
 ## Đang làm / dở dang
-- Không có việc code dở. Vừa hoàn tất đợt lớn: **hệ tài khoản + đồng bộ code bằng git +
-  điều khiển qua Telegram bot + web admin**. Tất cả đã verify (trình duyệt / unit test),
-  đã push GitHub. Chờ **user deploy lên server bằng `cap-nhat.bat`** và nghiệm thu LIVE.
+- Không có việc code dở. Vừa xong đợt: **(1) 4 lệnh huỷ tải qua bot; (2) web admin đổi tên
+  hiển thị + đổi ảnh bìa**. Verify xong (reader chạy live port 8099: title override + cover
+  upload OK; unit test drain queue + routing OK). **CHƯA push GitHub, CHƯA deploy.** Vì đã sửa
+  `supervisor.py` → deploy phải bằng `cap-nhat.bat`/`server-BAT` (không dùng `/update` được).
+- Đợt trước đó: hệ tài khoản + đồng bộ git + Telegram bot + web admin (đã push GitHub).
 
 ## Kiến trúc hiện tại (đã đổi nhiều so với bản 05/08)
 - **Lưu dữ liệu đọc — HAI đường, tách riêng, KHÔNG di trú:**
@@ -44,6 +46,21 @@
   người `/adminclaim`), sau đó strict theo danh sách. `_is_admin` gác `/update`,`/tai`,`/admin*`.
 
 ## Quyết định gần đây (mới nhất trước)
+- 07/08: **4 lệnh huỷ tải bot** (`/stop` dừng+xoá-hàng-chờ của mình, `/killnow` chỉ kill,
+  `/clearq` chỉ xoá hàng chờ, `/stopall` dừng+xoá tất cả của mọi người). Worker chuyển
+  `subprocess.run`→**Popen** để kill được (`self._dl_proc`/`_dl_cur`/`_dl_cancelled`); huỷ báo
+  "⏹ Đã huỷ" (không nhầm lỗi). Scope "của mình" = so `cid` gửi lệnh với `cid` lưu kèm mỗi URL.
+  `/stopall` PHẢI check trước `/stop` (startswith). Xoá hàng chờ = drain rồi re-put phần giữ lại
+  (khoá `_dlq_lock`). Tải lại sau huỷ tự bỏ qua chương `.done` (resume có sẵn).
+- 07/08: **Web admin đổi TÊN = override hiển thị, KHÔNG đổi folder** (hướng A, user chốt): lưu
+  trường `title` trong `series-meta.json`; `get_library` đè `s["title"]` trước sort. sid/folder
+  giữ nguyên → không mất bookmark/tiến-trình, không đụng downloader (nó đặt tên folder theo slug).
+  Tên rỗng = xoá override. `set_series_title()` + op `title` trong `/api/admin`.
+- 07/08: **Web admin đổi BÌA**: nút 🖼️ → chọn file → JS đọc base64 (data URL) → POST op `cover`.
+  `/api/admin` nâng giới hạn body 200KB→12MB. `save_cover()` nén về JPEG 3:4 @480px (dùng lại
+  logic `cover_jpeg`), ghi `cover.jpg`, XOÁ cover.* đuôi khác (giữ đúng 1 bìa), xoá `_cover_cache`.
+  `cover_url?v=mtime` sẵn nên PWA tự tải bìa mới. Ảnh ngang giữ nguyên tỉ lệ (khung 3:4 cắt lúc
+  hiển thị) — khuyến nghị chuẩn bị bìa **đúng 3:4 (900×1200)** để không bị cắt (đã ghi README).
 - 07/08: **RavenProvider viết lại** cho site đại tu `.org`→`.net` (URL chương giờ là
   `/series/{slug}/chapter-{ID_nội_bộ}`, SỐ chương lấy từ TEXT "Chapter N", không ở URL);
   ảnh (`ts_reader`) + cover (`og:image`) giữ nguyên. Test live 193 chương OK. `domains` giữ
@@ -64,9 +81,10 @@
 - 06/08: **Ẩn bản gốc khi có `_webp`**; **Search comics** ở home.
 
 ## Việc tiếp theo
-- **User deploy `cap-nhat.bat`** trên server (đợt này sửa cả supervisor → không dùng
-  `/update` được) rồi nghiệm thu LIVE: `/help`, `/adminclaim`, `/tai`, search home, nút
-  admin 2 hàng, guest bookmark/đọc-dở trên iPhone.
+- **Push GitHub (`day-len.bat`) rồi deploy `cap-nhat.bat`** trên server — đợt này sửa
+  `supervisor.py` nên KHÔNG dùng `/update` được. Nghiệm thu LIVE: 4 lệnh huỷ (`/stop`,
+  `/killnow`, `/clearq`, `/stopall`), nút web admin ✏️ đổi tên + 🖼️ đổi bìa.
+- Đợt cũ chờ nghiệm thu LIVE: `/help`, `/adminclaim`, `/tai`, search home, guest bookmark iPhone.
 - Server mạng ra internet chập chờn (getUpdates/tunnel hay timeout) — nếu kéo dài, cân nhắc
   **Tailscale/LAN** thay quick-tunnel cho ổn định.
 - (Tùy chọn) đồng hồ server nhanh ~5 phút — sync giờ Windows nếu muốn log khớp.

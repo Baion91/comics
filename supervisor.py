@@ -139,6 +139,10 @@ HELP_TEXT = (
     "/help — danh sách lệnh\n\n"
     "Admin:\n"
     "/tai <link> — tải truyện (nhiều link cách nhau dấu cách)\n"
+    "/stop — dừng truyện đang tải + xoá hàng chờ (của bạn)\n"
+    "/killnow — chỉ dừng truyện đang tải (của bạn)\n"
+    "/clearq — chỉ xoá hàng chờ (của bạn)\n"
+    "/stopall — dừng tất cả + xoá sạch hàng chờ (mọi người)\n"
     "/update — cập nhật code + restart reader\n"
     "/adminlist — xem chat đã đăng ký / admin\n"
     "/adminclaim — nhận quyền admin (khi chưa có ai)\n"
@@ -158,6 +162,10 @@ class Supervisor:
         self.link = None
         self.lock = threading.Lock()
         self._dlq = queue.Queue()   # hàng đợi tải truyện qua bot (/tai)
+        self._dlq_lock = threading.Lock()  # gác thao tác gom/lọc hàng đợi (cancel)
+        self._dl_proc = None        # tiến trình comic_downloader đang chạy (để kill)
+        self._dl_cur = None         # (url, cid) truyện đang tải — để biết 'của ai'
+        self._dl_cancelled = False  # cờ: lần kill này là do người dùng huỷ (không phải lỗi)
 
     def reader_url(self):
         return f"http://127.0.0.1:{self.cfg.get('reader_port', 8080)}"
@@ -235,6 +243,10 @@ class Supervisor:
             {"command": "link", "description": "Lấy link đọc hiện tại"},
             {"command": "whoami", "description": "Xem chat_id của bạn"},
             {"command": "tai", "description": "Tải truyện: /tai <link> (admin)"},
+            {"command": "stop", "description": "Dừng tải + xoá hàng chờ của bạn (admin)"},
+            {"command": "killnow", "description": "Chỉ dừng truyện đang tải của bạn (admin)"},
+            {"command": "clearq", "description": "Chỉ xoá hàng chờ của bạn (admin)"},
+            {"command": "stopall", "description": "Dừng tất cả + xoá sạch hàng chờ (admin)"},
             {"command": "update", "description": "Cập nhật code (admin)"},
             {"command": "adminlist", "description": "Xem chat đã đăng ký / admin"},
             {"command": "adminclaim", "description": "Nhận quyền admin (khi chưa có ai)"},
@@ -301,6 +313,14 @@ class Supervisor:
             self.handle_admin(token, cid, "remove", raw)
         elif text.startswith("/tai"):
             self.handle_tai(token, cid, raw)
+        elif text.startswith("/stopall"):
+            self.handle_cancel(token, cid, kill=True, clear=True, scope_all=True)
+        elif text.startswith("/stop"):
+            self.handle_cancel(token, cid, kill=True, clear=True, scope_all=False)
+        elif text.startswith("/killnow"):
+            self.handle_cancel(token, cid, kill=True, clear=False, scope_all=False)
+        elif text.startswith("/clearq"):
+            self.handle_cancel(token, cid, kill=False, clear=True, scope_all=False)
         elif text.startswith("/start") or is_new:
             tg_api(token, "sendMessage", {"chat_id": cid,
                 "text": "✅ Đã đăng ký nhận link đọc truyện.\n"
@@ -478,9 +498,60 @@ class Supervisor:
             "text": f"📥 Đã thêm {len(urls)} truyện vào hàng đợi "
                     f"(đang chờ: {self._dlq.qsize()})."})
 
+    def _drain_queue(self, cid=None):
+        """Lấy hết hàng đợi ra, GIỮ LẠI các URL không thuộc diện huỷ (bỏ lại vào
+        hàng đợi), trả về số URL đã xoá. cid=None -> xoá tất cả; có cid -> chỉ xoá
+        URL do chat đó gửi. Có khoá để không giẫm chân worker/lệnh khác."""
+        removed, keep = 0, []
+        with self._dlq_lock:
+            while True:
+                try:
+                    item = self._dlq.get_nowait()
+                except queue.Empty:
+                    break
+                if cid is None or str(item[1]) == str(cid):
+                    removed += 1
+                else:
+                    keep.append(item)
+            for item in keep:
+                self._dlq.put(item)
+        return removed
+
+    def handle_cancel(self, token, cid, kill, clear, scope_all):
+        """Huỷ tải: kill truyện đang chạy và/hoặc xoá hàng chờ.
+        scope_all=False -> chỉ đụng request do CHÍNH người gọi gửi; True -> mọi người."""
+        if not self._is_admin(cid):
+            tg_api(token, "sendMessage", {"chat_id": cid, "text": "⛔ Bạn không phải admin."})
+            return
+        parts = []
+        # 1) Kill truyện đang tải (nếu yêu cầu)
+        if kill:
+            with self.lock:
+                cur = self._dl_cur
+                proc = self._dl_proc
+            if not cur or not proc:
+                parts.append("Không có truyện nào đang tải.")
+            elif not scope_all and str(cur[1]) != str(cid):
+                parts.append("Truyện đang tải không phải của bạn "
+                             "(dùng /stopall nếu muốn dừng tất cả).")
+            else:
+                self._dl_cancelled = True
+                self._kill(proc)
+                parts.append(f"⏹ Đã dừng truyện đang tải:\n{cur[0]}")
+        # 2) Xoá hàng chờ (nếu yêu cầu)
+        if clear:
+            n = self._drain_queue(cid=None if scope_all else cid)
+            scope_txt = "" if scope_all else " của bạn"
+            parts.append(f"🗑 Đã xoá {n} truyện trong hàng chờ{scope_txt} "
+                         f"(còn lại: {self._dlq.qsize()}).")
+        tg_api(token, "sendMessage", {"chat_id": cid,
+            "text": "\n".join(parts) if parts else "Không có gì để huỷ.",
+            "disable_web_page_preview": "true"})
+
     def download_loop(self):
         """Worker: lần lượt tải từng truyện trong hàng đợi (1 lượt/lúc), báo bắt
-        đầu/xong về đúng người gửi. Tải rất lâu nên chạy nền, KHÔNG timeout."""
+        đầu/xong về đúng người gửi. Tải rất lâu nên chạy nền, KHÔNG timeout.
+        Dùng Popen (không phải run) để lệnh /stop, /killnow kill được tiến trình."""
         while not self.stop.is_set():
             try:
                 url, cid = self._dlq.get(timeout=1)
@@ -490,18 +561,33 @@ class Supervisor:
             if token:
                 tg_api(token, "sendMessage", {"chat_id": cid,
                     "text": f"⏳ Bắt đầu tải:\n{url}", "disable_web_page_preview": "true"})
+            self._dl_cancelled = False
             try:
-                r = subprocess.run(
+                proc = subprocess.Popen(
                     [sys.executable, os.path.join(BASE_DIR, "comic_downloader.py"), url],
                     cwd=BASE_DIR, creationflags=NO_WINDOW,
-                    capture_output=True, text=True, encoding="utf-8", errors="replace")
-                if r.returncode == 0:
+                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                    text=True, encoding="utf-8", errors="replace")
+                with self.lock:
+                    self._dl_proc, self._dl_cur = proc, (url, cid)
+                out, _ = proc.communicate()            # chờ tải xong (không timeout)
+                rc = proc.returncode
+                if self._dl_cancelled:
+                    # Bị huỷ tay: chương đã xong đã đánh dấu .done -> lần sau /tai lại tự
+                    # bỏ qua chương cũ, chỉ tải tiếp phần dở. Không coi là lỗi.
+                    msg = (f"⏹ Đã huỷ tải:\n{url}\n"
+                           "(Tải lại bằng /tai sẽ tự bỏ qua chương đã xong, "
+                           "tiếp tục từ chỗ dở.)")
+                elif rc == 0:
                     msg = f"✅ Tải xong:\n{url}"
                 else:
-                    tail = (r.stderr or r.stdout or "").strip().splitlines()
+                    tail = (out or "").strip().splitlines()
                     msg = f"❌ Lỗi tải:\n{url}" + (("\n" + tail[-1]) if tail else "")
             except Exception as e:
                 msg = f"❌ Lỗi tải:\n{url}\n{e}"
+            finally:
+                with self.lock:
+                    self._dl_proc, self._dl_cur = None, None
             if token:
                 tg_api(token, "sendMessage", {"chat_id": cid, "text": msg,
                     "disable_web_page_preview": "true"})

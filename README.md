@@ -204,12 +204,23 @@ python reader_server.py --port 8081
 - **Tìm truyện**: ô **Search comics** ở trang chủ lọc theo tên tức thì.
 - **Web admin** (đăng nhập đúng username `admin`): trang chủ hiện thêm **Refresh** +
   **Dọn list** (bỏ mục truyện đã xoá khỏi danh sách), và mỗi truyện có nút đổi
-  **Completed/Ongoing** + **⤒/▲/▼** sắp thứ tự — bấm là đổi ngay, khỏi sửa file tay.
-  (Sửa tay `series-meta.json` vẫn dùng được như mô tả trên/dưới.)
+  **Completed/Ongoing** + **⤒/▲/▼** sắp thứ tự + **✏️ đổi tên** + **🖼️ đổi bìa** — bấm là
+  đổi ngay, khỏi sửa file tay. (Sửa tay `series-meta.json` vẫn dùng được như mô tả trên/dưới.)
+  - **✏️ Đổi tên**: nhập tên hiển thị mới (để trống = về lại tên gốc theo folder). Chỉ đổi
+    **tên hiển thị trên web**, lưu vào `series-meta.json` — **folder trên server GIỮ NGUYÊN**
+    nên bookmark/tiến-trình đọc không bị mất.
+  - **🖼️ Đổi bìa**: chọn 1 ảnh từ máy → server tự chuẩn hoá và ghi thành `cover.jpg` trong
+    folder truyện (thay bìa cũ). Nên chọn ảnh **tỉ lệ 3:4** (xem mục Ảnh bìa) để không bị cắt.
 - Có cả folder `<tên>` lẫn `<tên>_webp` thì reader **tự ẩn bản gốc**, chỉ hiện bản `_webp`.
 - **Ảnh bìa**: đặt file `cover.jpg`/`cover.png`/`cover.webp` vào folder truyện
-  là bìa hiện đúng ảnh đó (truyện Asura được downloader tự tải bìa sẵn).
-  Không có thì lấy trang đầu chương đầu.
+  là bìa hiện đúng ảnh đó (truyện Asura được downloader tự tải bìa sẵn), hoặc dùng nút
+  **🖼️ Đổi bìa** ở web admin. Không có thì lấy trang đầu chương đầu.
+  - **Kích thước chuẩn = tỉ lệ 3:4 (dọc)**, khuyến nghị **900×1200px** (hoặc 600×800). Mọi ô
+    hiển thị (card trang chủ, bìa trang truyện 130×173, slider Bookmark) đều là khung **3:4,
+    cắt tràn** — ảnh **đúng 3:4 sẽ KHÔNG bị cắt** ở đâu cả. Ảnh **rộng hơn** 3:4 bị cắt bớt
+    **hai bên**; ảnh **cao hơn** 3:4 bị cắt bớt **phần dưới**. Server lưu bìa tối đa **480px
+    ngang** (đủ nét cho mọi ô) nên ảnh nguồn ≥480px ngang là được.
+  - Mỗi folder chỉ nên để **đúng 1 file `cover.*`** (nút 🖼️ tự xoá bìa cũ khi đổi).
 - **Trạng thái truyện (Completed / Ongoing)**: hiện cạnh số chương ở trang chủ và
   trang truyện (xanh lá = Completed, xanh dương = Ongoing). Mặc định mọi truyện là
   **Ongoing**; muốn đánh dấu đã hoàn thành thì mở `.reader-meta\series-meta.json`,
@@ -254,10 +265,16 @@ khi đăng nhập Windows, tự tạo link đọc từ xa và báo qua Telegram.
   - **Admin**: `/tai <link>` tải truyện (xếp hàng đợi, báo bắt đầu/xong) · `/update` cập
     nhật code · `/adminclaim` (người đầu tiên → admin gốc) · `/adminlist` ·
     `/adminadd <id>` · `/adminremove <id>`.
+  - **Huỷ tải** (admin): `/stop` dừng truyện đang tải **+ xoá hàng chờ của bạn** ·
+    `/killnow` **chỉ** dừng truyện đang tải · `/clearq` **chỉ** xoá hàng chờ · `/stopall`
+    dừng tất cả + xoá **sạch** hàng chờ (của mọi người). `/stop`/`/killnow`/`/clearq` chỉ
+    đụng request **do chính bạn** gửi; dừng truyện của người kia thì dùng `/stopall`.
 - **`/tai` tải TUẦN TỰ**: mọi lệnh `/tai` (bất kỳ admin nào) vào **chung 1 hàng đợi**, tải
   **1 bộ/lúc** (giữ nhịp chống chặn IP), chạy **ẩn** (không cửa sổ), báo "Tải xong" khi hoàn
   tất. ⚠️ Đừng bấm `Tai hang loat.bat`/`Tai truyen.bat` tay lúc bot đang tải — 2 cái đó nằm
   ngoài hàng đợi bot nên chạy **song song**, gấp đôi request → dễ bị chặn IP.
+- **Huỷ xong tải lại vẫn an toàn**: chương đã tải xong được đánh dấu `.done`, nên lần sau
+  `/tai` lại đúng link đó sẽ **tự bỏ qua chương cũ**, chỉ tải tiếp phần còn dở.
 - Token bot để trong `.reader-meta\notify-config.json` (**không** commit lên git).
 - **Tải hàng loạt** (chạy tay): `Tai hang loat.bat` — dán nhiều link vào `download-queue.txt`
   rồi chạy lần lượt (bỏ qua chương đã đủ nhờ dấu `.done`).
