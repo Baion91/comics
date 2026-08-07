@@ -9,7 +9,6 @@ Các script trong thư mục này, mỗi cái một việc:
 | `check_library.py` | **Kiểm tra ảnh đã tải** — bắt ảnh hỏng/cụt/thiếu trang/đen |
 | `Kiem tra truyen.bat` | Bấm để kiểm tra: chọn thư mục (chạy check_library) |
 | `asura_downloader.py` | (cũ, vẫn chạy) lối tắt chỉ-Asura của comic_downloader |
-| `pokespe_update.py` | Cập nhật Pokemon Special (pokemonspecial.com) — chạy riêng |
 | `convert_webp.py` | Chuyển folder ảnh PNG sang WebP để giảm dung lượng |
 | `reader_server.py` | Web đọc truyện kiểu Asura, đọc từ PC lẫn điện thoại |
 
@@ -124,23 +123,7 @@ nhiều luồng (mặc định = số nhân CPU, tối đa 8) và ghi nhớ ản
 mất tiến độ, chạy lại là tiếp. Cần Pillow (máy này có sẵn); thiếu Pillow thì chỉ
 kiểm được chữ ký file, bỏ phần giải mã & dò một-màu.
 
-## 3. Cập nhật Pokemon Special — `pokespe_update.py`
-
-```bat
-:: Xem web có chương Scarlet Violet mới không (chưa tải gì)
-python pokespe_update.py --dry-run
-
-:: Tải mọi chương còn thiếu vào đúng chỗ trong thư viện
-python pokespe_update.py
-```
-
-- Tự so danh sách chương trên blog với folder trong
-  `downloads\Pokemon Special_webp\CHƯƠNG 698-- - SCARLET VIOLET`.
-- Ảnh tải bản gốc full nét; PNG tự chuyển WebP q85, JPG giữ nguyên.
-- Mỗi trang đều được kiểm tra toàn vẹn ngay khi tải, ảnh hỏng không lọt vào
-  thư viện.
-
-## 4. Chuyển PNG sang WebP — `convert_webp.py`
+## 3. Chuyển PNG sang WebP — `convert_webp.py`
 
 ```bat
 :: Cơ bản: PNG -> WebP q85, JPG và file khác copy nguyên trạng
@@ -156,7 +139,7 @@ python convert_webp.py "..." --jpg-too       :: nén cả JPG (lưu ý: lossy ch
 - Với truyện scan, q85 giảm ~50–80% dung lượng mà mắt thường không phân biệt
   được.
 
-## 5. Web đọc truyện — `reader_server.py`
+## 4. Web đọc truyện — `reader_server.py`
 
 ```bat
 :: Bật server đọc truyện (để cửa sổ này mở trong lúc đọc)
@@ -246,7 +229,7 @@ python reader_server.py --port 8081
 
 ---
 
-## 6. Chạy trên SERVER (tự động) + đồng bộ code + điều khiển qua Telegram
+## 5. Chạy trên SERVER (tự động) + đồng bộ code + điều khiển qua Telegram
 
 Ngoài chạy tay ở trên, bộ này dựng được thành **server đọc chung** (vd máy khác) tự bật
 khi đăng nhập Windows, tự tạo link đọc từ xa và báo qua Telegram.

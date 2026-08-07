@@ -55,9 +55,6 @@ cách chạy thật + decode thử ảnh.
   chung với downloader (`salvaged` = ảnh cụt đã cứu, đừng báo/đừng cách ly; `source_broken`
   = hỏng sẵn ở nguồn, khuyết trang do nó là "đã biết"). `Kiem tra truyen.bat` là shortcut
   (vòng lặp hỏi thư mục/--fix/--black → chạy).
-- `pokespe_update.py` — cập nhật chương Scarlet Violet từ pokemonspecial.com
-  (blog Blogger): đọc feed → so folder local → tải chương thiếu. (Có sẵn kiểm giải mã
-  `im.load()` từ trước — tiền lệ của lõi kiểm tra chung.)
 - `convert_webp.py` — chuyển PNG→WebP hàng loạt, xuất cây mới `<tên>_webp`,
   không đụng cây gốc. Tách riêng khỏi asura_downloader vì Asura đã webp sẵn.
 - `reader_server.py` — web reader kiểu Asura (HTML/CSS/JS inline trong Python
@@ -213,10 +210,6 @@ cách chạy thật + decode thử ảnh.
 - **Đặt tên folder từ slug**: chỉ cắt cụm cuối nếu đúng 8 ký tự hex có chữ số
   (hash kiểu `-1d35e5bd`); slug từ API search không có hash, cắt mù sẽ mất chữ
   cuối tên truyện (bug "The-Greatest-Estate" 16/07).
-- **Blog pokespe có 2 thời kỳ đặt tên ảnh**: bài cũ `001.png`, bài mới
-  `... 028 page 18.jpg`. Ưu tiên mẫu "page N" vì tên thuần số dễ dính banner
-  trang trí của blog (`1.png`, `3.png`). Ảnh Blogger: thay segment size trong
-  URL bằng `/s0/` để lấy bản gốc full nét.
 - **Mẫu kiểm chứng chuẩn** sau tải/convert: (A) đối chiếu từng file, (B) PIL
   `im.load()` toàn bộ ảnh (bắt file cụt dữ liệu), (C) soát dãy số trang liền mạch.
 - **Retry ảnh backoff tăng dần, không đều** (1s-3s-8s): server là local/LAN nên
@@ -302,6 +295,5 @@ python check_library.py [downloads\<Tên>] [--fix] [--recheck] [--workers N] [--
 python asura_downloader.py <URL|slug> ...           # shim cũ, vẫn chạy (mặc định Asura)
 # hoặc double-click "Tai truyen.bat" trong folder rồi dán link
 python convert_webp.py "<folder>" [--quality 90] [--jpg-too]
-python pokespe_update.py [--dry-run]
 python reader_server.py [--port 8080]   # thường bật bằng shortcut "Toony"
 ```

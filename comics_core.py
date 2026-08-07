@@ -65,7 +65,7 @@ Chapter = namedtuple("Chapter", "number title ref")
 #   Tầng 1 (độ dài truyền tải) + Tầng 2 (chữ ký + giải mã) = gần như 0 nhầm -> tự
 #     xử (chặn lúc tải / cách ly khi quét).
 #   Tầng 4 (đen/phẳng) = có thể nhầm với tranh đen -> CHỈ báo, không tự xóa.
-# Toàn bộ ở đây để Asura/Raven/pokespe/tool quét đi chung một trọng tài, không lệch.
+# Toàn bộ ở đây để Asura/Raven/tool quét đi chung một trọng tài, không lệch.
 # ============================================================================
 
 # .reader-meta/ nằm cạnh script (KHÔNG trong folder truyện) — chung chỗ với reader.
@@ -78,6 +78,81 @@ _DECODABLE = {"png", "jpeg", "gif", "bmp", "webp"}
 # thà đọc được phần lớn còn hơn mất trắng cả trang (đúng như trình duyệt vẫn hiển thị).
 SALVAGE_MIN = 0.50
 RETRY_BROKEN = False   # True = thử lại cả những ảnh đã biết hỏng ở nguồn (cờ --retry-broken)
+
+# ============================================================================
+# BẮT CRASH TẦNG C (Pillow/libwebp/OpenSSL... segfault / access violation)
+# ----------------------------------------------------------------------------
+# `try/except` của Python KHÔNG bắt được lỗi tầng C: tiến trình biến mất KHÔNG để lại
+# traceback — đúng kiểu "đang tải bỗng dừng, .bat in Xong". Ba lớp phòng thủ:
+#   1) faulthandler: khi crash tầng C -> ghi C-stack vào crash-trace.txt (crash Ở ĐÂU).
+#   2) 'breadcrumb': ghi ảnh đang giải mã ra đĩa TRƯỚC im.load(); phiên sau khởi động
+#      thấy file còn sót -> log lại ảnh đang xử lý lúc chết (crash Ở ẢNH NÀO).
+#   3) chặn trước 2 nguồn crash bộ nhớ hay gặp: file quá lớn / ảnh 'bom' kích thước khủng.
+# ============================================================================
+SAFE_MAX_BYTES = 64 * 1024 * 1024   # ảnh > 64MB: gần như chắc rác/bom -> không giải mã
+SAFE_MAX_PIXELS = 60_000_000        # > 60 triệu điểm ảnh: load()/convert() dễ ngốn RAM -> né
+
+CRASH_TRACE = META_DIR / "crash-trace.txt"
+DECODING_FILE = META_DIR / "decoding-now.txt"
+try:
+    import faulthandler
+    META_DIR.mkdir(parents=True, exist_ok=True)
+    _crash_fp = open(CRASH_TRACE, "a", encoding="utf-8")
+    faulthandler.enable(file=_crash_fp)   # giữ tham chiếu toàn cục để fd không bị đóng
+except Exception:
+    _crash_fp = None
+
+_decoding_lock = threading.Lock()
+_decoding_now = {}   # ident luồng -> mô tả ảnh nó ĐANG giải mã (bỏ khỏi dict khi xong)
+
+
+def _set_decoding(ident, what):
+    """Ghi/xoá breadcrumb ảnh-đang-giải-mã của 1 luồng, đồng bộ ngay ra đĩa. Crash tầng C
+    giết cả tiến trình -> file DECODING_FILE còn sót chính là (các) ảnh thủ phạm."""
+    with _decoding_lock:
+        if what is None:
+            _decoding_now.pop(ident, None)
+        else:
+            _decoding_now[ident] = what
+        try:
+            DECODING_FILE.write_text("\n".join(_decoding_now.values()), encoding="utf-8")
+        except OSError:
+            pass
+
+
+@contextmanager
+def _decoding(what):
+    ident = threading.get_ident()
+    _set_decoding(ident, what)
+    try:
+        yield
+    finally:
+        _set_decoding(ident, None)
+
+
+def reap_decode_crash():
+    """Đầu phiên tải: nếu breadcrumb còn sót -> phiên trước CHẾT khi đang giải mã (nghi
+    crash tầng C). Ghi tên ảnh thủ phạm vào download-log + crash-trace rồi xoá cờ. CỐ Ý
+    KHÔNG tự đánh dấu hỏng (tránh bỏ nhầm ảnh tốt của luồng còn lại) — chỉ nêu tên để
+    đối chiếu cùng C-stack mà faulthandler đã ghi ngay phía trên trong crash-trace.txt."""
+    try:
+        left = DECODING_FILE.read_text(encoding="utf-8").strip()
+    except OSError:
+        return
+    if left:
+        items = " | ".join(left.splitlines())
+        append_log("⚠ PHIÊN TRƯỚC CHẾT giữa lúc giải mã ảnh (nghi crash tầng C) — "
+                   f"ảnh đang xử lý lúc đó: {items}")
+        try:
+            with open(CRASH_TRACE, "a", encoding="utf-8") as f:
+                f.write(f"\n[{datetime.now():%Y-%m-%d %H:%M:%S}] Ảnh ĐANG GIẢI MÃ lúc phiên "
+                        f"trước chết (đối chiếu C-stack phía trên):\n  {items}\n")
+        except OSError:
+            pass
+    try:
+        DECODING_FILE.unlink()
+    except OSError:
+        pass
 
 
 class _DecodeGate:
@@ -174,7 +249,7 @@ def is_known_broken(dest: Path) -> bool:
     return str(Path(dest).resolve()) in load_issues().get("source_broken", {})
 
 
-def intact_fraction(data: bytes):
+def intact_fraction(data: bytes, who=None):
     """Ảnh cụt còn đọc được bao nhiêu? Trả (tỉ lệ 0..1, rộng, cao) hoặc None nếu chịu.
 
     Pillow bù phần chưa giải mã bằng một màu phẳng; dò từ đáy lên tới chỗ hết phẳng
@@ -185,8 +260,12 @@ def intact_fraction(data: bytes):
     try:
         with _gate.lenient_mode():
             with Image.open(io.BytesIO(data)) as im:
-                im.load()
-                g = im.convert("L")
+                w, h = im.size
+                if w * h > SAFE_MAX_PIXELS:
+                    return None
+                with _decoding((who or "?") + " [cứu-vớt]"):  # breadcrumb cho decode khoan dung
+                    im.load()
+                    g = im.convert("L")
         w, h = g.size
         if h < 2:
             return None
@@ -266,7 +345,7 @@ def uniform_frame(im, *, min_side=200, flat_range=8):
     return None
 
 
-def inspect_image_bytes(data: bytes, want_uniform: bool = False):
+def inspect_image_bytes(data: bytes, want_uniform: bool = False, who=None):
     """Kiểm 1 ảnh trong RAM, GIẢI MÃ ĐÚNG 1 LẦN. Trả (verdict, chi tiết, uniform).
 
     verdict:
@@ -280,6 +359,8 @@ def inspect_image_bytes(data: bytes, want_uniform: bool = False):
     """
     if not data:
         return ("empty", "0 byte", None)
+    if len(data) > SAFE_MAX_BYTES:   # chặn TRƯỚC decode: file khổng lồ dễ làm codec C sập
+        return ("corrupt", f"ảnh {len(data)} byte > {SAFE_MAX_BYTES} — bỏ để tránh crash bộ nhớ", None)
     fmt = sniff_format(data)
     if fmt is None:
         return ("not_image", f"không nhận ra chữ ký ảnh (đầu file: {data[:12]!r})", None)
@@ -288,7 +369,13 @@ def inspect_image_bytes(data: bytes, want_uniform: bool = False):
     try:
         with _gate.strict():   # chặn không cho trùng lúc luồng khác bật cờ khoan dung
             im = Image.open(io.BytesIO(data))
-            im.load()  # ép giải mã toàn bộ -> ảnh cụt dữ liệu báo lỗi tại đây
+            w, h = im.size   # đọc từ header, CHƯA giải mã -> chặn 'bom' kích thước trước khi load
+            if w * h > SAFE_MAX_PIXELS:
+                im.close()
+                return ("corrupt", f"{fmt}: {w}x{h} = {w * h} điểm ảnh > {SAFE_MAX_PIXELS} "
+                        "— bỏ để tránh crash bộ nhớ", None)
+            with _decoding(who or f"{fmt} {w}x{h} {len(data)}B"):  # breadcrumb: crash tầng C -> còn dấu
+                im.load()  # ép giải mã toàn bộ -> ảnh cụt dữ liệu báo lỗi tại đây
     except Exception as e:
         # Đúng định dạng lẽ ra giải mã được mà vẫn lỗi -> hỏng thật.
         # Định dạng lạ (avif/heif) thiếu codec -> chưa kết luận, đừng gắn cờ oan.
@@ -302,9 +389,10 @@ def inspect_image_bytes(data: bytes, want_uniform: bool = False):
     return ("ok", fmt, uniform)
 
 
-def check_image_bytes(data: bytes):
-    """Bản gọn cho đường tải inline: chỉ cần (verdict, chi tiết), không dò một-màu."""
-    verdict, detail, _ = inspect_image_bytes(data)
+def check_image_bytes(data: bytes, who=None):
+    """Bản gọn cho đường tải inline: chỉ cần (verdict, chi tiết), không dò một-màu.
+    `who` (thường là URL ảnh) đi vào breadcrumb để lỡ crash tầng C còn biết ảnh nào."""
+    verdict, detail, _ = inspect_image_bytes(data, who=who)
     return (verdict, detail)
 
 
@@ -461,13 +549,13 @@ def download_image(url: str, dest: Path) -> bool:
 
             # Tầng 2 — chữ ký + giải mã (trong RAM, không nén lại). {ok, unsupported}
             # thì ghi; hỏng thì thử lại. unsupported = thiếu codec, không dám bỏ.
-            verdict, detail = check_image_bytes(data)
+            verdict, detail = check_image_bytes(data, who=url)
             if verdict in ("empty", "not_image", "corrupt"):
                 reason = f"{verdict}: {detail}"
                 # Hỏng y hệt lần trước (cùng số byte, cùng kiểu) => file ở NGUỒN hỏng,
                 # không phải chập mạng. Thử lại bao nhiêu cũng vậy -> dừng ngay.
                 if prev_bad == (len(data), verdict):
-                    frac = intact_fraction(data) if verdict == "corrupt" else None
+                    frac = intact_fraction(data, who=url) if verdict == "corrupt" else None
                     if frac and frac[0] >= SALVAGE_MIN:
                         # CỨU VỚT: ghi byte gốc (không nén lại) — đọc được phần lớn còn
                         # hơn mất trắng cả trang; trình duyệt/reader vẫn hiển thị được.
@@ -608,6 +696,7 @@ def _mark_done(folder: Path):
 
 def run(provider, args):
     """Vòng lặp tải chung cho mọi site. `provider` cấp phần khác biệt của site."""
+    reap_decode_crash()   # phiên trước chết giữa lúc giải mã? ghi lại ảnh thủ phạm rồi dọn cờ
     # Referer đặt theo từng site (Asura cần asuracomic.net; Raven không cần)
     if getattr(provider, "referer", None):
         session.headers["Referer"] = provider.referer
@@ -648,6 +737,9 @@ def run(provider, args):
     active = 0  # đếm chương có tải thật, để nghỉ giải lao định kỳ
     incomplete = []     # [(nhãn chương, trang còn thiếu)] — chạy lại là bù được
     source_broken = []  # [(nhãn chương, trang hỏng tại nguồn)] — tải lại vô ích
+    n_full = 0     # chương ĐỦ ẢNH sau lượt này (tải mới xong, hoặc đã đủ sẵn)
+    n_skipped = 0  # chương .done -> bỏ qua từ lượt trước (khỏi quét mạng)
+    n_locked = 0   # chương KHÔNG có ảnh (khóa/premium/xóa nguồn)
     try:
         for idx, c in enumerate(chapters, 1):
             label = f"Chapter {fmt_num(c.number)}"
@@ -659,6 +751,7 @@ def run(provider, args):
             # danh sách ảnh (giúp chạy lại hàng đợi rất nhanh). Cờ --recheck để quét lại.
             if (folder / ".done").exists() and not getattr(args, "recheck", False):
                 print(f"{prefix} — đã xong trước đó (bỏ qua, khỏi quét mạng)")
+                n_skipped += 1
                 if args.cbz:
                     make_cbz(folder, skip_existing=True)
                 continue
@@ -666,6 +759,7 @@ def run(provider, args):
             urls = provider.chapter_images(c)
             if not urls:
                 print(f"{prefix} — không có ảnh (khóa/premium?), bỏ qua")
+                n_locked += 1
                 continue
 
             # 1 trang = (số thứ tự, url, đích). Giữ nguyên list để cuối còn soát đủ/thiếu.
@@ -681,6 +775,7 @@ def run(provider, args):
             jobs = [(u, d) for _, u, d in pages if not _have(d)]
             if not jobs:
                 print(f"{prefix} — đã đủ {len(urls)} ảnh, bỏ qua")
+                n_full += 1
                 _mark_done(folder)   # đủ rồi -> đánh dấu để lần sau khỏi quét
                 if args.cbz:
                     make_cbz(folder, skip_existing=True)
@@ -729,6 +824,7 @@ def run(provider, args):
                     append_log(f"{base_title} / {label}: {len(broken)} trang HỎNG TẠI NGUỒN "
                                f"[{compact_ints(broken)}] — tải lại vô ích, đã ghi nhận")
             else:
+                n_full += 1
                 print(f"\r{prefix} — xong {ok}/{len(urls)} ảnh                    ")
 
             if args.cbz:
@@ -747,6 +843,19 @@ def run(provider, args):
         print("Ảnh đã tải không mất. Chờ một lúc (429: ~1 giờ; 403/503: vài giờ) "
               "rồi chạy lại đúng lệnh này - tự tải tiếp chỗ dở.", file=sys.stderr)
         sys.exit(2)
+
+    # ---- Tổng kết CẢ BỘ: luôn in 1 dòng số liệu (kể cả khi mọi thứ đều ổn) ----
+    bits = [f"✅ {n_full} chương đủ ảnh"]
+    if n_skipped:
+        bits.append(f"⏭ {n_skipped} đã xong từ trước")
+    if incomplete:
+        bits.append(f"⚠ {len(incomplete)} thiếu trang (tải lại là bù được)")
+    if source_broken:
+        bits.append(f"⛔ {len(source_broken)} có trang hỏng tại nguồn")
+    if n_locked:
+        bits.append(f"🔒 {n_locked} khóa/không ảnh")
+    print(f"\n===== TỔNG KẾT «{base_title}»: {total} chương =====")
+    print("   " + "   |   ".join(bits))
 
     # Tổng kết: tách rõ 'chạy lại là bù được' với 'nguồn hỏng, chạy lại vô ích'.
     if incomplete:
