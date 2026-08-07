@@ -76,17 +76,18 @@ class AsuraProvider:
 
 
 class RavenProvider:
-    """Raven Scans - WordPress + theme Themesia 'mangareader'.
+    """Raven Scans - WordPress + theme Themesia 'mangareader' (đã đổi .org -> .net và
+    đổi cả cấu trúc URL chương, ~2025-06).
 
-    Danh sách chương: parse các <a> trong trang /series/{slug}/.
-    URL ảnh: khối `ts_reader.run({...})` nhúng trong HTML mỗi chương -> sources[0].images.
-    CDN (cdn1.ravenscans.org) trả .jpg, KHÔNG đòi Referer. URL ảnh đầy đủ trong
-    ts_reader nên CDN có đổi host cũng tự động đúng, không phải sửa gì.
+    Danh sách chương: link dạng /series/{slug}/chapter-{ID_nội_bộ}/ trong trang
+    /series/{slug}/ — SỐ chương nằm trong TEXT thẻ <a> ("Chapter N"), KHÔNG ở URL.
+    URL ảnh: khối `ts_reader.run({...})` nhúng trong HTML mỗi chương -> sources[0].images
+    (URL ảnh đầy đủ, CDN cdn1.ravenscans.org trả .jpg, KHÔNG đòi Referer).
     """
 
     name = "raven"
-    BASE = "https://ravenscans.org"
-    domains = ["ravenscans.org"]
+    BASE = "https://ravenscans.net"
+    domains = ["ravenscans.net", "ravenscans.org"]   # giữ .org cho link cũ
     referer = None
 
     def __init__(self):
@@ -113,19 +114,23 @@ class RavenProvider:
 
     def list_chapters(self, slug: str):
         html = self._series_html(slug)
-        prefix = f"{self.BASE}/{slug}-chapter-"
-        pat = re.compile(r'href="(' + re.escape(prefix) + r'[^"]+)"')
-        seen = {}  # number -> url (dedup, mỗi chương xuất hiện nhiều lần trong trang)
-        for url in pat.findall(html):
-            tail = url[len(prefix):].rstrip("/")   # "253" | "162-5" | "253-something"
-            m = re.match(r"\d+(?:[.-]\d+)?", tail)
+        # link chương: .../series/{slug}/chapter-{ID}/ ; số chương ở TEXT ("Chapter N")
+        pat = re.compile(
+            r'<a[^>]+href="([^"]*?/series/' + re.escape(slug) + r'/chapter-\d+/?)"[^>]*>(.*?)</a>',
+            re.S | re.I)
+        seen = {}  # số chương -> url (dedup, mỗi chương xuất hiện nhiều lần trong trang)
+        for href, inner in pat.findall(html):
+            txt = re.sub(r"<[^>]+>", " ", inner)                 # bỏ thẻ con, còn lại text
+            m = re.search(r"chapter\s*(\d+(?:[.-]\d+)?)", txt, re.I)
             if not m:
-                continue
+                continue                                          # nút First/Last... -> bỏ
             try:
-                num = float(m.group(0).replace("-", "."))  # 162-5 -> 162.5
+                num = float(m.group(1).replace("-", "."))         # 162-5 -> 162.5
             except ValueError:
                 continue
-            seen[num] = prefix + tail + "/"
+            if not href.startswith("http"):
+                href = self.BASE + href
+            seen[num] = href
         return [Chapter(num, "", seen[num]) for num in sorted(seen)]
 
     def chapter_images(self, chapter):
