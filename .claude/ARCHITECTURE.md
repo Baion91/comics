@@ -30,7 +30,8 @@ cách chạy thật + decode thử ảnh.
     `list_chapters`→`[Chapter(number,title,ref)]`, `chapter_images`→`[url]`,
     `cover_url`. `ref` là "chìa" mờ mỗi site tự sinh/tự hiểu (Asura = URL API
     chương; Raven = URL trang chương). `PROVIDERS`/`by_name`/`REGISTRY` (map domain).
-    Đang có: **AsuraProvider** (API JSON), **RavenProvider** (parse HTML + `ts_reader`).
+    Đang có: **AsuraProvider** (API JSON), **RavenProvider** (parse HTML + `ts_reader`),
+    **DilibProvider** (parse HTML PHP), **MangaDexProvider** (API JSON, bản dịch `en`).
   - `comic_downloader.py` — CLI mỏng: `resolve_provider()` tự nhận site theo domain
     của URL (hoặc cờ `--site`), rồi gọi `core.run`. Cờ giữ y hệt bản cũ
     (`--from/--to/--chapters/--cbz/--pack/--out/--workers/--delay`).
@@ -161,6 +162,29 @@ cách chạy thật + decode thử ảnh.
   hao (đúng chính sách WebP bên dưới). Thư viện thành hỗn hợp webp(Asura)+jpg(Raven);
   reader đọc cả hai (`IMG_EXTS`). Cloudflare hiện chưa challenge GET thường → chưa thêm
   cloudscraper/curl_cffi, để cầu dao 403/503 dừng gọn, thêm khi thực sự vỡ.
+- **MangaDex dùng API công khai** (`api.mangadex.org`): slug = UUID trong `/title/{uuid}/`;
+  chương từ `/manga/{uuid}/feed?translatedLanguage[]=en` + `contentRating[]` đủ 4 mức
+  (mặc định API loại `pornographic` → manga 18+ ra rỗng nếu không xin) + `order[volume]=asc
+  &order[chapter]=asc&order[readableAt]=desc` (phân trang `limit=500` theo `total`). **Dedup
+  key `"{volume}:{chương}"`, giữ bản GẶP ĐẦU** — vì readableAt desc nên đó là bản **upload
+  MỚI NHẤT** (newest-wins, khớp `mangadex-downloader` mặc định; tránh vớ bản scan cũ khi
+  nhiều nhóm dịch). Chương `chapter=null` (oneshot) gán số `0.0` chứ không bỏ. Ảnh qua
+  **@Home**: `/at-home/server/{chapterId}` → ghép `{baseUrl}/data/{hash}/{file}` (đuôi
+  .png/.jpg thật). Bìa: relationship `cover_art` → `uploads.mangadex.org/covers/{uuid}/{fileName}`.
+- **Đối chiếu tool `mansuf/mangadex-downloader` v3** (nguồn logic trên): khớp dedup
+  `f"{volume}:{chapter}"` + order + contentRating. Chỗ **CHƯA làm** (chấp nhận): không
+  report về `api.mangadex.network/report`, không tự xin node @Home khác khi 1 node hỏng,
+  không có DoH. Đã test 08/08: cả PC dev lẫn **server** đều resolve/tải được
+  `api.mangadex.org` + node `*.mangadex.network` → **không cần DoH**. `mangadex.org` trần bị
+  chặn DNS về `127.0.0.1` nhưng provider không hề resolve host đó (chỉ api/uploads/network).
+  `_retry_after` đọc thêm header MangaDex `x-ratelimit-retry-after` (mốc epoch, không phải
+  số giây chờ). Naming theo chuẩn engine (`Chapter N - Title`), KHÁC tool (`Ch. N`).
+- **MangaDex @Home ĐÒI `Referer: https://mangadex.org/`**: ảnh **NGUỘI** (chưa cache
+  Cloudflare) mà thiếu Referer trả **404** (không phải 403!). Ảnh đã có người xem =
+  cache HIT thì kể cả thiếu Referer vẫn 200 → dễ tưởng nhầm là chạy được. Nên
+  `MangaDexProvider.referer="https://mangadex.org/"` (khác Asura/Raven `referer=None`).
+  Chỉ cần Referer, KHÔNG cần Origin. (Chẩn ra 07/08: batch tải nguội 404 hàng loạt trong
+  khi ảnh test lẻ 200 vì đã warm cache.)
 - **Dùng API JSON thay vì parse HTML** (Asura): trả URL ảnh đúng thứ tự trang;
   bắt buộc vì chương mới đặt tên ảnh hash ngẫu nhiên, không đoán được URL.
 - **PoliteGate + cầu dao 429** (sự cố 16/07/2026: 5 luồng không nghỉ → CDN chặn
@@ -289,6 +313,7 @@ cách chạy thật + decode thử ảnh.
 
 ```
 python comic_downloader.py <URL> [--from A --to B | --chapters 5,7,20-25] [--cbz]   # tự nhận site
+python comic_downloader.py "https://mangadex.org/title/{uuid}/..."   # MangaDex (bản dịch en)
 python comic_downloader.py --site raven <slug>     # ép site khi gõ slug trần
 python comic_downloader.py --pack "downloads\<Tên>"
 python check_library.py [downloads\<Tên>] [--fix] [--recheck] [--workers N] [--black]  # kiểm ảnh đã tải

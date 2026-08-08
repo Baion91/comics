@@ -465,6 +465,13 @@ gate = PoliteGate()
 
 
 def _retry_after(resp) -> float | None:
+    # MangaDex gửi 'x-ratelimit-retry-after' = MỐC epoch tuyệt đối (giây) -> đổi ra
+    # số giây chờ = mốc trừ hiện tại. KHÁC 'Retry-After' (số giây chờ tương đối,
+    # chuẩn HTTP/DDoS-Guard). Ưu tiên header MangaDex nếu có.
+    xr = resp.headers.get("x-ratelimit-retry-after", "")
+    if xr.replace(".", "", 1).isdigit():
+        delay = float(xr) - time.time()
+        return delay if delay > 0 else None
     ra = resp.headers.get("Retry-After", "")
     return float(ra) if ra.replace(".", "", 1).isdigit() else None
 
@@ -845,31 +852,31 @@ def run(provider, args):
         sys.exit(2)
 
     # ---- Tổng kết CẢ BỘ: luôn in 1 dòng số liệu (kể cả khi mọi thứ đều ổn) ----
-    bits = [f"✅ {n_full} chương đủ ảnh"]
+    bits = [f"Đủ ảnh: {n_full}"]
     if n_skipped:
-        bits.append(f"⏭ {n_skipped} đã xong từ trước")
+        bits.append(f"Đã xong trước: {n_skipped}")
     if incomplete:
-        bits.append(f"⚠ {len(incomplete)} thiếu trang (tải lại là bù được)")
+        bits.append(f"Thiếu trang: {len(incomplete)} (tải lại là bù được)")
     if source_broken:
-        bits.append(f"⛔ {len(source_broken)} có trang hỏng tại nguồn")
+        bits.append(f"Hỏng tại nguồn: {len(source_broken)}")
     if n_locked:
-        bits.append(f"🔒 {n_locked} khóa/không ảnh")
-    print(f"\n===== TỔNG KẾT «{base_title}»: {total} chương =====")
+        bits.append(f"Khóa/không ảnh: {n_locked}")
+    print(f"\n===== TỔNG KẾT: {base_title} — {total} chương =====")
     print("   " + "   |   ".join(bits))
 
     # Tổng kết: tách rõ 'chạy lại là bù được' với 'nguồn hỏng, chạy lại vô ích'.
     if incomplete:
-        print(f"\n⚠ {len(incomplete)} chương còn thiếu trang (ảnh hỏng đã bị loại, "
+        print(f"\n! {len(incomplete)} chương còn thiếu trang (ảnh hỏng đã bị loại, "
               f"KHÔNG để lại file lỗi):")
         for label, missing in incomplete:
             print(f"   - {label}: thiếu {compact_ints(missing)}")
-        print("→ Chạy lại đúng lệnh vừa rồi để tự tải bù các trang này "
+        print("-> Chạy lại đúng lệnh vừa rồi để tự tải bù các trang này "
               "(chi tiết đã ghi vào .reader-meta/download-log.txt).")
     if source_broken:
-        print(f"\n⛔ {len(source_broken)} chương có trang HỎNG TẠI NGUỒN — file trên "
+        print(f"\n!! {len(source_broken)} chương có trang HỎNG TẠI NGUỒN — file trên "
               f"server vốn đã hỏng, tải lại KHÔNG giải quyết được:")
         for label, pages_ in source_broken:
             print(f"   - {label}: trang {compact_ints(pages_)}")
-        print("→ Đã ghi nhận, các lần chạy sau sẽ tự bỏ qua (khỏi tốn request). "
+        print("-> Đã ghi nhận, các lần chạy sau sẽ tự bỏ qua (khỏi tốn request). "
               "Muốn thử lại: thêm cờ --retry-broken.")
     print("\nHoàn tất.")

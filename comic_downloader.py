@@ -82,8 +82,8 @@ def resolve_provider(series_arg, site_flag, default=None):
         return default
     sys.exit(
         f"Không nhận ra site từ '{series_arg}'.\n"
-        f"  → Dán URL đầy đủ (vd https://ravenscans.org/series/xxx/)\n"
-        f"  → hoặc thêm --site ({', '.join(sorted(by_name))}) nếu gõ slug trần."
+        f"  -> Dán URL đầy đủ (vd https://ravenscans.org/series/xxx/)\n"
+        f"  -> hoặc thêm --site ({', '.join(sorted(by_name))}) nếu gõ slug trần."
     )
 
 

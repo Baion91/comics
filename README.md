@@ -23,7 +23,8 @@ Các script trong thư mục này, mỗi cái một việc:
 
 ## 1. Tải truyện — `comic_downloader.py` (hoặc bấm `Tai truyen.bat`)
 
-Một tool cho MỌI site, tự nhận site theo link (hiện hỗ trợ **Asura**, **Raven**, **Dilib**).
+Một tool cho MỌI site, tự nhận site theo link (hiện hỗ trợ **Asura**, **Raven**, **Dilib**,
+**MangaDex**).
 
 > **Raven Scans đã đổi `ravenscans.org` → `ravenscans.net`** (và đổi cấu trúc URL chương) —
 > dùng link `.net` mới; link `.org` cũ vẫn được nhận.
