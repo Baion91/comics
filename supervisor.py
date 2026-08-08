@@ -144,6 +144,7 @@ HELP_TEXT = (
     "/help — danh sách lệnh\n\n"
     "Admin:\n"
     "/tai <link> — tải truyện (nhiều link cách nhau dấu cách)\n"
+    "/trangthai — xem truyện đang tải + hàng chờ\n"
     "/stop — dừng truyện đang tải + xoá hàng chờ (của bạn)\n"
     "/killnow — chỉ dừng truyện đang tải (của bạn)\n"
     "/clearq — chỉ xoá hàng chờ (của bạn)\n"
@@ -174,6 +175,7 @@ class Supervisor:
         self._dl_proc = None        # tiến trình comic_downloader đang chạy (để kill)
         self._dl_cur = None         # job dict đang tải — để biết 'của ai'
         self._dl_cancelled = False  # cờ: lần kill này là do người dùng huỷ (không phải lỗi)
+        self._dl_logpos = 0         # offset đầu log của job đang chạy — /trangthai đọc tiến độ
 
     def reader_url(self):
         return f"http://127.0.0.1:{self.cfg.get('reader_port', 8080)}"
@@ -251,6 +253,7 @@ class Supervisor:
             {"command": "link", "description": "Lấy link đọc hiện tại"},
             {"command": "whoami", "description": "Xem chat_id của bạn"},
             {"command": "tai", "description": "Tải truyện: /tai <link> (admin)"},
+            {"command": "trangthai", "description": "Xem tải đang chạy + hàng chờ (admin)"},
             {"command": "stop", "description": "Dừng tải + xoá hàng chờ của bạn (admin)"},
             {"command": "killnow", "description": "Chỉ dừng truyện đang tải của bạn (admin)"},
             {"command": "clearq", "description": "Chỉ xoá hàng chờ của bạn (admin)"},
@@ -319,6 +322,8 @@ class Supervisor:
             self.handle_admin(token, cid, "add", raw)
         elif text.startswith("/adminremove"):
             self.handle_admin(token, cid, "remove", raw)
+        elif text.startswith("/trangthai"):
+            self.handle_status(token, cid)
         elif text.startswith("/tai"):
             self.handle_tai(token, cid, raw)
         elif text.startswith("/stopall"):
@@ -562,13 +567,65 @@ class Supervisor:
                 "text": "Gửi: /tai <link truyện> [link2 ...]"})
             return
         with self._dlq_lock:
+            # Chống trùng: URL đã ở trong hàng (pending HOẶC đang chạy) thì bỏ qua —
+            # thêm lại chỉ tốn 1 lượt khởi động downloader + quét mạng vô ích.
+            have = {j["url"] for j in self._jobs}
+            added, dup = [], 0
             for u in urls:
-                self._jobs.append({"url": u, "cid": cid, "state": "pending", "resumed": False})
-            self._save_jobs_locked()
-            pending = sum(1 for j in self._jobs if j["state"] == "pending")
-            self._dlq_lock.notify()   # đánh thức worker
-        tg_api(token, "sendMessage", {"chat_id": cid,
-            "text": f"📥 Đã thêm {len(urls)} truyện vào hàng đợi (đang chờ: {pending})."})
+                if u in have:
+                    dup += 1
+                else:
+                    self._jobs.append({"url": u, "cid": cid, "state": "pending",
+                                       "resumed": False})
+                    have.add(u)
+                    added.append(u)
+            if added:
+                self._save_jobs_locked()
+                self._dlq_lock.notify()   # đánh thức worker
+        parts = []
+        if added:
+            parts.append(f"📥 Đã thêm {len(added)} truyện vào hàng đợi.")
+        if dup:
+            parts.append(f"⏭ {dup} truyện đã có trong hàng đợi (bỏ qua).")
+        parts.append("Gõ /trangthai để xem đang tải gì và còn chờ mấy truyện.")
+        tg_api(token, "sendMessage", {"chat_id": cid, "text": "\n".join(parts),
+            "disable_web_page_preview": "true"})
+
+    @staticmethod
+    def _slug(url):
+        """Rút tên gọn từ URL để hiển thị (bỏ đuôi '/', lấy cụm cuối có ý nghĩa)."""
+        s = url.rstrip("/").split("/")
+        return s[-1] if s and s[-1] else (s[-2] if len(s) > 1 else url)
+
+    def handle_status(self, token, cid):
+        """/trangthai — ảnh chụp hàng đợi: truyện đang tải (kèm tiến độ đọc từ log)
+        + danh sách đang chờ. Đọc trong khoá để không trúng lúc worker đổi state."""
+        if not self._is_admin(cid):
+            tg_api(token, "sendMessage", {"chat_id": cid, "text": "⛔ Bạn không phải admin."})
+            return
+        with self._dlq_lock:
+            cur = self._dl_cur
+            logpos = self._dl_logpos
+            pending = [j for j in self._jobs if j["state"] == "pending"]
+        lines = []
+        if cur:
+            prog = self._read_log_tail(logpos, maxchars=120)
+            head = "🔄 Đang tiếp tục" if cur.get("resumed") else "▶️ Đang tải"
+            lines.append(f"{head}: {self._slug(cur['url'])}")
+            if prog:
+                lines.append(f"   {prog}")
+        else:
+            lines.append("💤 Không có truyện nào đang tải.")
+        if pending:
+            lines.append(f"⏳ Đang chờ ({len(pending)}):")
+            for i, j in enumerate(pending[:15], 1):
+                lines.append(f"   {i}. {self._slug(j['url'])}")
+            if len(pending) > 15:
+                lines.append(f"   … và {len(pending) - 15} truyện nữa")
+        else:
+            lines.append("⏳ Hàng chờ trống.")
+        tg_api(token, "sendMessage", {"chat_id": cid, "text": "\n".join(lines),
+            "disable_web_page_preview": "true"})
 
     def _drain_queue(self, cid=None):
         """Xoá các job ĐANG CHỜ (pending) khỏi hàng đợi + file, trả số đã xoá.
@@ -631,6 +688,23 @@ class Supervisor:
         lines = [l for l in text.replace("\r", "\n").splitlines() if l.strip()]
         return lines[-1][:maxchars] if lines else ""
 
+    @staticmethod
+    def _read_summary(start_pos, maxchars=1500):
+        """Trích khối '===== TỔNG KẾT' downloader in ở cuối lượt (số liệu chương + ảnh
+        OK/thiếu/hỏng + chi tiết chương thiếu trang) -> đính vào tin 'Tải xong'."""
+        try:
+            with open(DL_LOG_FILE, "r", encoding="utf-8", errors="replace") as f:
+                f.seek(start_pos)
+                text = f.read()
+        except OSError:
+            return ""
+        text = text.replace("\r", "\n")
+        idx = text.rfind("===== TỔNG KẾT")
+        if idx < 0:
+            return ""
+        lines = [l.rstrip() for l in text[idx:].splitlines() if l.strip()]
+        return "\n".join(lines)[:maxchars]
+
     def download_loop(self):
         """Worker: tải tuần tự từng job trong _jobs (bền hoá ra đĩa), 1 lượt/lúc.
         Output downloader ghi ra FILE (không PIPE) -> supervisor chết không làm vỡ pipe
@@ -669,6 +743,8 @@ class Supervisor:
                     start_pos = os.path.getsize(DL_LOG_FILE)
                 except OSError:
                     start_pos = 0
+                with self._dlq_lock:                      # để /trangthai đọc tiến độ đúng job
+                    self._dl_logpos = start_pos
                 logf = open(DL_LOG_FILE, "ab")            # con ghi thẳng vào file (nối tiếp)
                 try:
                     proc = subprocess.Popen(              # -u: không buffer -> tail real-time
@@ -687,7 +763,8 @@ class Supervisor:
                            "(Tải lại bằng /tai sẽ tự bỏ qua chương đã xong, "
                            "tiếp tục từ chỗ dở.)")
                 elif rc == 0:
-                    msg = f"✅ Tải xong:\n{url}"
+                    summary = self._read_summary(start_pos)   # số liệu chương + ảnh
+                    msg = f"✅ Tải xong:\n{url}" + (("\n\n" + summary) if summary else "")
                 else:
                     tail = self._read_log_tail(start_pos)
                     msg = f"❌ Lỗi tải:\n{url}" + (("\n" + tail) if tail else "")
@@ -701,6 +778,7 @@ class Supervisor:
             with self._dlq_lock:
                 self._dl_proc = None
                 self._dl_cur = None
+                self._dl_logpos = 0
                 try:
                     self._jobs.remove(job)
                 except ValueError:

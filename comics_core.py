@@ -754,6 +754,9 @@ def run(provider, args):
     n_full = 0     # chương ĐỦ ẢNH sau lượt này (tải mới xong, hoặc đã đủ sẵn)
     n_skipped = 0  # chương .done -> bỏ qua từ lượt trước (khỏi quét mạng)
     n_locked = 0   # chương KHÔNG có ảnh (khóa/premium/xóa nguồn)
+    img_ok = 0        # tổng ẢNH tốt (có trên đĩa) của các chương quét lượt này
+    img_missing = 0   # tổng ẢNH còn thiếu (tải lại là bù được)
+    img_broken = 0    # tổng ẢNH hỏng tại nguồn (tải lại vô ích)
     try:
         for idx, c in enumerate(chapters, 1):
             label = f"Chapter {fmt_num(c.number)}"
@@ -790,6 +793,7 @@ def run(provider, args):
             if not jobs:
                 print(f"{prefix} — đã đủ {len(urls)} ảnh, bỏ qua")
                 n_full += 1
+                img_ok += len(urls)
                 _mark_done(folder)   # đủ rồi -> đánh dấu để lần sau khỏi quét
                 if args.cbz:
                     make_cbz(folder, skip_existing=True)
@@ -841,6 +845,11 @@ def run(provider, args):
                 n_full += 1
                 print(f"\r{prefix} — xong {ok}/{len(urls)} ảnh                    ")
 
+            # cộng dồn cấp ẢNH cho tổng kết: tốt = kỳ vọng - thiếu (gồm cả ảnh có sẵn)
+            img_ok += len(urls) - len(missing)
+            img_missing += len(retryable)
+            img_broken += len(broken)
+
             if args.cbz:
                 make_cbz(folder)
 
@@ -870,6 +879,15 @@ def run(provider, args):
         bits.append(f"Khóa/không ảnh: {n_locked}")
     print(f"\n===== TỔNG KẾT: {base_title} — {total} chương =====")
     print("   " + "   |   ".join(bits))
+    # Dòng cấp ẢNH (điều hay cần: bao nhiêu ảnh OK / lỗi). Chương .done bỏ qua không
+    # quét mạng nên KHÔNG đếm được ảnh -> ghi chú rõ để khỏi tưởng thiếu.
+    img_bits = [f"OK {img_ok}"]
+    if img_missing:
+        img_bits.append(f"thiếu {img_missing}")
+    if img_broken:
+        img_bits.append(f"hỏng nguồn {img_broken}")
+    tail = f"  (chưa gồm {n_skipped} chương đã xong trước)" if n_skipped else ""
+    print("   Ảnh: " + ", ".join(img_bits) + tail)
 
     # Tổng kết: tách rõ 'chạy lại là bù được' với 'nguồn hỏng, chạy lại vô ích'.
     if incomplete:

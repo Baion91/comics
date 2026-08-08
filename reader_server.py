@@ -964,7 +964,14 @@ body.jmode .sctl{display:flex}
   white-space:nowrap;font-weight:600}
 .accerr{color:#ff6b6b;font-size:12.5px;flex-basis:100%;text-align:right;min-height:0}
 h1{font-size:22px;margin:6px 0 18px;line-height:1.3}
-.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:14px}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:14px;
+  min-height:70vh}
+/* Giữ chiều cao tối thiểu vùng kết quả -> lọc search KHÔNG làm trang co lại đột ngột
+   khiến iOS clamp scroll (nhảy mỗi ký tự). #chapters cũng vậy. */
+#chapters{min-height:70vh}
+.nores{display:none;grid-column:1/-1;color:#9a9aa5;text-align:center;
+  padding:48px 10px;font-size:15px}
+.nores.on{display:block}
 .card{background:#15161c;border:1px solid #25262e;border-radius:14px;overflow:hidden;
   display:block;position:relative}
 .card img{width:100%;aspect-ratio:3/4;object-fit:cover;display:block;background:#101116}
@@ -1351,6 +1358,7 @@ def html_home(lib, user=None):
     grid = ('<section>' + sect_head("all", SECT_BOOK_SVG, "All Comics") + homesearch + admbar
             + '<div class="grid" id="grid">'
             + "".join(home_card_html(s, s["id"] in bmset, admin) for s in ordered)
+            + '<div class="nores" id="homenores">Không tìm thấy truyện nào.</div>'
             + '</div></section>')
     # dữ liệu để JS dựng lại slider khi bấm bookmark (không tải lại trang)
     followdata = {}
@@ -1430,7 +1438,8 @@ def html_series(s, user=None):
             f'<div class="smeta">{meta}</div>'
             f'<div class="sfollow">{bookmark_btn(bm, "sbk")}</div>'
             f'</div></div>' + chapbtns + chhead
-            + '<div id="chapters" data-order="new">' + "".join(sections) + "</div></div>"
+            + '<div id="chapters" data-order="new">' + "".join(sections)
+            + '<div class="nores" id="chnores">Không tìm thấy chương nào.</div></div></div>'
             + TOTOP_HTML
             + f'<script>const SDATA={js(sdata)};const LOGGEDIN={js(bool(user))};</script>'
             f'<script>{LS_JS}</script><script>{ACCT_JS}</script><script>{SERIES_JS}</script>')
@@ -1705,12 +1714,15 @@ HOME_JS = """
   }
   // tìm truyện theo tên trong lưới All Comics
   var hq=document.getElementById('homeq');
+  var hnr=document.getElementById('homenores');
   if(hq) hq.addEventListener('input',function(){
-    var term=hq.value.trim().toLowerCase();
+    var term=hq.value.trim().toLowerCase(), any=false;
     [].forEach.call(grid.querySelectorAll('.card'),function(c){
       var t=((c.querySelector('.ct')||{}).textContent||'').toLowerCase();
-      c.style.display=(!term || t.indexOf(term)>=0)?'':'none';
+      var hit=(!term || t.indexOf(term)>=0);
+      c.style.display=hit?'':'none'; if(hit)any=true;
     });
+    if(hnr) hnr.classList.toggle('on', !!term && !any);
   });
 })();
 """
@@ -1839,9 +1851,9 @@ SERIES_JS = """
   });
 
   // tìm chương theo số + tên; tự ẩn arc không còn kết quả
-  var q=document.getElementById('chq');
+  var q=document.getElementById('chq'), chnr=document.getElementById('chnores');
   if(q) q.addEventListener('input',function(){
-    var term=q.value.trim().toLowerCase();
+    var term=q.value.trim().toLowerCase(), anyAll=false;
     container.querySelectorAll('.arcsec').forEach(function(sec){
       var any=false;
       sec.querySelectorAll('a.ch').forEach(function(a){
@@ -1849,8 +1861,9 @@ SERIES_JS = """
                 || (a.dataset.num&&a.dataset.num.indexOf(term)>=0);
         a.style.display=hit?'':'none'; if(hit)any=true;
       });
-      sec.style.display=any?'':'none';
+      sec.style.display=any?'':'none'; if(any)anyAll=true;
     });
+    if(chnr) chnr.classList.toggle('on', !!term && !anyAll);
   });
 })();
 """
