@@ -338,8 +338,96 @@ class MangaDexProvider:
         return None
 
 
+class TruyenQQProvider:
+    """TruyenQQ - trang PHP tĩnh (HTML đủ, KHÔNG cần JS/API).
+
+    Trang series `/truyen-tranh/{slug}` liệt kê link chương
+    `/truyen-tranh/{slug}-chap-N` (số chương ở URL). HTML mỗi chương nhúng SẴN đủ URL
+    ảnh trong `<img class="lazy" ... data-original="https://iNNN.truyenvua.com/.../N.jpg">`
+    theo đúng thứ tự trang — chỉ việc regex `data-original`.
+
+    ⚠️ CDN ảnh (truyenvua.com / hinhtruyen.com) CHỐNG HOTLINK: thiếu Referer trả 403,
+    có `Referer: {BASE}/` trả 200 (đã kiểm). Host CDN là shard động (i216..., đổi theo
+    truyện) nên KHÔNG hard-code — lấy nguyên URL từ data-original. Token `?r=...` trên
+    URL ảnh KHÔNG bắt buộc, giữ nguyên cho tiện.
+
+    ⚠️ Site ĐỔI DOMAIN thường xuyên (truyenqq.com/vn/to/ko...). Khi đổi: thêm domain mới
+    vào `domains`, đổi BASE + referer sang domain mới (CDN đòi Referer = domain HIỆN HÀNH).
+
+    Tên folder: slug là ASCII không dấu (hiep-si-giay-6555) nên lấy tên CÓ DẤU từ
+    `<h1 itemprop="name">` của trang series thay vì title-case slug.
+    """
+
+    name = "truyenqq"
+    BASE = "https://truyenqqko.com"
+    # giữ các domain cũ để link cũ vẫn khớp REGISTRY (site hay đổi tên miền)
+    domains = ["truyenqqko.com", "truyenqqto.com", "truyenqqvn.com", "truyenqq.com.vn"]
+    referer = "https://truyenqqko.com/"
+
+    def __init__(self):
+        self._html_cache = {}  # đỡ tải lại trang series (list_chapters + title + cover)
+
+    def _series_html(self, slug: str) -> str:
+        if slug not in self._html_cache:
+            self._html_cache[slug] = get_text(f"{self.BASE}/truyen-tranh/{slug}") or ""
+        return self._html_cache[slug]
+
+    def series_slug(self, text: str) -> str:
+        text = re.split(r"[?#]", text.strip())[0].rstrip("/")  # bỏ query/fragment
+        seg = text.rsplit("/", 1)[-1]                          # lấy đoạn cuối path
+        # người dùng lỡ dán URL 1 chương -> cắt đuôi -chap-N để về slug truyện
+        seg = re.sub(r"-chap-[\d.\-]+$", "", seg, flags=re.I)
+        return seg
+
+    def title_from_slug(self, slug: str) -> str:
+        html = self._series_html(slug)
+        m = re.search(r'<h1[^>]*itemprop="name"[^>]*>([^<]+)</h1>', html, re.I)
+        if m:
+            return m.group(1).strip()
+        # dự phòng: bỏ đuôi id số (-6555) rồi làm tên hiển thị từ slug
+        name = re.sub(r"-\d+$", "", slug)
+        return name.replace("-", " ").replace("_", " ").title()
+
+    def list_chapters(self, slug: str):
+        html = self._series_html(slug)
+        pat = re.compile(
+            r"/truyen-tranh/" + re.escape(slug) + r"-chap-([0-9]+(?:[.\-][0-9]+)?)\b",
+            re.I)
+        seen = {}  # number -> url (mỗi chương xuất hiện nhiều lần trong trang, dedup)
+        for tail in pat.findall(html):
+            try:
+                num = float(tail.replace("-", "."))  # "10-5" -> 10.5
+            except ValueError:
+                continue
+            seen[num] = f"{self.BASE}/truyen-tranh/{slug}-chap-{tail}"
+        return [Chapter(num, "", seen[num]) for num in sorted(seen)]
+
+    def chapter_images(self, chapter):
+        html = get_text(chapter.ref)
+        if not html:
+            return []
+        seen, out = set(), []   # giữ nguyên thứ tự xuất hiện, bỏ trùng
+        for u in re.findall(r'data-original="(https?://[^"]+)"', html):
+            low = u.split("?", 1)[0].lower()
+            if not low.endswith((".jpg", ".jpeg", ".png", ".webp")):
+                continue          # bỏ avatar/icon lỡ có data-original
+            if u not in seen:
+                seen.add(u)
+                out.append(u)
+        return out
+
+    def cover_url(self, slug: str):
+        html = self._series_html(slug)
+        m = re.search(r'<meta property="og:image" content="([^"]+)"', html)
+        if not m:
+            return None
+        u = m.group(1)
+        return u if u.startswith("http") else self.BASE + u
+
+
 # --- Đăng ký: thêm site mới = thêm 1 dòng vào đây -------------------------------
-PROVIDERS = [AsuraProvider(), RavenProvider(), DilibProvider(), MangaDexProvider()]
+PROVIDERS = [AsuraProvider(), RavenProvider(), DilibProvider(), MangaDexProvider(),
+             TruyenQQProvider()]
 
 by_name = {p.name: p for p in PROVIDERS}                 # tra theo cờ --site
 REGISTRY = {d: p for p in PROVIDERS for d in p.domains}  # tra theo domain của URL
