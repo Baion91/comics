@@ -601,8 +601,15 @@ def download_image(url: str, dest: Path) -> bool:
 
 
 def safe_name(name: str) -> str:
-    """Bỏ ký tự không hợp lệ cho tên thư mục/tệp trên Windows."""
-    return re.sub(r'[<>:"/\\|?*]', "_", name).strip() or "untitled"
+    """Bỏ ký tự không hợp lệ cho tên thư mục/tệp trên Windows.
+
+    Ngoài nhóm cấm <>:"/\\|?* và ký tự điều khiển (thay bằng _), PHẢI cắt dấu chấm và
+    khoảng trắng ở CUỐI tên: Windows tự lược bỏ chúng khi mkdir, nên tên Path (còn giữ
+    '...') lệch tên thư mục thật trên đĩa (đã bị cắt) -> ghi ảnh vào trong báo
+    FileNotFoundError. Title chương MangaDex hay kết thúc bằng '...' nên rất dễ dính.
+    """
+    cleaned = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", name).strip().rstrip(" .")
+    return cleaned or "untitled"
 
 
 def fmt_num(num) -> str:
