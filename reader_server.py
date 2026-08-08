@@ -965,7 +965,7 @@ body.jmode .sctl{display:flex}
 .accerr{color:#ff6b6b;font-size:12.5px;flex-basis:100%;text-align:right;min-height:0}
 h1{font-size:22px;margin:6px 0 18px;line-height:1.3}
 .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:14px;
-  min-height:70vh}
+  min-height:70vh;align-content:start}
 /* Giữ chiều cao tối thiểu vùng kết quả -> lọc search KHÔNG làm trang co lại đột ngột
    khiến iOS clamp scroll (nhảy mỗi ký tự). #chapters cũng vậy. */
 #chapters{min-height:70vh}
