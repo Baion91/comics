@@ -1724,6 +1724,14 @@ HOME_JS = """
     });
     if(hnr) hnr.classList.toggle('on', !!term && !any);
   });
+  // Khôi phục ô search + vị trí cuộn sau khi admin thao tác phải reload (order/prune/
+  // refresh) — cặp với reloadKeepSearch() trong ADMIN_JS. Dùng 1 lần rồi xoá.
+  try{
+    var sq=sessionStorage.getItem('homeq'); sessionStorage.removeItem('homeq');
+    var sy=sessionStorage.getItem('homey'); sessionStorage.removeItem('homey');
+    if(hq && sq){ hq.value=sq; hq.dispatchEvent(new Event('input')); }
+    if(sy){ window.scrollTo(0, parseInt(sy,10)||0); }
+  }catch(e){}
 })();
 """
 
@@ -1734,6 +1742,34 @@ ADMIN_JS = """
     headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
     .then(function(r){return r.json();}); }
   var grid=document.getElementById('grid');
+  // Reload nhưng GIỮ ô search + vị trí cuộn (dùng cho order/prune/refresh — vốn phải
+  // dựng lại cả danh sách). HOME_JS đọc lại 2 khoá này lúc trang load.
+  function reloadKeepSearch(){
+    try{
+      var hq=document.getElementById('homeq');
+      sessionStorage.setItem('homeq', hq?hq.value:'');
+      sessionStorage.setItem('homey', String(window.pageYOffset||0));
+    }catch(e){}
+    location.reload();
+  }
+  // Đồng bộ card trong slider Bookmarked (nếu truyện đang được bookmark) + FOLLOWDATA
+  // -> sửa tên/bìa tại chỗ không để slider hiển thị bản cũ. (status không hiện ở slider.)
+  function syncSlider(sid, title, cover){
+    var fc=null;
+    [].forEach.call(document.querySelectorAll('.fcard'),function(f){
+      if(f.dataset.sid===sid) fc=f; });
+    if(fc){
+      if(title!=null){ var ft=fc.querySelector('.fct');
+        if(ft){ ft.textContent=title; ft.title=title; } }
+      if(cover!=null){ var fi=fc.querySelector('img'); if(fi) fi.src=cover; }
+    }
+    try{
+      if(typeof FOLLOWDATA!=='undefined' && FOLLOWDATA[sid]){
+        if(title!=null) FOLLOWDATA[sid].title=title;
+        if(cover!=null) FOLLOWDATA[sid].cover=cover;
+      }
+    }catch(e){}
+  }
   // đổi bìa: 1 input file dùng chung, nhớ card đang thao tác
   var covin=document.createElement('input');
   covin.type='file'; covin.accept='image/*'; covin.style.display='none';
@@ -1746,7 +1782,12 @@ ADMIN_JS = """
     rd.onload=function(){
       b.disabled=true;
       post({op:'cover',sid:sid,data:rd.result}).then(function(res){
-        if(res&&res.ok) location.reload(); else { b.disabled=false; alert('Đổi bìa thất bại (ảnh lỗi hoặc quá lớn).'); }
+        b.disabled=false;
+        if(res&&res.ok){
+          var img=b.closest('.card').querySelector('.cardlink img');
+          if(img && res.cover) img.src=res.cover;   // URL có ?v= mtime mới -> tải bìa mới
+          syncSlider(sid, null, res.cover);
+        } else alert('Đổi bìa thất bại (ảnh lỗi hoặc quá lớn).');
       }).catch(function(){b.disabled=false;});
     };
     rd.readAsDataURL(f);
@@ -1767,7 +1808,13 @@ ADMIN_JS = """
       if(nv===null) return;               // bấm Cancel
       te.disabled=true;
       post({op:'title',sid:tsid,title:nv}).then(function(res){
-        if(res&&res.ok) location.reload(); else { te.disabled=false; alert('Đổi tên thất bại.'); }
+        te.disabled=false;
+        if(res&&res.ok){
+          var tt=res.title||'';
+          var span=tcard.querySelector('.cttext');
+          if(span){ span.textContent=tt; span.title=tt; }   // textContent: an toàn XSS
+          syncSlider(tsid, tt, null);
+        } else alert('Đổi tên thất bại.');
       }).catch(function(){te.disabled=false;});
       return;
     }
@@ -1775,26 +1822,39 @@ ADMIN_JS = """
     e.preventDefault();
     var card=b.closest('.card'), sid=card?card.dataset.sid:null; if(!sid) return;
     var op=b.dataset.op;
-    var body={sid:sid};
-    if(op==='status'){ body.op='status';
-      body.status=b.classList.contains('complete')?'ongoing':'complete'; }
-    else { body.op='order'; body.move=op; }
+    if(op==='status'){
+      // hướng toggle đọc từ class hiện tại của NÚT (nguồn sự thật) -> cập nhật tại chỗ
+      var next=b.classList.contains('complete')?'ongoing':'complete';
+      b.disabled=true;
+      post({op:'status',sid:sid,status:next}).then(function(res){
+        b.disabled=false;
+        if(res&&res.ok){
+          b.classList.toggle('complete', res.status==='complete');
+          b.textContent=res.label;                       // nhãn trên nút
+          var st=card.querySelector('.cm .st');           // nhãn "N chaps · <status>"
+          if(st){ st.className='st '+res.status; st.textContent=res.label; }
+        }
+      }).catch(function(){b.disabled=false;});
+      return;
+    }
+    // order (top/up/down): đảo thứ tự cả lưới -> reload nhưng giữ search + scroll
     b.disabled=true;
-    post(body).then(function(res){ if(res&&res.ok) location.reload(); else b.disabled=false; })
-      .catch(function(){b.disabled=false;});
+    post({op:'order',sid:sid,move:op}).then(function(res){
+      if(res&&res.ok) reloadKeepSearch(); else b.disabled=false;
+    }).catch(function(){b.disabled=false;});
   });
   var pr=document.getElementById('admprune'), msg=document.getElementById('admmsg');
   if(pr) pr.addEventListener('click',function(){
     pr.disabled=true;
     post({op:'prune'}).then(function(res){
-      if(res&&res.ok){ if(msg) msg.textContent='Đã bỏ '+res.removed+' mục'; location.reload(); }
+      if(res&&res.ok){ if(msg) msg.textContent='Đã bỏ '+res.removed+' mục'; reloadKeepSearch(); }
       else pr.disabled=false;
     }).catch(function(){pr.disabled=false;});
   });
   var rf=document.getElementById('admrefresh');
   if(rf) rf.addEventListener('click',function(){
     rf.disabled=true;
-    post({op:'refresh'}).then(function(){location.reload();})
+    post({op:'refresh'}).then(function(){reloadKeepSearch();})
       .catch(function(){rf.disabled=false;});
   });
 })();
@@ -2258,14 +2318,22 @@ class Handler(BaseHTTPRequestHandler):
                 if op == "refresh":
                     bust_library_cache()
                     return self.send_json({"ok": True})
+                sid = data.get("sid")
+                # status/title/cover trả thêm giá trị ĐÃ RESOLVE để client cập nhật TẠI CHỖ
+                # (khỏi reload -> giữ nguyên ô search + vị trí cuộn khi sửa nhiều truyện).
                 if op == "status":
-                    ok = set_series_status(data.get("sid"), data.get("status"))
-                elif op == "order":
-                    ok = reorder_series(data.get("sid"), data.get("move"))
-                elif op == "title":
-                    ok = set_series_title(data.get("sid"), data.get("title") or "")
-                elif op == "cover":
-                    s = get_library().get(data.get("sid"))
+                    if set_series_status(sid, data.get("status")):
+                        st = series_status(sid)
+                        return self.send_json({"ok": True, "status": st,
+                                               "label": STATUS_LABELS[st]})
+                    return self.send_json({"ok": False}, 400)
+                if op == "title":
+                    if set_series_title(sid, data.get("title") or ""):
+                        s2 = get_library().get(sid)   # tên hiển thị đã chuẩn hoá / về-folder
+                        return self.send_json({"ok": True, "title": s2["title"] if s2 else ""})
+                    return self.send_json({"ok": False}, 400)
+                if op == "cover":
+                    s = get_library().get(sid)
                     raw = None
                     b64 = data.get("data") or ""
                     if isinstance(b64, str):
@@ -2274,12 +2342,14 @@ class Handler(BaseHTTPRequestHandler):
                             raw = base64.b64decode(b64, validate=True)
                         except (binascii.Error, ValueError):
                             raw = None
-                    if s and raw:
-                        ok = save_cover(s, raw)
-                        if ok:
-                            bust_library_cache()
-                    else:
-                        ok = False
+                    if s and raw and save_cover(s, raw):
+                        bust_library_cache()
+                        s2 = get_library().get(sid) or s   # mtime bìa đổi -> URL ?v= mới
+                        return self.send_json({"ok": True, "cover": cover_url(s2)})
+                    return self.send_json({"ok": False}, 400)
+                # order: đảo thứ tự nhiều card -> client reload (giữ search qua sessionStorage)
+                if op == "order":
+                    ok = reorder_series(sid, data.get("move"))
                 else:
                     ok = False
                 return self.send_json({"ok": bool(ok)}, 200 if ok else 400)
