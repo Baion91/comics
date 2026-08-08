@@ -293,6 +293,13 @@ class MangaDexProvider:
             total = data.get("total", 0)
             for c in data["data"]:
                 at = c["attributes"]
+                # Loại bản external (link bản quyền, ảnh KHÔNG ở MangaDex) và bản 0 trang
+                # NGAY TỪ ĐẦU, trước dedup: nếu để vào, bản external (thường mới hơn -> gặp
+                # trước do readableAt desc) sẽ GIÀNH slot dedup rồi bị bỏ vì rỗng, khiến bản
+                # THẬT cũ hơn bị coi là trùng và mất luôn (sự cố Tondemo Skill ch1). Bỏ trước
+                # -> newest-wins chỉ xét các bản CÓ ảnh, bản thật giữ được slot.
+                if at.get("externalUrl") or not at.get("pages"):
+                    continue
                 key = f"{at.get('volume')}:{at.get('chapter')}"
                 if key in seen:
                     continue          # bản cũ hơn của đúng chương này -> bỏ
