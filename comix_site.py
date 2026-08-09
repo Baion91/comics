@@ -43,6 +43,13 @@ giữ cookie cf_clearance. Nếu dính challenge tương tác -> gửi Telegram 
 .reader-meta/notify-config.json, ưu tiên admin_chat_ids) nhắc người mở màn hình
 server tick "Verify you are human", chờ tối đa 5 phút rồi tự chạy tiếp.
 
+Chặn QUẢNG CÁO + bền với chập chờn: browser CHỈ cho request tới comix.to +
+cloudflare.com (route abort mọi domain khác) và tự đóng popup — diệt gốc cú
+quảng cáo đẩy trang rời comix giữa lúc load (nguyên nhân 'chưa bắt được ảnh
+chương'). Ngoài ra `_pump` trả None (không raise), `fetch_pages`/list tự MỞ LẠI
+vài lần; một chương lấy hụt -> rơi xuống bản khác, hết bản -> ghi 'để sau' rồi
+ĐI TIẾP (KHÔNG để 1 chương làm chết cả bộ), lần chạy sau tự bù.
+
 Playwright là DEP TÙY CHỌN — chỉ import khi tải comix; thiếu thì in hướng dẫn cài:
     pip install playwright && python -m playwright install chromium
 """
@@ -145,9 +152,37 @@ class ComixSession:
             args=["--disable-blink-features=AutomationControlled"],
             ignore_default_args=["--enable-automation"])
         self.ctx.add_init_script(HOOK_JS)
+        # Chặn MỌI request ra domain lạ (quảng cáo). Trình duyệt CHỈ cần comix.to (JSON
+        # metadata) + cloudflare.com (challenge); ảnh do requests tải riêng, không cần
+        # render trong browser. Đây là gốc rễ sự cố "chưa bắt được ảnh chương": script
+        # quảng cáo (vd masterlythehague.com) đẩy trang rời comix.to giữa lúc load ->
+        # hook JSON.parse không thấy payload -> tưởng lỗi. Chặn hẳn là hết.
+        self.ctx.route("**/*", self._route_filter)
         self.page = self.ctx.pages[0] if self.ctx.pages else self.ctx.new_page()
         self.page.set_default_timeout(45_000)
+        # Popup quảng cáo (window.open/target=_blank) -> đóng ngay, giữ đúng 1 trang.
+        self.ctx.on("page", self._on_popup)
         return self
+
+    @staticmethod
+    def _route_filter(route):
+        try:
+            host = (urllib.parse.urlparse(route.request.url).hostname or "").lower()
+        except Exception:
+            host = ""
+        ok = (host == "comix.to" or host.endswith(".comix.to")
+              or host.endswith(".cloudflare.com") or host == "cloudflare.com")
+        try:
+            route.continue_() if ok else route.abort()
+        except Exception:
+            pass
+
+    def _on_popup(self, page):
+        if page is not self.page:
+            try:
+                page.close()
+            except Exception:
+                pass
 
     def __exit__(self, *exc):
         # LUÔN đóng browser kẻo Chromium mồ côi chiếm profile (supervisor cũng có
@@ -219,9 +254,10 @@ class ComixSession:
                     raise RuntimeError(f"Không mở được {url}: {e}") from e
                 time.sleep(3 * (attempt + 1))
 
-    def _pump(self, want, timeout=35.0, desc="dữ liệu"):
-        """Rút dần window.__cap tới khi gặp payload thỏa `want`. Site SPA gọi API
-        ngay sau load nên thường bắt được trong ~1-2s."""
+    def _pump(self, want, timeout=20.0, desc="dữ liệu"):
+        """Rút dần window.__cap tới khi gặp payload thỏa `want`. Site SPA gọi API ngay
+        sau load nên thường bắt được trong ~1-2s. Trả payload, hoặc None nếu hết giờ
+        (KHÔNG raise — người gọi tự quyết retry / rơi xuống bản khác / bỏ qua)."""
         end = time.monotonic() + timeout
         while time.monotonic() < end:
             try:
@@ -239,8 +275,7 @@ class ComixSession:
                 self._wait_challenge()
                 end = time.monotonic() + timeout   # qua challenge -> làm mới đồng hồ
             time.sleep(0.4)
-        raise RuntimeError(f"Không bắt được {desc} từ comix.to "
-                           "(site đổi cấu trúc API? thử lại sau)")
+        return None
 
     def fetch_series(self, slug):
         """Gom TOÀN BỘ bản upload của truyện (mọi trang list, limit 20 do site cố
@@ -249,9 +284,6 @@ class ComixSession:
         items, page_no, last = [], 1, None
         title = cover = None
         while last is None or page_no <= last:
-            time.sleep(random.uniform(0.6, 1.2))   # nhịp giữa các trang list
-            self._goto(f"{BASE}/title/{slug}?page={page_no}")
-
             def is_list(o, n=page_no):
                 r = o.get("result") or {}
                 meta, its = r.get("meta"), r.get("items")
@@ -259,7 +291,24 @@ class ComixSession:
                         and meta.get("page") == n
                         and (not its or "isOfficial" in its[0]))
 
-            payload = self._pump(is_list, desc=f"danh sách chương (trang {page_no})")
+            # Retry mỗi trang list: cùng nguyên nhân với ảnh chương (quảng cáo/mạng
+            # chèn) có thể làm hụt 1 lần — mở lại vài lần trước khi chịu thua.
+            payload = None
+            for attempt in range(3):
+                time.sleep(random.uniform(0.6, 1.2))
+                try:
+                    self._goto(f"{BASE}/title/{slug}?page={page_no}")
+                except core.Blocked:
+                    raise
+                except Exception:
+                    continue
+                payload = self._pump(is_list, desc=f"danh sách chương (trang {page_no})")
+                if payload is not None:
+                    break
+            if payload is None:
+                raise RuntimeError(
+                    f"Không lấy được danh sách chương (trang {page_no}) từ comix.to — "
+                    "mạng chập chờn? Thử /tai lại sau.")
             r = payload["result"]
             last = int(r["meta"].get("lastPage") or 1)
             items.extend(r["items"])
@@ -281,16 +330,35 @@ class ComixSession:
         print()
         return title or slug, cover, items
 
-    def fetch_pages(self, url_path, chap_id):
-        """URL ảnh của 1 bản upload (điều hướng tới trang đọc, hook bắt payload)."""
-        time.sleep(random.uniform(0.6, 1.2))
-        self._goto(BASE + url_path)
+    def fetch_pages(self, url_path, chap_id, tries=3):
+        """URL ảnh của 1 bản upload (điều hướng tới trang đọc, hook bắt payload).
 
+        Trả:
+          [url, ...] - lấy được (rỗng nếu payload có nhưng 0 trang = khóa/premium thật)
+          None       - KHÔNG bắt được payload sau `tries` lần (mạng/quảng cáo chèn) ->
+                       người gọi rơi xuống bản khác / đánh dấu 'để sau', KHÔNG raise.
+        """
         def is_chap(o):
             r = o.get("result") or {}
             return r.get("id") == chap_id and isinstance(r.get("pages"), dict)
 
-        payload = self._pump(is_chap, desc=f"ảnh chương (id {chap_id})")
+        payload = None
+        for attempt in range(tries):
+            time.sleep(random.uniform(0.6, 1.2))
+            try:
+                self._goto(BASE + url_path)
+            except core.Blocked:
+                raise
+            except Exception:
+                continue                      # goto hỏng -> mở lại
+            payload = self._pump(is_chap, desc=f"ảnh chương (id {chap_id})")
+            if payload is not None:
+                break                          # bắt được (kể cả 0 trang) -> thôi retry
+        if payload is None:
+            print(f"\n    ! Chưa lấy được ảnh chương (id {chap_id}) sau {tries} lần thử "
+                  "(mạng/quảng cáo chèn?).", file=sys.stderr, flush=True)
+            return None
+
         pg = payload["result"]["pages"]
         base = (pg.get("baseUrl") or "").rstrip("/")
         out = []
@@ -541,7 +609,7 @@ def run(args):
 
             total = len(nums)
             active = 0
-            incomplete, source_broken = [], []
+            incomplete, source_broken, unfetched = [], [], []
             n_full = n_skipped = n_locked = n_upgraded = 0
             img_ok = img_missing = img_broken = 0
 
@@ -594,25 +662,39 @@ def run(args):
                     else:
                         pool = cands
 
-                # 4) Thử lần lượt ứng viên tới khi có ảnh
-                chosen, urls = None, []
+                # 4) Thử lần lượt ứng viên tới khi có ảnh. Chỉ ĐỘNG vào đĩa (dọn ảnh cũ +
+                # ghi sidecar) khi bản này thực sự lấy được ảnh — bản fetch hụt/0-trang
+                # KHÔNG được xoá nội dung đang có (tránh phá bản tải dở khi chỉ chập mạng).
+                chosen, urls, fetch_failed = None, [], False
                 for ver in pool:
+                    res = cs.fetch_pages(ver["url"], ver["id"])
+                    if res is None:              # bắt hụt (mạng/quảng cáo) -> thử bản khác
+                        fetch_failed = True
+                        print(f"{prefix} — bản [{_group_name(ver)}] chưa lấy được, thử bản khác...")
+                        continue
+                    if not res:                  # payload có nhưng 0 trang = khóa/premium thật
+                        print(f"{prefix} — bản [{_group_name(ver)}] 0 trang, thử bản khác...")
+                        continue
                     d_side = read_sidecar(dest)
-                    # Dọn ảnh cũ trước khi ghi bản này nếu: (a) dest đang giữ bản KHÁC id,
-                    # hoặc (b) dest có ảnh nhưng KHÔNG rõ nguồn (bản ngoài) — kẻo trộn ảnh
-                    # bản ngoài với bản comix sắp tải.
+                    # Dọn ảnh cũ nếu dest đang giữ bản KHÁC id, hoặc có ảnh không rõ nguồn
+                    # (bản ngoài) — kẻo trộn ảnh 2 bản.
                     if (d_side and d_side.get("chapterId") != ver["id"]) \
                             or (d_side is None and _folder_has_images(dest)):
                         _clear_images(dest)
                     write_sidecar(dest, ver)
-                    urls = cs.fetch_pages(ver["url"], ver["id"])
-                    if urls:
-                        chosen = ver
-                        break
-                    print(f"{prefix} — bản [{_group_name(ver)}] 0 trang, thử bản khác...")
+                    chosen, urls = ver, res
+                    break
                 if not chosen:
-                    print(f"{prefix} — không bản nào có ảnh (khóa?), bỏ qua")
-                    n_locked += 1
+                    # Không dừng cả bộ: fetch hụt -> 'để sau' (chạy lại bù); 0-trang thật -> khóa.
+                    if fetch_failed:
+                        print(f"{prefix} — chưa lấy được ảnh (mạng/quảng cáo chèn?), "
+                              "sẽ bù ở lần chạy sau")
+                        unfetched.append(label)
+                        core.append_log(f"{title} / {label}: chưa lấy được ảnh "
+                                        "(mạng/quảng cáo) — chạy lại để bù")
+                    else:
+                        print(f"{prefix} — không bản nào có ảnh (khóa/premium?), bỏ qua")
+                        n_locked += 1
                     continue
 
                 tag = "Official" if chosen.get("isOfficial") else _group_name(chosen)
@@ -731,6 +813,8 @@ def run(args):
         bits.append(f"Thiếu trang: {len(incomplete)} (tải lại là bù được)")
     if source_broken:
         bits.append(f"Hỏng tại nguồn: {len(source_broken)}")
+    if unfetched:
+        bits.append(f"Chưa lấy được: {len(unfetched)} (chạy lại là bù được)")
     if n_locked:
         bits.append(f"Khóa/không ảnh: {n_locked}")
     print(f"\n===== TỔNG KẾT: {title} — {total} chương =====")
@@ -747,4 +831,9 @@ def run(args):
         for label, miss in incomplete:
             print(f"   - {label}: thiếu {core.compact_ints(miss)}")
         print("-> Chạy lại đúng lệnh vừa rồi để tự tải bù.")
+    if unfetched:
+        print(f"\n! {len(unfetched)} chương CHƯA lấy được ảnh lần này "
+              "(mạng/quảng cáo chèn — KHÔNG phải khóa):")
+        print("   " + ", ".join(unfetched))
+        print("-> Chạy lại đúng lệnh vừa rồi để tự tải bù các chương này.")
     print("\nHoàn tất.")

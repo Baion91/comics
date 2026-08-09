@@ -55,6 +55,11 @@ Một tool cho MỌI site, tự nhận site theo link (hiện hỗ trợ **Asura
 > đặt một file dấu `_COMIX_official_*.txt` ở gốc folder của nó (mở trong Explorer thấy ngay số
 > "official/tổng"); **giữ folder có file dấu, tự xoá folder scan trùng** (không có file dấu). Nếu
 > tên trùng nhau thì cả hai dùng chung 1 folder, không cần xoá gì.
+>
+> **Nếu 1 chương lỗi tải:** tool **không còn dừng cả bộ** — chương nào chập chờn (mạng/quảng cáo
+> chèn) sẽ được ghi "chưa lấy được" và **bỏ qua đi tiếp**, cuối vẫn báo "Tải xong" kèm danh sách
+> chương còn thiếu; **chạy lại lệnh là tự bù**. (Quảng cáo của site đã được chặn sẵn trong trình
+> duyệt tải nên hiếm khi dính.)
 
 Cách nhanh nhất: **double-click `Tai truyen.bat`** → dán link → chọn chương → xong
 hỏi tải tiếp. Hoặc chạy lệnh:

@@ -1,6 +1,28 @@
-# Handoff — cập nhật lần cuối: 2026-08-09 (khuya, comix upgrade cross-site + file dấu)
+# Handoff — cập nhật lần cuối: 2026-08-09 (khuya, comix resilience + chặn quảng cáo)
 
 ## Đang làm / dở dang
+- **[09/08 khuya-2] Comix: FIX "1 chương lỗi giết cả bộ" + chặn quảng cáo — CODE +
+  TEST OK trên PC dev, CHƯA push/deploy (sẽ push cuối phiên này).** Sự cố user gặp:
+  tải `the-lone-spellcaster` báo `RuntimeError: Không bắt được ảnh chương (id 5853129)`
+  rồi bot nhảy sang bộ kế; Dungeon Reset thì bình thường. **Chẩn đoán** (đã kiểm dữ liệu
+  thật): chương 184 (id 5853129, bản WebToon-official) LÀNH — có 176 ảnh, API bình
+  thường. Lỗi là **transient khi mở trang** (khả năng cao nhất: quảng cáo pop-under/redirect
+  của comix đẩy trang rời comix.to giữa lúc load → hook JSON.parse không thấy payload).
+  Khiếm khuyết thật: `fetch_pages` **raise RuntimeError** → không ai bắt → tiến trình
+  `comic_downloader.py` chết (exit 1) → supervisor báo "❌ Lỗi tải" và **nhảy job/bộ kế**
+  (mỗi bộ là 1 job Popen riêng, xét `rc`); phần chương chưa `.done` của bộ đó mất.
+  **Sửa (5 điểm, `comix_site.py`)**: (1) chặn quảng cáo tận gốc — `ctx.route` chỉ cho
+  request tới `comix.to`+`cloudflare.com`, abort domain khác + auto-đóng popup (ảnh vẫn
+  tải bằng requests riêng nên browser khỏi cần ảnh); (2) `_pump` trả `None` thay vì raise;
+  (3) `fetch_pages`/list **mở lại tối đa 3 lần**; (4) `fetch_pages` phân biệt `None`
+  (bắt hụt→thử bản khác / ghi "để sau") vs `[]` (0 trang thật = khóa); hết bản thì ghi
+  vào `unfetched` rồi **ĐI TIẾP**, KHÔNG dừng bộ, exit 0; (5) bỏ message sai "site đổi
+  cấu trúc API", tổng kết thêm dòng "Chưa lấy được: N (chạy lại là bù được)". Test:
+  (B) inject lỗi giả 4 chương → fallback scan + skip-and-continue + exit 0 = PASS;
+  (A) `fetch_pages` chương 184 thật → 176 URL trong 10s = PASS; smoke `fetch_series`
+  the-lone-spellcaster → 554 bản/229 chương, cover OK, route-filter không cản = PASS.
+  **Việc còn lại: push → `/update` là đủ (chỉ đổi comix_site.py) → `/tai` lại
+  the-lone-spellcaster + Dungeon Reset trên server cho chắc.**
 - **[09/08 khuya] Comix: FIX upgrade cross-provider + FILE DẤU (Cách 1) — CODE + TEST
   OK trên PC dev, CHƯA push, CHƯA deploy.** Sự cố gốc (user gặp): tải Dungeon Reset từ
   Raven (266 ch) rồi chạy comix để lấy official → comix chỉ tải 2 chương, skip 266.
@@ -100,6 +122,19 @@
   người `/adminclaim`), sau đó strict theo danh sách. `_is_admin` gác `/update`,`/tai`,`/admin*`.
 
 ## Quyết định gần đây (mới nhất trước)
+- 09/08 khuya: **Comix bền với chương lỗi + chặn quảng cáo** (`comix_site.py`, 5 điểm):
+  browser `ctx.route` chỉ cho `comix.to`+`cloudflare.com` (abort ad, auto-đóng popup) —
+  diệt gốc quảng cáo redirect làm hụt payload; `_pump` trả `None` (không raise);
+  `fetch_pages`/list mở lại 3 lần; `fetch_pages` phân biệt `None` (hụt→bản khác/"để sau")
+  vs `[]` (0 trang=khóa); hết bản → ghi `unfetched` rồi ĐI TIẾP (1 chương KHÔNG giết cả
+  bộ, exit 0). Vì sao: `RuntimeError` cũ không ai bắt → tiến trình bộ chết (exit 1) →
+  supervisor "❌ Lỗi tải" nhảy bộ kế. Sự cố the-lone-spellcaster ch184 thực ra là
+  transient (ad redirect), chương LÀNH.
+- 09/08 tối: **Comix upgrade CROSS-SITE + file dấu** — upgrade nhận cả bản tải từ site
+  khác (có ảnh+`.done`, không sidecar) → thay bằng Official, khớp theo số chương (sự cố
+  Dungeon Reset 266 ch Raven bị skip). Không khớp/gộp folder giữa provider (chấp nhận
+  duplicate khi tên khác); comix ghi file dấu `_COMIX_official_{off}-{total}.txt` ở gốc
+  folder (nhìn thấy trong Explorer) → user tự xoá folder scan trùng.
 - 09/08 tối: **Comix (comix.to) = loop tải RIÊNG (`comix_site.py`), KHÔNG đụng
   `core.run()`** — API mã hóa `{"e":...}` + token ký per-request nên phải để chính JS
   site gọi API trong Chromium (Playwright headful) rồi hook `JSON.parse` bắt payload;
@@ -184,13 +219,13 @@
   sang git/GitHub + login username-only đã gói trong "Kiến trúc hiện tại" + "Đồng bộ code bằng git".)
 
 ## Việc tiếp theo
-- **[COMIX upgrade cross-site + file dấu — MỚI NHẤT, chưa deploy]** Push GitHub →
-  `/update` trên bot là đủ (chỉ đổi `comix_site.py`, không thêm dep nên KHỎI
-  `cap-nhat.bat`). Rồi trên server **`/tai` lại Dungeon Reset** (`comix.to/title/81djd-
-  dungeon-reset`): lần này 266 chương Raven (folder chung tên "Dungeon Reset", có `.done`
-  + không sidecar) sẽ được nhận là "bản ngoài" và **tự thay bằng Official** — đây là mẻ
-  lớn (~266 chương official qua browser, chậm). Kiểm file dấu `_COMIX_official_*.txt`
-  xuất hiện ở gốc folder, và reader đọc official OK.
+- **[COMIX resilience + upgrade cross-site + file dấu — MỚI NHẤT, đã push, chưa deploy]**
+  Trên bot chạy **`/update`** là đủ (chỉ đổi `comix_site.py`, không thêm dep nên KHỎI
+  `cap-nhat.bat`). Rồi `/tai`: (a) **the-lone-spellcaster** (`comix.to/title/0qd3d-...`) —
+  bộ từng lỗi ch184; giờ phải tải hết bộ, chương nào hụt thì cuối báo "Chưa lấy được: N"
+  và chạy lại là bù, KHÔNG còn nhảy bộ; (b) **Dungeon Reset** (`81djd-dungeon-reset`) —
+  266 chương Raven (chung folder, `.done`, không sidecar) sẽ **tự thay bằng Official**
+  (mẻ lớn, chậm). Kiểm file dấu `_COMIX_official_*.txt` ở gốc folder + reader đọc OK.
 - **[COMIX base] NGHIỆM THU LIVE** (đã deploy đợt trước): `/tai` 1 bộ comix trên server
   — khi tải sẽ HIỆN cửa sổ Chromium (headful, cố ý, đừng đóng); Telegram báo Cloudflare
   thì tick "Verify you are human" trên màn hình server. Thử chương scan-only (ch.244+
