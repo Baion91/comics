@@ -24,10 +24,21 @@ Các script trong thư mục này, mỗi cái một việc:
 ## 1. Tải truyện — `comic_downloader.py` (hoặc bấm `Tai truyen.bat`)
 
 Một tool cho MỌI site, tự nhận site theo link (hiện hỗ trợ **Asura**, **Raven**, **Dilib**,
-**MangaDex**).
+**MangaDex**, **TruyenQQ**).
 
 > **Raven Scans đã đổi `ravenscans.org` → `ravenscans.net`** (và đổi cấu trúc URL chương) —
 > dùng link `.net` mới; link `.org` cũ vẫn được nhận.
+
+> **MangaDex**: dán link `https://mangadex.org/title/...` như bình thường. Chỉ tải bản dịch
+> **tiếng Anh**, tự chọn bản mới/nét nhất khi 1 chương có nhiều nhóm dịch. Truyện đã có bản
+> quyền tiếng Anh đôi khi **thiếu vài chương** (bản "external" trỏ ra trang đọc chính thức,
+> ảnh không nằm trên MangaDex) — đó là giới hạn nguồn, không phải lỗi tool.
+
+> **TruyenQQ** (truyện tiếng Việt): dán link trang truyện `https://truyenqqko.com/truyen-tranh/...`
+> (dán link 1 chương cũng được, tool tự về trang truyện). Ảnh trên CDN của site **chống hotlink**
+> nên tool tự gửi kèm Referer — không cần làm gì thêm. ⚠️ Site này **đổi tên miền liên tục**
+> (truyenqq.com → ...to → ...ko → ...); nếu link cũ không nhận nữa thì dùng **domain hiện hành**,
+> hoặc báo để thêm domain mới vào provider.
 
 Cách nhanh nhất: **double-click `Tai truyen.bat`** → dán link → chọn chương → xong
 hỏi tải tiếp. Hoặc chạy lệnh:
@@ -65,6 +76,12 @@ python comic_downloader.py --site raven rankers-return-remake
   lưu** (giữ nguyên byte gốc, phần cuối hiện xám) thay vì mất trắng cả trang —
   đúng như trình duyệt vẫn hiển thị. Có ghi chú trong báo cáo, và tool quét sẽ
   **không** báo hỏng hay cách ly nó nữa.
+- **Cuối mỗi bộ có dòng tổng kết**: số chương *đủ ảnh / đã xong trước / thiếu
+  trang / hỏng tại nguồn / khóa* — liếc là biết bộ nào cần chạy lại để bù.
+- **Chống crash nửa chừng**: lỡ một ảnh lỗi làm Python sập bất ngờ (không có thông
+  báo lỗi), tool tự ghi chỗ sập vào `.reader-meta\crash-trace.txt` + tên ảnh thủ
+  phạm vào `download-log.txt`, và chặn sẵn ảnh "bom" quá khổ *trước khi* giải mã.
+  Chạy lại lệnh cũ là tải tiếp bình thường.
 - `asura_downloader.py <URL|slug>` cũ **vẫn chạy** (mặc định Asura) — nay chỉ là lối tắt.
 
 ### Nén folder ảnh thành .cbz
@@ -254,10 +271,12 @@ khi đăng nhập Windows, tự tạo link đọc từ xa và báo qua Telegram.
     `/killnow` **chỉ** dừng truyện đang tải · `/clearq` **chỉ** xoá hàng chờ · `/stopall`
     dừng tất cả + xoá **sạch** hàng chờ (của mọi người). `/stop`/`/killnow`/`/clearq` chỉ
     đụng request **do chính bạn** gửi; dừng truyện của người kia thì dùng `/stopall`.
-- **`/tai` tải TUẦN TỰ**: mọi lệnh `/tai` (bất kỳ admin nào) vào **chung 1 hàng đợi**, tải
-  **1 bộ/lúc** (giữ nhịp chống chặn IP), chạy **ẩn** (không cửa sổ), báo "Tải xong" khi hoàn
-  tất. ⚠️ Đừng bấm `Tai hang loat.bat`/`Tai truyen.bat` tay lúc bot đang tải — 2 cái đó nằm
-  ngoài hàng đợi bot nên chạy **song song**, gấp đôi request → dễ bị chặn IP.
+- **`/tai` tải TUẦN TỰ, 1 hàng đợi CHUNG cho mọi admin**: `/tai` của **bất kỳ admin nào** đều
+  đổ vào **cùng 1 hàng đợi**, chỉ **1 truyện tải mỗi lúc**, theo thứ tự **vào trước chạy trước**
+  (không phân biệt ai gửi). Cố ý 1 luồng để **giữ nhịp chống chặn IP** (2 truyện song song =
+  gấp đôi request). Chạy **ẩn** (không cửa sổ), báo "Tải xong" khi hoàn tất.
+  ⚠️ Cũng đừng bấm `Tai hang loat.bat`/`Tai truyen.bat` tay lúc bot đang tải — 2 cái đó nằm
+  ngoài hàng đợi bot nên chạy **song song** với bot, gấp đôi request → dễ bị chặn IP.
 - **Huỷ xong tải lại vẫn an toàn**: chương đã tải xong được đánh dấu `.done`, nên lần sau
   `/tai` lại đúng link đó sẽ **tự bỏ qua chương cũ**, chỉ tải tiếp phần còn dở.
 - **Sống qua restart server**: hàng đợi tải được **lưu ra đĩa** (`.reader-meta\bot-download-queue.json`),
@@ -266,7 +285,9 @@ khi đăng nhập Windows, tự tạo link đọc từ xa và báo qua Telegram.
   Muốn xem tiến độ real-time: mở/tail file **`.reader-meta\tai-run.log`** (output downloader).
 - Token bot để trong `.reader-meta\notify-config.json` (**không** commit lên git).
 - **Tải hàng loạt** (chạy tay): `Tai hang loat.bat` — dán nhiều link vào `download-queue.txt`
-  rồi chạy lần lượt (bỏ qua chương đã đủ nhờ dấu `.done`).
+  rồi chạy lần lượt (bỏ qua chương đã đủ nhờ dấu `.done`). Tải xong nó báo **"Xong THẬT SỰ"**;
+  nếu bị đứt/lỗi/crash giữa chừng thì báo **"CHƯA xong" rồi tự chạy lại để tải tiếp** (tối đa
+  5 lần, chương đã xong tự bỏ qua); còn bị chặn IP thì dừng và nhắc chờ.
 
 ---
 

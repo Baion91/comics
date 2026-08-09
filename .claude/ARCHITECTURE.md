@@ -31,7 +31,8 @@ cách chạy thật + decode thử ảnh.
     `cover_url`. `ref` là "chìa" mờ mỗi site tự sinh/tự hiểu (Asura = URL API
     chương; Raven = URL trang chương). `PROVIDERS`/`by_name`/`REGISTRY` (map domain).
     Đang có: **AsuraProvider** (API JSON), **RavenProvider** (parse HTML + `ts_reader`),
-    **DilibProvider** (parse HTML PHP), **MangaDexProvider** (API JSON, bản dịch `en`).
+    **DilibProvider** (parse HTML PHP), **MangaDexProvider** (API JSON, bản dịch `en`),
+    **TruyenQQProvider** (parse HTML, `truyenqqko.com`).
   - `comic_downloader.py` — CLI mỏng: `resolve_provider()` tự nhận site theo domain
     của URL (hoặc cờ `--site`), rồi gọi `core.run`. Cờ giữ y hệt bản cũ
     (`--from/--to/--chapters/--cbz/--pack/--out/--workers/--delay`).
@@ -102,7 +103,11 @@ cách chạy thật + decode thử ảnh.
   `check-report.html`/`.json` (báo cáo quét ảnh), `check-cache.json` (ảnh đã kiểm tốt,
   mtime+size), `check-ignore.txt` (trang một-màu đã duyệt là OK), `image-issues.json` (sổ
   ảnh cứu-vớt / hỏng-tại-nguồn, downloader + tool quét dùng chung), `download-log.txt`
-  (nhật ký chương thiếu trang / hỏng nguồn khi tải),
+  (nhật ký chương thiếu trang / hỏng nguồn khi tải + dòng "PHIÊN TRƯỚC CHẾT" nêu ảnh nghi làm
+  crash), `crash-trace.txt` (C-stack do `faulthandler` ghi khi tiến trình sập tầng C — Pillow/
+  libwebp; mở ở chế độ nối lúc import `comics_core`), `decoding-now.txt` (breadcrumb ảnh đang
+  giải mã — ghi TRƯỚC `im.load()`, xoá khi xong; còn sót = crash tầng C, `reap_decode_crash()`
+  đầu `run()` đọc rồi ghi thủ phạm vào 2 file trên),
   `bot-download-queue.json` (**hàng đợi tải `/tai` BỀN HOÁ** — {jobs:[{url,cid,state:
   pending|running,resumed}]}; supervisor ghi nguyên tử mỗi lần đổi, đọc lại lúc khởi động để
   **tải tiếp qua restart**; job xong/lỗi/huỷ-lệnh bị xoá, job bị restart-giết ở lại → resume),
@@ -168,7 +173,10 @@ cách chạy thật + decode thử ảnh.
   &order[chapter]=asc&order[readableAt]=desc` (phân trang `limit=500` theo `total`). **Dedup
   key `"{volume}:{chương}"`, giữ bản GẶP ĐẦU** — vì readableAt desc nên đó là bản **upload
   MỚI NHẤT** (newest-wins, khớp `mangadex-downloader` mặc định; tránh vớ bản scan cũ khi
-  nhiều nhóm dịch). Chương `chapter=null` (oneshot) gán số `0.0` chứ không bỏ. Ảnh qua
+  nhiều nhóm dịch). **Loại bản `externalUrl`/`pages==0` TRƯỚC dedup**: bản external (link
+  bản quyền, ảnh KHÔNG ở MangaDex) thường mới hơn → nếu để vào sẽ giành slot rồi bị bỏ vì
+  rỗng, làm bản THẬT cũ hơn bị coi là trùng và mất luôn (sự cố Tondemo Skill ch1). Chương
+  `chapter=null` (oneshot) gán số `0.0` chứ không bỏ. Ảnh qua
   **@Home**: `/at-home/server/{chapterId}` → ghép `{baseUrl}/data/{hash}/{file}` (đuôi
   .png/.jpg thật). Bìa: relationship `cover_art` → `uploads.mangadex.org/covers/{uuid}/{fileName}`.
 - **Đối chiếu tool `mansuf/mangadex-downloader` v3** (nguồn logic trên): khớp dedup
@@ -229,6 +237,22 @@ cách chạy thật + decode thử ảnh.
   bỏ qua vì sai đuôi (`IMG_EXTS`), resume thấy tên chuẩn khuyết → tự tải bù, tải bù xong
   `clear_bad` xóa marker. Sự thật ở ĐĨA (`.bad` mất khi bù xong), report HTML chỉ là ảnh
   chụp. Cache chỉ nhớ ảnh sạch-hẳn; nghi-ngờ/unsupported không cache để lần sau còn soi lại.
+- **Chống crash tầng C khi giải mã ảnh** (09/08): sự cố thật — tải qua server bỗng dừng giữa
+  chương mà `Tai hang loat.bat` vẫn in "Xong". Nguyên nhân: `Image.load()` (Pillow/libwebp) gặp
+  ảnh dị dạng có thể **sập tầng C** → giết cả tiến trình, KHÔNG traceback nên `try/except` Python
+  bó tay; `.bat` thì in "Xong" vô điều kiện sau dòng `python`. Ba lớp: (1) `faulthandler` ghi
+  C-stack vào `crash-trace.txt` (crash Ở ĐÂU); (2) breadcrumb `decoding-now.txt` ghi ảnh đang
+  giải mã TRƯỚC `im.load()`, `reap_decode_crash()` đầu `run()` đọc phần còn sót → ảnh thủ phạm
+  (crash Ở ẢNH NÀO), CỐ Ý không tự đánh dấu hỏng để khỏi bỏ nhầm ảnh tốt của luồng kia; (3) chặn
+  bom TRƯỚC decode: `SAFE_MAX_BYTES` (64MB) + `SAFE_MAX_PIXELS` (60MP, đọc `im.size` từ header
+  trước khi `load`). `Tai hang loat.bat` đọc `errorlevel`: rc=0 "Xong THẬT SỰ", rc=2 (bị chặn IP)
+  nhắc chờ, rc khác → tự chạy lại tối đa 5 lần (chương `.done` tự bỏ qua) — không lặp vô hạn.
+- **Bỏ emoji khỏi output CONSOLE, giữ ở Telegram/log-file** (09/08, phương án A): cmd cổ điển
+  (conhost) không có glyph emoji (`✅⚠⛔` → tofu) và `🔒` astral làm lệch con trỏ khi in đè `\r`;
+  chữ Việt UTF-8 thì hiện tốt. Nên output màn hình của downloader dùng nhãn CHỮ (`Đủ ảnh:`...) +
+  `!`/`!!`/`->` thay `⚠`/`⛔`/`→`. `run()` in **dòng tổng kết cả bộ LUÔN hiển thị** (đếm
+  `n_full`/`n_skipped`/`n_locked`), trước chỉ "Hoàn tất" trơ trọi. Emoji trong tin Telegram
+  (supervisor) và ghi file (`append_log`) GIỮ nguyên vì 2 nơi đó render emoji tốt.
 - **Chính sách WebP**: PNG → WebP q85 (giảm 50-80%, mắt thường không phân biệt
   với truyện scan); JPG **giữ nguyên** (đã lossy, nén lại chồng suy hao).
 - **Đặt tên folder từ slug**: chỉ cắt cụm cuối nếu đúng 8 ký tự hex có chữ số
