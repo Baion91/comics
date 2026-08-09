@@ -1,20 +1,34 @@
-# Handoff — cập nhật lần cuối: 2026-08-09 (tối)
+# Handoff — cập nhật lần cuối: 2026-08-09 (khuya, comix upgrade cross-site + file dấu)
 
 ## Đang làm / dở dang
+- **[09/08 khuya] Comix: FIX upgrade cross-provider + FILE DẤU (Cách 1) — CODE + TEST
+  OK trên PC dev, CHƯA push, CHƯA deploy.** Sự cố gốc (user gặp): tải Dungeon Reset từ
+  Raven (266 ch) rồi chạy comix để lấy official → comix chỉ tải 2 chương, skip 266.
+  Nguyên nhân: folder Raven có `.done` nhưng KHÔNG có sidecar `.source.json` (sidecar chỉ
+  do comix tạo) → rơi vào nhánh "đã xong trước đó → skip", không vào nhánh upgrade.
+  **Sửa** (`comix_site.py`): upgrade giờ dựa `has_content AND not on_disk_official AND
+  best.isOfficial` — "chưa phải official" GỒM cả bản ngoài không sidecar (Raven/Asura...),
+  khớp theo SỐ chương; vẫn KHÔNG thay scan→scan. Kèm **file dấu Cách 1**: cuối mỗi lần
+  chạy ghi `_COMIX_official_{off}-{total}.txt` ở gốc folder truyện (nhìn thấy trong
+  Explorer; reader/check bỏ qua) để user phân biệt folder comix với folder scan site khác
+  rồi TỰ TAY xoá folder scan trùng. Test PC dev (đã xác minh đĩa): xoá sidecar Ch.5
+  Ranker's Return giả làm "bản ngoài" → chạy comix → "DA THAY [bản ngoài] bằng Official"
+  (108 ảnh), sidecar thành official, tmp sạch, file dấu ghi đúng "official 8/8"; regression
+  skip-official + tải mới vẫn OK. **Việc còn lại: push → `cap-nhat.bat` không cần (chỉ đổi
+  comix_site.py, không đụng requirements) — nhưng `/update` là đủ; rồi `/tai` lại Dungeon
+  Reset trên server để 266 chương Raven tự lên Official.**
 - **[09/08 tối] Provider COMIX.TO (Comick) — CODE XONG + TEST THẬT OK trên PC dev,
-  CHƯA push GitHub, CHƯA deploy server.** File mới `comix_site.py` (loop tải riêng,
-  Playwright headful + hook JSON.parse); sửa `comic_downloader.py` (route domain
-  comix.to qua `dispatch()`/`custom_run`), `supervisor.py` (kill Chromium lạc
-  `comix-profile` lúc boot), `cap-nhat.bat` (pip install + playwright install chromium,
-  set `PLAYWRIGHT_BROWSERS_PATH`), `requirements.txt` (ghim `playwright==1.55.0`),
-  README (mục Comix). Test thật (đã xác minh trên đĩa): tải 8 chương đầu
-  `Ranker's Return` = 824 ảnh + cover.jpg, toàn bộ [Official], decode OK; test skip
-  (official → "bỏ qua" tức thì) + test upgrade (giả sidecar scan → tự tải Official
-  vào `.comix-tmp` rồi tráo, sidecar thành Official thật, tmp sạch) đều PASS.
-  **Việc còn lại: push GitHub → chạy `cap-nhat.bat` trên server (KHÔNG phải `/update`
-  — cần cài playwright) → `/tai` thử 1 link comix trên server.**
-- Trong repo còn 2 thay đổi cover KHÔNG liên quan comix (đổi ảnh trong `cover/` +
-  `cover_webp/`, từ trước phiên comix) — user tự xử khi commit.
+  ĐÃ push GitHub + user xác nhận cập nhật server. CHƯA nghiệm thu `/tai` LIVE.**
+  File mới `comix_site.py` (loop tải riêng, Playwright headful + hook JSON.parse);
+  sửa `comic_downloader.py` (route domain comix.to qua `dispatch()`/`custom_run`),
+  `supervisor.py` (kill Chromium lạc `comix-profile` lúc boot), `cap-nhat.bat` (pip
+  install + playwright install chromium, set `PLAYWRIGHT_BROWSERS_PATH`),
+  `requirements.txt` (ghim `playwright==1.55.0`), README (mục Comix). Test thật trên
+  PC dev (đã xác minh trên đĩa): tải 8 chương đầu `Ranker's Return` = 824 ảnh +
+  cover.jpg, toàn bộ [Official], decode OK; test skip (official → "bỏ qua" tức thì)
+  + test upgrade (giả sidecar scan → tự tải Official vào `.comix-tmp` rồi tráo,
+  sidecar thành Official thật, tmp sạch) đều PASS. **Việc còn lại: `/tai` thử 1 link
+  comix trên SERVER** (xem "Việc tiếp theo").
 - **[09/08] Provider TruyenQQ + fix UI reader — ĐÃ push + user xác nhận đã update server.**
   `TruyenQQProvider` (truyenqqko.com, HTML tĩnh, ảnh từ `data-original`, list chương từ URL
   `-chap-N`, ĐÒI Referer `truyenqqko.com` chống hotlink, tên folder có dấu từ `<h1 itemprop=name>`,
@@ -170,11 +184,17 @@
   sang git/GitHub + login username-only đã gói trong "Kiến trúc hiện tại" + "Đồng bộ code bằng git".)
 
 ## Việc tiếp theo
-- **[COMIX — mới nhất] Push GitHub → server chạy `cap-nhat.bat`** (bắt buộc — nó cài
-  playwright + chromium vào `.reader-meta/pw-browsers`; `/update` KHÔNG cài) →
-  `/tai https://comix.to/title/...` thử 1 bộ trên server. Nhớ: khi bot tải comix,
-  server sẽ HIỆN cửa sổ Chromium (headful, cố ý) — đừng đóng. Nếu Telegram báo
-  Cloudflare → tick "Verify you are human" trên màn hình server.
+- **[COMIX upgrade cross-site + file dấu — MỚI NHẤT, chưa deploy]** Push GitHub →
+  `/update` trên bot là đủ (chỉ đổi `comix_site.py`, không thêm dep nên KHỎI
+  `cap-nhat.bat`). Rồi trên server **`/tai` lại Dungeon Reset** (`comix.to/title/81djd-
+  dungeon-reset`): lần này 266 chương Raven (folder chung tên "Dungeon Reset", có `.done`
+  + không sidecar) sẽ được nhận là "bản ngoài" và **tự thay bằng Official** — đây là mẻ
+  lớn (~266 chương official qua browser, chậm). Kiểm file dấu `_COMIX_official_*.txt`
+  xuất hiện ở gốc folder, và reader đọc official OK.
+- **[COMIX base] NGHIỆM THU LIVE** (đã deploy đợt trước): `/tai` 1 bộ comix trên server
+  — khi tải sẽ HIỆN cửa sổ Chromium (headful, cố ý, đừng đóng); Telegram báo Cloudflare
+  thì tick "Verify you are human" trên màn hình server. Thử chương scan-only (ch.244+
+  Ranker's Return) xem chọn scan mới nhất OK.
 - **[09/08] Toàn bộ code (TruyenQQ, fix reader, MangaDex, chống-chết downloader) đã lên server
   — user xác nhận.** Việc nội dung còn mở: `/tai` **TruyenQQ** thử 1 bộ trên server cho chắc;
   `/tai` lại **Tondemo Skill** bù chương 1 (sau fix external-skip); tùy chọn tải lại **Pokemon

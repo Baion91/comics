@@ -20,14 +20,20 @@ Luật chọn bản per số chương (user chốt 09/08/2026):
      nhất (id tăng đơn điệu theo thời gian; user bỏ yêu cầu tiebreak theo nhóm).
   3. Bản được chọn mà 0 trang (khóa/hỏng) -> thử ứng viên kế tiếp.
 
-Upgrade scan -> official (sidecar `.source.json` trong folder chương):
+Upgrade -> official (sidecar `.source.json` trong folder chương):
   - Trên đĩa là official -> BỎ QUA vĩnh viễn (không tải lại).
-  - Trên đĩa là scan + nay có bản "v" -> tải official vào downloads/.comix-tmp/
-    (reader bỏ qua folder đầu-dấu-chấm ở tầng trên cùng), ĐỦ ảnh mới tráo folder;
-    tên folder GIỮ "Chapter N" (comix cố ý KHÔNG gắn title vào tên folder) để
-    bookmark/tiến trình đọc không mất.
-  - Scan + chưa có "v" -> giữ nguyên, KHÔNG thay scan bằng scan (kể cả mới hơn).
+  - Trên đĩa CHƯA phải official mà comix nay có bản "v" -> tải official vào
+    downloads/.comix-tmp/ (reader bỏ qua folder đầu-dấu-chấm), ĐỦ ảnh mới tráo folder;
+    tên folder GIỮ "Chapter N" (không gắn title) để bookmark/tiến trình không mất.
+    "Chưa phải official" GỒM cả chương tải từ SITE KHÁC (Raven, Asura...) — folder có
+    ảnh + .done nhưng KHÔNG có sidecar comix; trước đây bị coi là "đã xong" và skip
+    (sự cố Dungeon Reset: 266 chương Raven bị bỏ qua). Nay khớp theo SỐ chương.
+  - Chưa có "v" -> giữ nguyên, KHÔNG thay scan bằng scan (kể cả bản comix mới hơn).
   - Đang tải dở (chưa .done) -> tiếp đúng bản trong sidecar, tránh trộn ảnh 2 nhóm.
+
+File DẤU cấp truyện (Cách 1): cuối mỗi lần chạy, ghi `_COMIX_official_{off}-{total}.txt`
+ở gốc folder truyện (nhìn thấy trong Explorer, reader/check bỏ qua) để phân biệt folder
+comix với folder scan tải từ site khác -> user tự tay xoá folder scan trùng.
 
 URL ảnh KHÔNG có đuôi file (https://80pd.wowpic1.store/i5/<hash>) -> tải về đặt
 tạm .webp rồi sniff magic bytes, sai thì đổi đuôi (Comix thực tế trả webp).
@@ -408,6 +414,73 @@ def _mark_done(folder: Path):
         pass
 
 
+def _folder_has_images(folder: Path) -> bool:
+    """Folder chương này có ≥1 ảnh thật không (để phân biệt 'đã có nội dung' với rỗng)."""
+    if not folder.is_dir():
+        return False
+    try:
+        for p in folder.iterdir():
+            if p.is_file() and p.suffix.lower() in core.IMG_EXTS:
+                return True
+    except OSError:
+        pass
+    return False
+
+
+# --- File DẤU cấp truyện (Cách 1: nhìn thấy được trong Explorer) ------------------
+# Đánh dấu folder do comix quản (có / đang lên bản Official) để user phân biệt với
+# folder scan tải từ site khác mà TỰ TAY xoá folder scan trùng. Tên file mang sẵn số
+# 'official/tổng' nên khỏi mở ra đọc; reader + check_library bỏ qua vì không phải ảnh.
+MARKER_PREFIX = "_COMIX_official_"    # + "{off}-{total}.txt"
+
+
+def write_series_marker(out_root: Path, slug: str):
+    """Ghi/đè file dấu ở gốc folder truyện. Đếm theo sidecar từng chương:
+      official = bản tick 'v'; scan = bản nhóm do comix tải; ngoài = có ảnh nhưng
+      KHÔNG có sidecar (tải từ site khác, chưa nâng cấp). CHỈ ghi khi comix thực sự
+      đã đóng góp ≥1 chương (off+scan>0) — folder toàn bản ngoài thì chưa đánh dấu."""
+    off = scan = foreign = 0
+    try:
+        subdirs = [d for d in out_root.iterdir() if d.is_dir()]
+    except OSError:
+        return
+    for d in subdirs:
+        if not _folder_has_images(d):
+            continue
+        sc = read_sidecar(d)
+        if sc is None:
+            foreign += 1
+        elif sc.get("isOfficial"):
+            off += 1
+        else:
+            scan += 1
+    if off + scan == 0:        # comix chưa đóng góp gì vào folder này -> chưa đánh dấu
+        return
+    total = off + scan + foreign
+    for old in out_root.glob(MARKER_PREFIX + "*.txt"):   # dọn file dấu cũ (số khác)
+        try:
+            old.unlink()
+        except OSError:
+            pass
+    lines = [
+        "FOLDER NAY DO COMIX (comix.to) QUAN LY.",
+        "Giu folder nay. Neu co folder trung truyen tai tu site khac (khong co file "
+        "dau nay) thi XOA folder do.",
+        "",
+        f"slug     : {slug}",
+        f"official : {off} chuong (ban tick 'v')",
+        f"scan     : {scan} chuong (comix chua co official)",
+        f"ngoai    : {foreign} chuong (tai tu site khac, chua nang cap)",
+        f"tong     : {total} chuong",
+        f"cap nhat : {datetime.now():%Y-%m-%d %H:%M:%S}",
+    ]
+    try:
+        (out_root / f"{MARKER_PREFIX}{off}-{total}.txt").write_text(
+            "\n".join(lines) + "\n", encoding="utf-8")
+    except OSError:
+        pass
+
+
 # --- Vòng tải chính --------------------------------------------------------------
 
 def run(args):
@@ -480,19 +553,28 @@ def run(args):
                 best = cands[0]
                 side = read_sidecar(folder)
                 done = (folder / ".done").exists() and not getattr(args, "recheck", False)
+                # Folder đã có ảnh nhưng KHÔNG mang sidecar comix = bản tải từ site KHÁC
+                # (Raven, Asura...) hoặc bản comix rất cũ. Coi là "bản ngoài/scan" để luật
+                # upgrade cũng áp cho nó (thay bằng Official nếu comix nay có) — đây là ca
+                # Dungeon Reset: 266 chương Raven .done, không sidecar, trước đây bị skip.
+                on_disk_official = bool(side) and side.get("isOfficial")
 
                 # 1) Trên đĩa đã là bản Official -> skip vĩnh viễn
-                if side and side.get("isOfficial") and done:
+                if on_disk_official and done:
                     print(f"{prefix} — đã có bản Official (bỏ qua)")
                     n_skipped += 1
                     if args.cbz:
                         core.make_cbz(folder, skip_existing=True)
                     continue
 
-                upgrade = bool(side) and not side.get("isOfficial") \
+                # Upgrade khi: đĩa đang có nội dung CHƯA phải Official (gồm cả bản ngoài
+                # không sidecar) và comix nay có bản Official. KHÔNG bao giờ thay scan->scan.
+                has_content = _folder_has_images(folder)
+                upgrade = has_content and not on_disk_official \
                     and bool(best.get("isOfficial"))
 
-                # 2) Scan đã đủ ảnh + chưa có official -> giữ nguyên (không thay scan->scan)
+                # 2) Đã đủ ảnh + không phải ca upgrade -> giữ nguyên (kể cả bản ngoài;
+                # không thay scan->scan dù bản scan comix có mới hơn)
                 if done and not upgrade:
                     print(f"{prefix} — đã xong trước đó (bỏ qua, khỏi quét mạng)")
                     n_skipped += 1
@@ -516,8 +598,12 @@ def run(args):
                 chosen, urls = None, []
                 for ver in pool:
                     d_side = read_sidecar(dest)
-                    if d_side and d_side.get("chapterId") != ver["id"]:
-                        _clear_images(dest)      # đổi bản -> dọn ảnh bản cũ trước
+                    # Dọn ảnh cũ trước khi ghi bản này nếu: (a) dest đang giữ bản KHÁC id,
+                    # hoặc (b) dest có ảnh nhưng KHÔNG rõ nguồn (bản ngoài) — kẻo trộn ảnh
+                    # bản ngoài với bản comix sắp tải.
+                    if (d_side and d_side.get("chapterId") != ver["id"]) \
+                            or (d_side is None and _folder_has_images(dest)):
+                        _clear_images(dest)
                     write_sidecar(dest, ver)
                     urls = cs.fetch_pages(ver["url"], ver["id"])
                     if urls:
@@ -571,16 +657,25 @@ def run(args):
                         # tạm -> tên thật, rồi mới xóa rác. Crash điểm nào cũng còn
                         # nguyên 1 bản đọc được; xác __trash dọn ở đầu phiên sau.
                         trash = tmp_root / f"{label}.__trash"
-                        old_group = side.get("group", "?")
+                        # side có thể None (bản tải từ site khác, không sidecar)
+                        old_group = (side.get("group") if side else None) \
+                            or "bản ngoài (không rõ nhóm)"
                         if folder.exists():
                             folder.rename(trash)
                         dest.rename(folder)
                         shutil.rmtree(trash, ignore_errors=True)
+                        # cbz cũ (nếu bản trước có) nay lệch nội dung -> bỏ; args.cbz sẽ nén lại
+                        old_cbz = folder.parent / (label + ".cbz")
+                        if old_cbz.exists():
+                            try:
+                                old_cbz.unlink()
+                            except OSError:
+                                pass
                         n_upgraded += 1
-                        print(f"\r{prefix} — DA THAY bản [{old_group}] bằng bản "
+                        print(f"\r{prefix} — DA THAY [{old_group}] bằng bản "
                               f"Official ({len(urls)} ảnh)          ")
-                        core.append_log(f"{title} / {label}: thay bản scan "
-                                        f"[{old_group}] bằng bản Official")
+                        core.append_log(f"{title} / {label}: thay [{old_group}] "
+                                        f"bằng bản Official")
                     else:
                         n_full += 1
                         print(f"\r{prefix} [{tag}] — xong {ok}/{len(urls)} ảnh"
@@ -616,6 +711,10 @@ def run(args):
                     time.sleep(rest)
                 else:
                     time.sleep(random.uniform(0.7, 1.3) * args.delay)
+
+            # Đóng dấu folder comix (Cách 1) — quét lại toàn bộ chương để số official/
+            # tổng phản ánh đúng trạng thái sau lượt này.
+            write_series_marker(out_root, slug)
     except (core.Blocked, core.TooMany429) as e:
         print(f"\n!!! Dừng phiên: {e}", file=sys.stderr)
         print("Ảnh đã tải không mất. Chờ một lúc (429: ~1 giờ; 403/503/Cloudflare: "

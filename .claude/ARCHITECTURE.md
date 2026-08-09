@@ -48,12 +48,21 @@ cách chạy thật + decode thử ảnh.
     `*.wowpicN.store` KHÔNG có đuôi file → tải xong sniff magic bytes đổi đuôi).
     Luật chọn per chương: `isOfficial` trước → scan `id` (chapterId) lớn nhất
     (id tăng đơn điệu = độ mới; API không có timestamp thô, chỉ "2mos ago").
-    Upgrade scan→Official: sidecar `.source.json` mỗi folder chương; tải bản mới vào
-    `downloads/.comix-tmp/<Tên>/` (đầu-dấu-chấm → reader/check_library bỏ qua) rồi
-    tráo bằng 2 lần rename (cũ→`.__trash`→xoá), crash giữa chừng vẫn còn 1 bản đọc
-    được + đầu phiên sau tự dọn `.__trash`. Tên folder comix CỐ ĐỊNH "Chapter N"
-    (không gắn title) để tráo bản không đổi tên folder → không mất bookmark/progress.
-    Official đã tải = skip vĩnh viễn; KHÔNG thay scan→scan. Cloudflare challenge →
+    Upgrade→Official: điều kiện `has_content AND not on_disk_official AND
+    best.isOfficial` — "chưa phải official" GỒM cả chương tải từ SITE KHÁC (folder có
+    ảnh + `.done` nhưng KHÔNG có sidecar `.source.json`; sidecar chỉ do comix tạo),
+    khớp theo SỐ chương (sự cố Dungeon Reset: 266 chương Raven chung folder từng bị
+    skip vì thiếu sidecar). Tải bản mới vào `downloads/.comix-tmp/<Tên>/` (đầu-dấu-chấm
+    → reader/check_library bỏ qua) rồi tráo bằng 2 lần rename (cũ→`.__trash`→xoá),
+    crash giữa chừng vẫn còn 1 bản đọc được + đầu phiên sau tự dọn `.__trash`. Tên
+    folder comix CỐ ĐỊNH "Chapter N" (không gắn title) để tráo không đổi tên folder →
+    không mất bookmark/progress. Official đã tải = skip vĩnh viễn; KHÔNG thay scan→scan
+    (kể cả bản comix mới hơn). **File dấu cấp truyện (Cách 1)**: cuối mỗi lần chạy ghi
+    `_COMIX_official_{off}-{total}.txt` ở gốc folder (đếm official/scan/ngoài từ sidecar
+    các chương; chỉ ghi khi comix đã đóng góp ≥1 chương) — file THƯỜNG (không dot) nên
+    hiện trong Explorer, reader/check bỏ qua vì không phải ảnh; giúp user phân biệt
+    folder comix với folder scan tải từ site khác để TỰ TAY xoá folder scan trùng
+    (đã chốt: không tự khớp/gộp folder, chấp nhận duplicate khi 2 provider tên khác). Cloudflare challenge →
     nhắn Telegram (đọc `notify-config.json`) nhờ người tick trên màn hình server,
     chờ 5 phút. **3 bẫy môi trường đã gỡ (09/08/2026)**: chặn DLL dưới AppData →
     `PLAYWRIGHT_BROWSERS_PATH=.reader-meta/pw-browsers` (set trong module TRƯỚC import

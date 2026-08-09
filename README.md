@@ -48,6 +48,13 @@ Một tool cho MỌI site, tự nhận site theo link (hiện hỗ trợ **Asura
 > bản scan mà sau này có bản Official thì **chạy lại lệnh là tự thay** (bản Official đã tải thì
 > không bao giờ tải lại). Nếu bot nhắn "bị Cloudflare chặn" → ra màn hình server tick
 > "Verify you are human" trong cửa sổ Chromium là tool tự chạy tiếp.
+>
+> **Thay bản đã tải từ site khác:** nếu trước đó bạn tải một bộ từ Raven/Asura/... rồi chạy lại
+> bằng link comix của đúng bộ đó, các chương cũ (bản scan) sẽ **tự được thay bằng Official** khi
+> comix có (khớp theo số chương). Nếu tên hai bên **khác nhau** thì sẽ thành **2 folder** — comix
+> đặt một file dấu `_COMIX_official_*.txt` ở gốc folder của nó (mở trong Explorer thấy ngay số
+> "official/tổng"); **giữ folder có file dấu, tự xoá folder scan trùng** (không có file dấu). Nếu
+> tên trùng nhau thì cả hai dùng chung 1 folder, không cần xoá gì.
 
 Cách nhanh nhất: **double-click `Tai truyen.bat`** → dán link → chọn chương → xong
 hỏi tải tiếp. Hoặc chạy lệnh:
