@@ -539,7 +539,13 @@ class Supervisor:
                 "Get-CimInstance Win32_Process -Filter \"Name='python.exe' OR "
                 "Name='pythonw.exe'\" | Where-Object { $_.CommandLine -match "
                 "'comic_downloader\\.py' } | ForEach-Object { Stop-Process -Id "
-                "$_.ProcessId -Force -ErrorAction SilentlyContinue }"],
+                "$_.ProcessId -Force -ErrorAction SilentlyContinue }; "
+                # Chromium (Playwright, tải comix) mồ côi: nhận diện qua profile
+                # riêng 'comix-profile' trong command line — KHÔNG đụng Chrome thường.
+                "Get-CimInstance Win32_Process -Filter \"Name='chrome.exe'\" | "
+                "Where-Object { $_.CommandLine -match 'comix-profile' } | "
+                "ForEach-Object { Stop-Process -Id $_.ProcessId -Force "
+                "-ErrorAction SilentlyContinue }"],
                 creationflags=NO_WINDOW, timeout=30,
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         except Exception as e:

@@ -34,8 +34,34 @@ cách chạy thật + decode thử ảnh.
     **DilibProvider** (parse HTML PHP), **MangaDexProvider** (API JSON, bản dịch `en`),
     **TruyenQQProvider** (parse HTML, `truyenqqko.com`).
   - `comic_downloader.py` — CLI mỏng: `resolve_provider()` tự nhận site theo domain
-    của URL (hoặc cờ `--site`), rồi gọi `core.run`. Cờ giữ y hệt bản cũ
+    của URL (hoặc cờ `--site`), rồi gọi qua `dispatch()`: provider thường → `core.run`;
+    provider có `custom_run` (hiện chỉ comix) → loop riêng. Cờ giữ y hệt bản cũ
     (`--from/--to/--chapters/--cbz/--pack/--out/--workers/--delay`).
+  - `comix_site.py` — **loop tải RIÊNG cho comix.to (Comick)**, KHÔNG đi qua
+    `core.run()` nhưng tái dùng gân cốt core (PoliteGate, `download_image` + kiểm ảnh
+    4 tầng, `make_cbz`, `safe_name`, `append_log`). Vì sao riêng: API mã hóa
+    `{"e":...}` + token ký per-request (`secure-*.js` đổi theo build) → phải mở
+    Chromium thật (Playwright HEADFUL, dep tùy chọn import lười) cho JS site tự gọi
+    API rồi **hook `JSON.parse`** bắt payload đã giải mã; và 1 chương có NHIỀU bản
+    upload (Official/scan) cần chọn + upgrade — không nhét vừa hợp đồng provider.
+    Chỉ browser lo metadata; ảnh vẫn tải bằng requests (Referer `comix.to`, URL ảnh
+    `*.wowpicN.store` KHÔNG có đuôi file → tải xong sniff magic bytes đổi đuôi).
+    Luật chọn per chương: `isOfficial` trước → scan `id` (chapterId) lớn nhất
+    (id tăng đơn điệu = độ mới; API không có timestamp thô, chỉ "2mos ago").
+    Upgrade scan→Official: sidecar `.source.json` mỗi folder chương; tải bản mới vào
+    `downloads/.comix-tmp/<Tên>/` (đầu-dấu-chấm → reader/check_library bỏ qua) rồi
+    tráo bằng 2 lần rename (cũ→`.__trash`→xoá), crash giữa chừng vẫn còn 1 bản đọc
+    được + đầu phiên sau tự dọn `.__trash`. Tên folder comix CỐ ĐỊNH "Chapter N"
+    (không gắn title) để tráo bản không đổi tên folder → không mất bookmark/progress.
+    Official đã tải = skip vĩnh viễn; KHÔNG thay scan→scan. Cloudflare challenge →
+    nhắn Telegram (đọc `notify-config.json`) nhờ người tick trên màn hình server,
+    chờ 5 phút. **3 bẫy môi trường đã gỡ (09/08/2026)**: chặn DLL dưới AppData →
+    `PLAYWRIGHT_BROWSERS_PATH=.reader-meta/pw-browsers` (set trong module TRƯỚC import
+    playwright + trong cap-nhat.bat lúc install); ghim `playwright==1.55.0` (bản 1.62
+    kéo Chrome-for-Testing 151 lỗi side-by-side trên Win10); site check
+    `navigator.webdriver` → bắt buộc `--disable-blink-features=AutomationControlled`
+    + `ignore_default_args=["--enable-automation"]`, thiếu là JS site không boot
+    (body rỗng, không gọi API).
   - `asura_downloader.py` — **giờ chỉ là shim** gọi `comic_downloader.main(default=asura)`
     → lệnh/shortcut cũ + gõ slug trần vẫn chạy như Asura như trước.
   - `Tai truyen.bat` — shortcut trong folder (không ra Desktop): **vòng lặp** hỏi link

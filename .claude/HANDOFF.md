@@ -1,6 +1,20 @@
-# Handoff — cập nhật lần cuối: 2026-08-09 (chiều)
+# Handoff — cập nhật lần cuối: 2026-08-09 (tối)
 
 ## Đang làm / dở dang
+- **[09/08 tối] Provider COMIX.TO (Comick) — CODE XONG + TEST THẬT OK trên PC dev,
+  CHƯA push GitHub, CHƯA deploy server.** File mới `comix_site.py` (loop tải riêng,
+  Playwright headful + hook JSON.parse); sửa `comic_downloader.py` (route domain
+  comix.to qua `dispatch()`/`custom_run`), `supervisor.py` (kill Chromium lạc
+  `comix-profile` lúc boot), `cap-nhat.bat` (pip install + playwright install chromium,
+  set `PLAYWRIGHT_BROWSERS_PATH`), `requirements.txt` (ghim `playwright==1.55.0`),
+  README (mục Comix). Test thật (đã xác minh trên đĩa): tải 8 chương đầu
+  `Ranker's Return` = 824 ảnh + cover.jpg, toàn bộ [Official], decode OK; test skip
+  (official → "bỏ qua" tức thì) + test upgrade (giả sidecar scan → tự tải Official
+  vào `.comix-tmp` rồi tráo, sidecar thành Official thật, tmp sạch) đều PASS.
+  **Việc còn lại: push GitHub → chạy `cap-nhat.bat` trên server (KHÔNG phải `/update`
+  — cần cài playwright) → `/tai` thử 1 link comix trên server.**
+- Trong repo còn 2 thay đổi cover KHÔNG liên quan comix (đổi ảnh trong `cover/` +
+  `cover_webp/`, từ trước phiên comix) — user tự xử khi commit.
 - **[09/08] Provider TruyenQQ + fix UI reader — ĐÃ push + user xác nhận đã update server.**
   `TruyenQQProvider` (truyenqqko.com, HTML tĩnh, ảnh từ `data-original`, list chương từ URL
   `-chap-N`, ĐÒI Referer `truyenqqko.com` chống hotlink, tên folder có dấu từ `<h1 itemprop=name>`,
@@ -72,6 +86,27 @@
   người `/adminclaim`), sau đó strict theo danh sách. `_is_admin` gác `/update`,`/tai`,`/admin*`.
 
 ## Quyết định gần đây (mới nhất trước)
+- 09/08 tối: **Comix (comix.to) = loop tải RIÊNG (`comix_site.py`), KHÔNG đụng
+  `core.run()`** — API mã hóa `{"e":...}` + token ký per-request nên phải để chính JS
+  site gọi API trong Chromium (Playwright headful) rồi hook `JSON.parse` bắt payload;
+  1 chương nhiều bản upload cần chọn + upgrade nên không nhét vừa hợp đồng provider.
+  Luật chọn (user chốt): official (`isOfficial`) trước, không có thì scan id lớn nhất
+  (id = độ mới; user BỎ tiebreak nhóm/timestamp). Upgrade scan→official qua sidecar
+  `.source.json` + tải vào `downloads/.comix-tmp/` (đầu-chấm nên reader bỏ qua) rồi
+  tráo folder; tên folder comix cố định "Chapter N" (không title) để tráo không mất
+  bookmark. Official đã tải = skip vĩnh viễn; KHÔNG thay scan→scan.
+- 09/08 tối: **3 bẫy môi trường comix đã gỡ** (đều đã tét): (1) PC công ty chặn load
+  DLL dưới `%LOCALAPPDATA%\ms-playwright` → chrome chết "side-by-side configuration
+  incorrect" → browser để TRONG project `.reader-meta/pw-browsers`
+  (`PLAYWRIGHT_BROWSERS_PATH`, set cả trong `comix_site.py` lẫn `cap-nhat.bat`);
+  (2) ghim `playwright==1.55.0` (1.62 kéo "Chrome for Testing 151" dính đúng lỗi SxS
+  trên Win10); (3) site check `navigator.webdriver` — thiếu 2 cờ
+  `--disable-blink-features=AutomationControlled` + bỏ `--enable-automation` là JS
+  site KHÔNG boot (SSR có title nhưng body rỗng, không gọi API).
+- 09/08 tối: **Cloudflare challenge → nhắn Telegram nhờ người tick** (`comix_site.py`
+  đọc `notify-config.json`, ưu tiên `admin_chat_ids`): hướng dẫn mở màn hình server
+  tick "Verify you are human", chờ 5 phút, qua thì báo ✅ tự chạy tiếp, quá giờ dừng
+  phiên exit 2. Test hiện tại KHÔNG dính challenge (profile bền giữ cf_clearance).
 - 09/08: **Thêm TruyenQQProvider** (truyenqqko.com). Site PHP tĩnh (giống Dilib): ảnh nhúng sẵn
   ở `data-original`, list chương từ URL `-chap-N`. CDN `truyenvua/hinhtruyen` **chống hotlink →
   ĐÒI Referer `truyenqqko.com`** (thiếu = 403; core tự gắn qua `provider.referer`). Tên folder lấy
@@ -135,6 +170,11 @@
   sang git/GitHub + login username-only đã gói trong "Kiến trúc hiện tại" + "Đồng bộ code bằng git".)
 
 ## Việc tiếp theo
+- **[COMIX — mới nhất] Push GitHub → server chạy `cap-nhat.bat`** (bắt buộc — nó cài
+  playwright + chromium vào `.reader-meta/pw-browsers`; `/update` KHÔNG cài) →
+  `/tai https://comix.to/title/...` thử 1 bộ trên server. Nhớ: khi bot tải comix,
+  server sẽ HIỆN cửa sổ Chromium (headful, cố ý) — đừng đóng. Nếu Telegram báo
+  Cloudflare → tick "Verify you are human" trên màn hình server.
 - **[09/08] Toàn bộ code (TruyenQQ, fix reader, MangaDex, chống-chết downloader) đã lên server
   — user xác nhận.** Việc nội dung còn mở: `/tai` **TruyenQQ** thử 1 bộ trên server cho chắc;
   `/tai` lại **Tondemo Skill** bù chương 1 (sau fix external-skip); tùy chọn tải lại **Pokemon
@@ -151,6 +191,12 @@
 - (Tùy chọn) đồng hồ server nhanh ~5 phút — sync giờ Windows nếu muốn log khớp.
 
 ## Lưu ý / rủi ro đang mở
+- **Comix**: phần dễ vỡ nhất là site đổi build/DOM (hook bắt ở tầng JSON.parse nên
+  khá lì, nhưng check `navigator.webdriver` / cách phân trang `?page=N` có thể đổi).
+  Tải comix bằng tay (`Tai truyen.bat`) trên PC dev cũng mở cửa sổ Chromium — bình
+  thường. `downloads/.comix-tmp/` là chỗ tráo bản Official — đừng xoá tay lúc đang
+  tải. Sidecar `.source.json` nằm trong từng folder chương comix; xoá nó = tool coi
+  như chưa rõ nguồn, có thể tải lại/upgrade lại chương đó.
 - **MangaDex**: chỉ lấy bản `en`; manga đã license tiếng Anh có thể có chương **chỉ-external**
   (ảnh không nằm trên MangaDex) → hụt đúng chương đó, KHÔNG phải lỗi (tool nào cũng vậy, kể cả
   `mangadex-downloader`). Provider ĐÒI `Referer: mangadex.org` (đã set sẵn trong class). Naming

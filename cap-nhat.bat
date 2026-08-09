@@ -29,6 +29,17 @@ if errorlevel 1 (
 )
 
 echo.
+echo Dang cai/cap nhat thu vien Python (requests, Pillow, Playwright)...
+python -m pip install -r requirements.txt
+if errorlevel 1 echo !!! pip install loi - tool tai co the thieu thu vien (van chay tiep).
+rem Chromium de TRONG project (.reader-meta\pw-browsers) - KHONG dung AppData
+rem (PC cong ty chan load DLL duoi AppData -> chrome khong khoi dong duoc).
+rem comix_site.py cung tro vao dung cho nay luc chay.
+set "PLAYWRIGHT_BROWSERS_PATH=%~dp0.reader-meta\pw-browsers"
+python -m playwright install chromium
+if errorlevel 1 echo !!! playwright install loi - tai comix.to se KHONG chay (site khac khong anh huong).
+
+echo.
 echo Da co code moi. Bat lai server de ap dung...
 echo.
 call "%~dp0server-BAT-tudong.bat"

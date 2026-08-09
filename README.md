@@ -24,7 +24,7 @@ Các script trong thư mục này, mỗi cái một việc:
 ## 1. Tải truyện — `comic_downloader.py` (hoặc bấm `Tai truyen.bat`)
 
 Một tool cho MỌI site, tự nhận site theo link (hiện hỗ trợ **Asura**, **Raven**, **Dilib**,
-**MangaDex**, **TruyenQQ**).
+**MangaDex**, **TruyenQQ**, **Comix**).
 
 > **Raven Scans đã đổi `ravenscans.org` → `ravenscans.net`** (và đổi cấu trúc URL chương) —
 > dùng link `.net` mới; link `.org` cũ vẫn được nhận.
@@ -39,6 +39,15 @@ Một tool cho MỌI site, tự nhận site theo link (hiện hỗ trợ **Asura
 > nên tool tự gửi kèm Referer — không cần làm gì thêm. ⚠️ Site này **đổi tên miền liên tục**
 > (truyenqq.com → ...to → ...ko → ...); nếu link cũ không nhận nữa thì dùng **domain hiện hành**,
 > hoặc báo để thêm domain mới vào provider.
+
+> **Comix** (comix.to, tức Comick): dán link `https://comix.to/title/...`. Site mã hóa API nên
+> tool phải **mở 1 cửa sổ Chromium** để lấy danh sách chương/ảnh — **đừng đóng cửa sổ đó**,
+> xong tool tự đóng (cần cài 1 lần: `pip install -r requirements.txt` rồi
+> `python -m playwright install chromium` — `cap-nhat.bat` trên server tự làm). Mỗi chương tự
+> chọn **bản Official (tick ✓)** nếu có, không thì lấy **bản scan mới nhất**; chương đã tải bằng
+> bản scan mà sau này có bản Official thì **chạy lại lệnh là tự thay** (bản Official đã tải thì
+> không bao giờ tải lại). Nếu bot nhắn "bị Cloudflare chặn" → ra màn hình server tick
+> "Verify you are human" trong cửa sổ Chromium là tool tự chạy tiếp.
 
 Cách nhanh nhất: **double-click `Tai truyen.bat`** → dán link → chọn chương → xong
 hỏi tải tiếp. Hoặc chạy lệnh:

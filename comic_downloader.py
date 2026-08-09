@@ -23,6 +23,31 @@ import comics_core as core
 from providers import REGISTRY, by_name
 
 
+class ComixEntry:
+    """comix.to (Comick) — KHÔNG theo hợp đồng provider thường: response API mã hóa
+    + token ký per-request nên phải chạy Playwright headful, và 1 chương có nhiều
+    bản upload (official/scan) cần chọn + upgrade tại chỗ. Loop riêng ở comix_site.py
+    (import lười — Playwright là dep tùy chọn, site khác không cần)."""
+
+    name = "comix"
+    domains = ["comix.to"]
+
+    def custom_run(self, args):
+        import comix_site
+        comix_site.run(args)
+
+
+_COMIX = ComixEntry()
+
+
+def dispatch(provider, args):
+    """comix đi loop riêng (custom_run); site thường đi core.run."""
+    if hasattr(provider, "custom_run"):
+        provider.custom_run(args)
+    else:
+        core.run(provider, args)
+
+
 def read_list(path):
     """Đọc file hàng đợi: mỗi dòng 1 link. Bỏ dòng trống và dòng bắt đầu bằng #."""
     try:
@@ -44,7 +69,7 @@ def run_batch(urls, args, default_provider):
         try:
             args.series = url   # core.run lấy URL truyện từ args.series
             provider = resolve_provider(url, args.site, default_provider)
-            core.run(provider, args)
+            dispatch(provider, args)
         except SystemExit as e:
             if e.code == 2:   # bị chặn/nhắc 429 nhiều -> dừng cả mẻ (core đã in hướng dẫn)
                 print("\n!!! DỪNG cả hàng đợi vì bị chặn IP. Chờ rồi chạy lại lệnh "
@@ -71,11 +96,16 @@ def run_batch(urls, args, default_provider):
 def resolve_provider(series_arg, site_flag, default=None):
     """Chọn provider: ưu tiên cờ --site, rồi domain của URL, rồi default (back-compat)."""
     if site_flag:
+        if site_flag.lower() == _COMIX.name:
+            return _COMIX
         p = by_name.get(site_flag.lower())
         if not p:
-            sys.exit(f"Site '{site_flag}' chưa hỗ trợ. Đang có: {', '.join(sorted(by_name))}")
+            sys.exit(f"Site '{site_flag}' chưa hỗ trợ. Đang có: "
+                     f"{', '.join(sorted([*by_name, _COMIX.name]))}")
         return p
     host = (urlparse(series_arg).hostname or "").removeprefix("www.") if series_arg else ""
+    if host and host in _COMIX.domains:
+        return _COMIX
     if host and host in REGISTRY:
         return REGISTRY[host]
     if default:
@@ -83,7 +113,7 @@ def resolve_provider(series_arg, site_flag, default=None):
     sys.exit(
         f"Không nhận ra site từ '{series_arg}'.\n"
         f"  -> Dán URL đầy đủ (vd https://ravenscans.org/series/xxx/)\n"
-        f"  -> hoặc thêm --site ({', '.join(sorted(by_name))}) nếu gõ slug trần."
+        f"  -> hoặc thêm --site ({', '.join(sorted([*by_name, _COMIX.name]))}) nếu gõ slug trần."
     )
 
 
@@ -125,7 +155,7 @@ def main(default_provider=None):
         ap.error("cần URL/slug truyện, hoặc --list FILE, hoặc --pack FOLDER")
 
     provider = resolve_provider(args.series, args.site, default_provider)
-    core.run(provider, args)
+    dispatch(provider, args)
 
 
 if __name__ == "__main__":

@@ -5,3 +5,8 @@
 #   .venv\Scripts\pip install -r requirements.txt
 requests
 Pillow
+# playwright: CHI can cho site comix.to (Comick). Cai xong PHAI chay them 1 lan
+# (cap-nhat.bat tu lam, kem PLAYWRIGHT_BROWSERS_PATH tro vao .reader-meta\pw-browsers):
+#   python -m playwright install chromium
+# Ghim 1.55: ban 1.62 keo "Chrome for Testing 151" dinh loi side-by-side tren Win10.
+playwright==1.55.0
