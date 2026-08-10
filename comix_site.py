@@ -85,6 +85,9 @@ NOTIFY_CONFIG = core.META_DIR / "notify-config.json"
 TMP_DIRNAME = ".comix-tmp"    # dưới thư mục --out; đầu-dấu-chấm -> reader/check bỏ qua
 SIDECAR = ".source.json"      # bản nào đang nằm trong folder chương (id/nhóm/official)
 CHALLENGE_WAIT = 300          # giây chờ người xác minh Cloudflare trước khi bỏ cuộc
+MAX_RELAUNCH = 3              # số lần TỰ dựng lại Chromium cho MỖI đợt sự cố (reset khi tải được thêm)
+RELAUNCH_BACKOFF = 5.0        # giây nghỉ trước khi mở Chromium mới
+FAIL_STREAK_LIMIT = 6         # số chương LIÊN TIẾP không lấy được ảnh (browser còn sống) -> dừng phiên
 
 # JSON.parse hook — add_init_script nên chạy lại MỖI navigation (window.__cap tự reset,
 # không phình RAM). Chỉ giữ object dạng {status, result} (API comix), bỏ qua thứ khác.
@@ -102,6 +105,18 @@ HOOK_JS = """
   };
 })();
 """
+
+
+class BrowserGone(Exception):
+    """Cửa sổ Chromium bị đóng/chết giữa chừng. run() bắt để TỰ DỰNG LẠI browser rồi
+    tải tiếp (relaunch); quá MAX_RELAUNCH lần trong một đợt -> ném ra ngoài = fatal
+    (thoát != 0 -> supervisor báo '❌ Lỗi tải' thay vì lặng lẽ '✅ Tải xong')."""
+
+
+class FetchStalled(Exception):
+    """Nhiều chương LIÊN TIẾP không lấy được ảnh dù browser CÒN SỐNG (nghi bị chặn IP
+    mềm / site đổi API). Dừng phiên + báo lỗi thật, thay vì ghi 'để sau' cả bộ rồi
+    thoát 0 khiến người dùng tưởng đã tải xong."""
 
 
 # --- Telegram (đọc chung notify-config.json với supervisor; lỗi thì im lặng) -----
@@ -140,8 +155,15 @@ class ComixSession:
         self.ctx = None
         self.page = None
         self._notified_challenge = False
+        self._relaunch_streak = 0     # số lần dựng lại Chromium trong ĐỢT sự cố hiện tại
 
     def __enter__(self):
+        self._launch()
+        return self
+
+    def _launch(self):
+        """Mở Chromium + gắn hook/route/popup. Tách riêng để relaunch() gọi lại được
+        khi cửa sổ bị đóng giữa chừng (cùng profile bền -> khỏi verify Cloudflare lại)."""
         from playwright.sync_api import sync_playwright
         self._pw = sync_playwright().start()
         PROFILE_DIR.mkdir(parents=True, exist_ok=True)
@@ -162,7 +184,47 @@ class ComixSession:
         self.page.set_default_timeout(45_000)
         # Popup quảng cáo (window.open/target=_blank) -> đóng ngay, giữ đúng 1 trang.
         self.ctx.on("page", self._on_popup)
-        return self
+
+    def alive(self) -> bool:
+        """Browser còn sống không? Để phân biệt 'Chromium đã đóng' (fatal, phải dựng
+        lại) với 'một lần điều hướng hụt' (tạm thời, cứ retry). Chỉ đọc trạng thái cục
+        bộ (page.is_closed / browser.is_connected) — không IPC nên không false-positive
+        lúc trang đang navigate."""
+        try:
+            if self.page is None or self.page.is_closed():
+                return False
+            br = self.ctx.browser if self.ctx else None
+            if br is not None and not br.is_connected():
+                return False
+            return True
+        except Exception:
+            return False
+
+    def mark_progress(self):
+        """Vừa tải được 1 chương -> reset bộ đếm dựng-lại (mỗi ĐỢT sự cố có ngân sách
+        MAX_RELAUNCH riêng, để browser chập chờn cả phiên dài không cộng dồn thành fatal)."""
+        self._relaunch_streak = 0
+
+    def relaunch(self):
+        """Dựng lại Chromium TẠI CHỖ sau khi cửa sổ bị đóng/chết (cùng profile bền ->
+        giữ cf_clearance; .done/sidecar giúp bỏ qua chương đã xong, y như restart tay).
+        Quá MAX_RELAUNCH lần trong một đợt -> ném BrowserGone = fatal (thoát != 0)."""
+        self._relaunch_streak += 1
+        if self._relaunch_streak > MAX_RELAUNCH:
+            raise BrowserGone(
+                f"Chromium đóng liên tục — đã tự dựng lại {MAX_RELAUNCH} lần vẫn hỏng")
+        print(f"\n  ! Cửa sổ Chromium đã đóng — tự dựng lại "
+              f"(lần {self._relaunch_streak}/{MAX_RELAUNCH}), tải tiếp...",
+              file=sys.stderr, flush=True)
+        _notify_telegram(
+            "🔄 Comix: cửa sổ Chromium bị đóng giữa chừng — tool TỰ mở lại "
+            f"(lần {self._relaunch_streak}/{MAX_RELAUNCH}) và tải tiếp. Không cần làm gì.")
+        self._close_playwright()
+        time.sleep(RELAUNCH_BACKOFF)
+        try:
+            self._launch()
+        except Exception as e:
+            raise BrowserGone(f"Không dựng lại được Chromium: {e}") from e
 
     @staticmethod
     def _route_filter(route):
@@ -184,9 +246,7 @@ class ComixSession:
             except Exception:
                 pass
 
-    def __exit__(self, *exc):
-        # LUÔN đóng browser kẻo Chromium mồ côi chiếm profile (supervisor cũng có
-        # lưới dọn lúc boot, nhưng đấy là phòng hờ crash, không phải đường chính).
+    def _close_playwright(self):
         for obj in (self.ctx, self._pw):
             try:
                 if obj is self.ctx and obj:
@@ -195,6 +255,12 @@ class ComixSession:
                     obj.stop()
             except Exception:
                 pass
+        self.ctx = self.page = self._pw = None   # để alive()=False + _launch gán lại sạch
+
+    def __exit__(self, *exc):
+        # LUÔN đóng browser kẻo Chromium mồ côi chiếm profile (supervisor cũng có
+        # lưới dọn lúc boot, nhưng đấy là phòng hờ crash, không phải đường chính).
+        self._close_playwright()
         return False
 
     # -- Cloudflare -------------------------------------------------------------
@@ -250,6 +316,9 @@ class ComixSession:
             except core.Blocked:
                 raise
             except Exception as e:
+                # Chromium đã đóng hẳn -> retry vô ích; báo fatal để run() dựng lại.
+                if not self.alive():
+                    raise BrowserGone(f"Chromium đã đóng khi mở {url}: {e}") from e
                 if attempt == 2:
                     raise RuntimeError(f"Không mở được {url}: {e}") from e
                 time.sleep(3 * (attempt + 1))
@@ -264,6 +333,8 @@ class ComixSession:
                 batch = self.page.evaluate(
                     "() => { const c = window.__cap || []; window.__cap = []; return c; }")
             except Exception:
+                if not self.alive():
+                    raise BrowserGone("Chromium đã đóng khi đọc payload")
                 batch = []
             for o in batch or []:
                 try:
@@ -298,7 +369,7 @@ class ComixSession:
                 time.sleep(random.uniform(0.6, 1.2))
                 try:
                     self._goto(f"{BASE}/title/{slug}?page={page_no}")
-                except core.Blocked:
+                except (core.Blocked, BrowserGone):
                     raise
                 except Exception:
                     continue
@@ -347,7 +418,7 @@ class ComixSession:
             time.sleep(random.uniform(0.6, 1.2))
             try:
                 self._goto(BASE + url_path)
-            except core.Blocked:
+            except (core.Blocked, BrowserGone):
                 raise
             except Exception:
                 continue                      # goto hỏng -> mở lại
@@ -551,6 +622,19 @@ def write_series_marker(out_root: Path, slug: str):
 
 # --- Vòng tải chính --------------------------------------------------------------
 
+def _resilient(cs, call):
+    """Chạy `call()` trên session `cs`; Chromium chết giữa chừng -> cs.relaunch() rồi
+    thử lại trên browser mới. Quá ngưỡng dựng lại -> relaunch() ném BrowserGone ra
+    ngoài = fatal. `call` phải là lambda tham chiếu `cs` (đừng truyền bound method của
+    session cũ — relaunch thay ctx/page BÊN TRONG cùng object nên bound method vẫn đúng,
+    nhưng lambda cho rõ ý)."""
+    while True:
+        try:
+            return call()
+        except BrowserGone:
+            cs.relaunch()
+
+
 def run(args):
     try:
         import playwright  # noqa: F401 — dep tùy chọn, chỉ cần cho comix
@@ -569,7 +653,7 @@ def run(args):
 
     try:
         with ComixSession() as cs:
-            title, cover, items = cs.fetch_series(slug)
+            title, cover, items = _resilient(cs, lambda: cs.fetch_series(slug))
             by_num = group_versions(items)
             if not by_num:
                 print("Không lấy được danh sách chương. Kiểm tra lại URL.", file=sys.stderr)
@@ -609,6 +693,7 @@ def run(args):
 
             total = len(nums)
             active = 0
+            fail_streak = 0   # số chương LIÊN TIẾP hụt ảnh (browser còn sống) -> cầu dao
             incomplete, source_broken, unfetched = [], [], []
             n_full = n_skipped = n_locked = n_upgraded = 0
             img_ok = img_missing = img_broken = 0
@@ -667,7 +752,7 @@ def run(args):
                 # KHÔNG được xoá nội dung đang có (tránh phá bản tải dở khi chỉ chập mạng).
                 chosen, urls, fetch_failed = None, [], False
                 for ver in pool:
-                    res = cs.fetch_pages(ver["url"], ver["id"])
+                    res = _resilient(cs, lambda v=ver: cs.fetch_pages(v["url"], v["id"]))
                     if res is None:              # bắt hụt (mạng/quảng cáo) -> thử bản khác
                         fetch_failed = True
                         print(f"{prefix} — bản [{_group_name(ver)}] chưa lấy được, thử bản khác...")
@@ -692,10 +777,23 @@ def run(args):
                         unfetched.append(label)
                         core.append_log(f"{title} / {label}: chưa lấy được ảnh "
                                         "(mạng/quảng cáo) — chạy lại để bù")
+                        # Cầu dao: browser CÒN SỐNG mà hụt nhiều chương liên tiếp = nghi bị
+                        # chặn IP mềm / site đổi API -> dừng phiên + báo lỗi thật (thay vì
+                        # ghi 'để sau' cả bộ rồi thoát 0 khiến tưởng đã tải xong).
+                        fail_streak += 1
+                        if fail_streak >= FAIL_STREAK_LIMIT:
+                            raise FetchStalled(
+                                f"{fail_streak} chương liên tiếp không lấy được ảnh dù "
+                                "Chromium còn sống — nghi bị chặn IP mềm hoặc site đổi API")
                     else:
                         print(f"{prefix} — không bản nào có ảnh (khóa/premium?), bỏ qua")
                         n_locked += 1
+                        fail_streak = 0   # site vẫn trả lời (khóa thật) -> không tính chuỗi hụt
                     continue
+
+                # Chọn được bản có ảnh = có tiến triển -> reset các bộ đếm sự cố.
+                cs.mark_progress()
+                fail_streak = 0
 
                 tag = "Official" if chosen.get("isOfficial") else _group_name(chosen)
                 pages = list(enumerate(urls, 1))
@@ -801,6 +899,14 @@ def run(args):
         print(f"\n!!! Dừng phiên: {e}", file=sys.stderr)
         print("Ảnh đã tải không mất. Chờ một lúc (429: ~1 giờ; 403/503/Cloudflare: "
               "vài giờ) rồi chạy lại đúng lệnh này - tự tải tiếp chỗ dở.", file=sys.stderr)
+        sys.exit(2)
+    except (BrowserGone, FetchStalled) as e:
+        # Thoát != 0 -> supervisor vào nhánh '❌ Lỗi tải' (đính dòng log cuối này). KHÁC
+        # đường cũ: browser chết từng bị nuốt thành 'để sau' cả bộ rồi thoát 0 -> '✅ Tải
+        # xong' giả, không ai hay. Nay có báo thật.
+        print(f"\n!!! Dừng phiên: {e}", file=sys.stderr)
+        print("Ảnh đã tải KHÔNG mất — chạy lại đúng lệnh này để tải tiếp chỗ dở "
+              "(chương đã xong tự bỏ qua).", file=sys.stderr)
         sys.exit(2)
 
     # ---- Tổng kết cả bộ (format khớp engine chung) ----

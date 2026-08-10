@@ -1,30 +1,34 @@
-# Handoff — cập nhật lần cuối: 2026-08-09 (khuya, comix resilience + chặn quảng cáo)
+# Handoff — cập nhật lần cuối: 2026-08-10 (comix: tự relaunch Chromium khi cửa sổ đóng)
 
 ## Đang làm / dở dang
-- **[09/08 khuya-2] Comix: FIX "1 chương lỗi giết cả bộ" + chặn quảng cáo — CODE +
-  TEST OK trên PC dev, CHƯA push/deploy (sẽ push cuối phiên này).** Sự cố user gặp:
-  tải `the-lone-spellcaster` báo `RuntimeError: Không bắt được ảnh chương (id 5853129)`
-  rồi bot nhảy sang bộ kế; Dungeon Reset thì bình thường. **Chẩn đoán** (đã kiểm dữ liệu
-  thật): chương 184 (id 5853129, bản WebToon-official) LÀNH — có 176 ảnh, API bình
-  thường. Lỗi là **transient khi mở trang** (khả năng cao nhất: quảng cáo pop-under/redirect
-  của comix đẩy trang rời comix.to giữa lúc load → hook JSON.parse không thấy payload).
-  Khiếm khuyết thật: `fetch_pages` **raise RuntimeError** → không ai bắt → tiến trình
-  `comic_downloader.py` chết (exit 1) → supervisor báo "❌ Lỗi tải" và **nhảy job/bộ kế**
-  (mỗi bộ là 1 job Popen riêng, xét `rc`); phần chương chưa `.done` của bộ đó mất.
-  **Sửa (5 điểm, `comix_site.py`)**: (1) chặn quảng cáo tận gốc — `ctx.route` chỉ cho
-  request tới `comix.to`+`cloudflare.com`, abort domain khác + auto-đóng popup (ảnh vẫn
-  tải bằng requests riêng nên browser khỏi cần ảnh); (2) `_pump` trả `None` thay vì raise;
-  (3) `fetch_pages`/list **mở lại tối đa 3 lần**; (4) `fetch_pages` phân biệt `None`
-  (bắt hụt→thử bản khác / ghi "để sau") vs `[]` (0 trang thật = khóa); hết bản thì ghi
-  vào `unfetched` rồi **ĐI TIẾP**, KHÔNG dừng bộ, exit 0; (5) bỏ message sai "site đổi
-  cấu trúc API", tổng kết thêm dòng "Chưa lấy được: N (chạy lại là bù được)". Test:
-  (B) inject lỗi giả 4 chương → fallback scan + skip-and-continue + exit 0 = PASS;
-  (A) `fetch_pages` chương 184 thật → 176 URL trong 10s = PASS; smoke `fetch_series`
-  the-lone-spellcaster → 554 bản/229 chương, cover OK, route-filter không cản = PASS.
-  **Việc còn lại: push → `/update` là đủ (chỉ đổi comix_site.py) → `/tai` lại
-  the-lone-spellcaster + Dungeon Reset trên server cho chắc.**
-- **[09/08 khuya] Comix: FIX upgrade cross-provider + FILE DẤU (Cách 1) — CODE + TEST
-  OK trên PC dev, CHƯA push, CHƯA deploy.** Sự cố gốc (user gặp): tải Dungeon Reset từ
+- **[10/08] Comix: TỰ DỰNG LẠI Chromium khi cửa sổ đóng giữa chừng + báo lỗi thật —
+  CODE + TEST LOGIC OK trên PC dev, đang push phiên này, CHƯA nghiệm thu LIVE.** Sự cố
+  user gặp: đang `/tai` comix thì cửa sổ Chromium trên server bị đóng → tải hỏng từ ch.22
+  nhưng KHÔNG có tin báo; `/trangthai` chỉ hiện dòng "chưa lấy được ảnh" chung chung; phải
+  ra server bấm server-BAT restart mới tải lại được. **Chẩn đoán**: browser chết bị nhầm
+  thành "1 chương hụt vì mạng/quảng cáo" — mọi chương sau đó bị hạ cấp thành "để sau" rồi
+  phiên **thoát 0** → supervisor báo nhầm "✅ Tải xong", grind mù hàng giờ, không ai hay.
+  **Sửa (`comix_site.py`)**: (1) `alive()` phân biệt "Chromium đóng hẳn" (fatal) vs "điều
+  hướng hụt" (tạm thời) qua `page.is_closed()`/`browser.is_connected()`; tách
+  `_launch()`/`_close_playwright()` để **relaunch tại chỗ** (cùng profile bền, `.done`/
+  sidecar bỏ qua chương đã xong = y hệt restart tay); `_goto`/`_pump` raise `BrowserGone`
+  khi browser chết; `_resilient()` bọc mọi call fetch → chết thì relaunch rồi thử lại.
+  (2) Vượt `MAX_RELAUNCH=3` lần/đợt → `BrowserGone` thoát → handler mới `sys.exit(2)` →
+  supervisor báo "❌ Lỗi tải"; `relaunch()` gửi Telegram "🔄 tự mở lại" ngay lúc xảy ra.
+  (3) Cầu dao `FAIL_STREAK_LIMIT=6` chương hụt LIÊN TIẾP (browser sống) → `FetchStalled`
+  → dừng + báo (chống chặn-IP-mềm/site-đổi-API bị nuốt lặng). Streak reset khi tải được
+  1 chương (`mark_progress`) hoặc gặp chương khóa thật. **Test**: `py_compile` sạch +
+  test control-flow (`_resilient` hồi phục sau N lần, reset streak, escalate fatal quá
+  ngưỡng) PASS bằng stub (không đụng mạng/Chromium). **CHƯA test end-to-end thật** với
+  Chromium trên server. **Việc còn lại: push → `/update` là đủ (chỉ đổi comix_site.py,
+  downloader spawn subprocess mới mỗi `/tai` nên tự nạp) → nghiệm thu: `/tai` comix rồi
+  đóng tay cửa sổ Chromium giữa chừng, phải thấy "🔄 tự mở lại" + tải tiếp.**
+- **[09/08 khuya-2] Comix: FIX "1 chương lỗi giết cả bộ" + chặn quảng cáo — ĐÃ PUSH
+  (commit `96275b4`).** `ctx.route` chỉ cho `comix.to`+`cloudflare.com` (abort ad, đóng
+  popup); `_pump` trả `None` không raise; fetch mở lại 3 lần; phân biệt `None` (hụt→bản
+  khác/"để sau") vs `[]` (0 trang=khóa); hết bản → `unfetched` rồi ĐI TIẾP (exit 0).
+  Sự cố the-lone-spellcaster ch184 thực ra transient (ad redirect), chương LÀNH.
+- **[09/08 khuya] Comix: FIX upgrade cross-provider + FILE DẤU (Cách 1) — ĐÃ PUSH.** Sự cố gốc (user gặp): tải Dungeon Reset từ
   Raven (266 ch) rồi chạy comix để lấy official → comix chỉ tải 2 chương, skip 266.
   Nguyên nhân: folder Raven có `.done` nhưng KHÔNG có sidecar `.source.json` (sidecar chỉ
   do comix tạo) → rơi vào nhánh "đã xong trước đó → skip", không vào nhánh upgrade.
@@ -36,9 +40,8 @@
   rồi TỰ TAY xoá folder scan trùng. Test PC dev (đã xác minh đĩa): xoá sidecar Ch.5
   Ranker's Return giả làm "bản ngoài" → chạy comix → "DA THAY [bản ngoài] bằng Official"
   (108 ảnh), sidecar thành official, tmp sạch, file dấu ghi đúng "official 8/8"; regression
-  skip-official + tải mới vẫn OK. **Việc còn lại: push → `cap-nhat.bat` không cần (chỉ đổi
-  comix_site.py, không đụng requirements) — nhưng `/update` là đủ; rồi `/tai` lại Dungeon
-  Reset trên server để 266 chương Raven tự lên Official.**
+  skip-official + tải mới vẫn OK. **ĐÃ PUSH — việc còn lại: `/tai` lại Dungeon Reset trên
+  server để 266 chương Raven tự lên Official (chưa nghiệm thu live).**
 - **[09/08 tối] Provider COMIX.TO (Comick) — CODE XONG + TEST THẬT OK trên PC dev,
   ĐÃ push GitHub + user xác nhận cập nhật server. CHƯA nghiệm thu `/tai` LIVE.**
   File mới `comix_site.py` (loop tải riêng, Playwright headful + hook JSON.parse);
@@ -122,6 +125,14 @@
   người `/adminclaim`), sau đó strict theo danh sách. `_is_admin` gác `/update`,`/tai`,`/admin*`.
 
 ## Quyết định gần đây (mới nhất trước)
+- 10/08: **Comix TỰ dựng lại Chromium khi cửa sổ đóng** (`comix_site.py`): browser chết
+  giữa chừng giờ được phát hiện tường minh (`alive()`) và relaunch tại chỗ (cùng profile
+  bền) rồi tải tiếp, thay vì nhầm thành "1 chương hụt" → hạ cấp "để sau" cả bộ → thoát 0
+  → báo nhầm "✅ Tải xong". Ngân sách tự-lành reset khi có tiến triển: 3 lần relaunch/đợt
+  (`MAX_RELAUNCH`) + cầu dao 6 chương hụt liên tiếp (`FAIL_STREAK_LIMIT`) → hết thì thoát
+  ≠0 để supervisor báo "❌ Lỗi tải" + Telegram "🔄 tự mở lại" lúc đang chạy. Vì sao: user
+  gặp browser đóng ở ch.22 mà KHÔNG có báo, `/trangthai` chỉ hiện dòng "chưa lấy được ảnh"
+  chung chung — do đường cũ nuốt lỗi browser-chết thành transient.
 - 09/08 khuya: **Comix bền với chương lỗi + chặn quảng cáo** (`comix_site.py`, 5 điểm):
   browser `ctx.route` chỉ cho `comix.to`+`cloudflare.com` (abort ad, auto-đóng popup) —
   diệt gốc quảng cáo redirect làm hụt payload; `_pump` trả `None` (không raise);
@@ -219,7 +230,12 @@
   sang git/GitHub + login username-only đã gói trong "Kiến trúc hiện tại" + "Đồng bộ code bằng git".)
 
 ## Việc tiếp theo
-- **[COMIX resilience + upgrade cross-site + file dấu — MỚI NHẤT, đã push, chưa deploy]**
+- **[COMIX relaunch — MỚI NHẤT, đang push]** Trên bot chạy **`/update`** là đủ (chỉ đổi
+  `comix_site.py`; downloader spawn subprocess mới mỗi `/tai` nên tự nạp — KHỎI
+  `cap-nhat.bat`, KHỎI restart tay). Nghiệm thu: `/tai` 1 bộ comix rồi **đóng tay cửa sổ
+  Chromium** giữa chừng → phải nhận Telegram "🔄 tự mở lại" và bot tải tiếp; đóng lặp >3
+  lần thì phải thấy "❌ Lỗi tải" (không còn báo "xong" giả).
+- **[COMIX resilience + upgrade cross-site + file dấu — đã push, chưa nghiệm thu live]**
   Trên bot chạy **`/update`** là đủ (chỉ đổi `comix_site.py`, không thêm dep nên KHỎI
   `cap-nhat.bat`). Rồi `/tai`: (a) **the-lone-spellcaster** (`comix.to/title/0qd3d-...`) —
   bộ từng lỗi ch184; giờ phải tải hết bộ, chương nào hụt thì cuối báo "Chưa lấy được: N"

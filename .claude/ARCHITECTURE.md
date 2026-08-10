@@ -70,7 +70,13 @@ cách chạy thật + decode thử ảnh.
     kéo Chrome-for-Testing 151 lỗi side-by-side trên Win10); site check
     `navigator.webdriver` → bắt buộc `--disable-blink-features=AutomationControlled`
     + `ignore_default_args=["--enable-automation"]`, thiếu là JS site không boot
-    (body rỗng, không gọi API).
+    (body rỗng, không gọi API). **Cửa sổ Chromium đóng giữa chừng → TỰ dựng lại (10/08)**:
+    `alive()` (`page.is_closed`/`browser.is_connected`) phân biệt browser-chết (fatal) với
+    điều-hướng-hụt (transient); `_goto`/`_pump` raise `BrowserGone`, `_resilient()` bọc mọi
+    call fetch → chết thì `relaunch()` tại chỗ (cùng profile bền) rồi thử lại. Quá
+    `MAX_RELAUNCH=3`/đợt hoặc `FAIL_STREAK_LIMIT=6` chương hụt LIÊN TIẾP (browser sống, nghi
+    chặn IP mềm) → thoát ≠0 (supervisor báo "❌ Lỗi tải") thay vì nuốt lỗi thành "để sau" cả
+    bộ rồi thoát 0 = "✅ Tải xong" giả. Streak reset khi tải được 1 chương.
   - `asura_downloader.py` — **giờ chỉ là shim** gọi `comic_downloader.main(default=asura)`
     → lệnh/shortcut cũ + gõ slug trần vẫn chạy như Asura như trước.
   - `Tai truyen.bat` — shortcut trong folder (không ra Desktop): **vòng lặp** hỏi link
