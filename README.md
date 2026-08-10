@@ -182,23 +182,35 @@ python convert_webp.py "..." --jpg-too       :: nén cả JPG (lưu ý: lossy ch
 ## Làm nét ảnh scan — Real-ESRGAN (`realesrgan-ncnn-vulkan-v0.2.0-windows\lam-net.bat`)
 
 Tool AI làm nét/upscale cho **trang truyện scan mờ**. Bản portable (ncnn/Vulkan), cần **GPU**
-(máy này + server dùng GTX 1050 Ti). Cách dùng thủ công:
+(máy này + server dùng GTX 1050 Ti). Lõi xử lý là `lam_net.py`, `lam-net.bat` chỉ là nút bấm
+(giống `Tai truyen.bat` → `comic_downloader.py`). Cách dùng:
 
 1. Bỏ ảnh cần làm nét vào thư mục `realesrgan-ncnn-vulkan-v0.2.0-windows\input\` — có thể để
-   **ảnh phẳng** trực tiếp, HOẶC **copy cả các folder chapter** (chapter 1, 2, 3...) vào `input\`
-2. Bấm đúp `lam-net.bat` — chạy xong kết quả nằm ở `output-realesrgan\` (WebP, 2x), **giữ nguyên
-   cấu trúc folder chapter** như input (mỗi chapter ra 1 folder cùng tên)
+   **ảnh phẳng** trực tiếp, HOẶC **copy cả các folder chương** (`Chapter 1`, `Chapter 2`...) vào `input\`
+2. Bấm đúp `lam-net.bat` — chạy xong kết quả nằm ở `output-realesrgan\` (**PNG**, 2x), **giữ nguyên
+   cấu trúc folder chương** như input (mỗi chương ra 1 folder cùng tên)
 
 - **Model đã chốt: `realesr-animevideov3` scale 2x** — sau khi test thật (soi crop zoom 3x)
   đây là bản sắc nét mà **giữ nguyên chi tiết gốc** tốt nhất, lại nhanh. Đã bỏ 2 model nặng
   không dùng (`realesrgan-x4plus`, `realesrgan-x4plus-anime`) cho nhẹ.
-- Xuất **WebP** (lossless, nhẹ hơn PNG) và **tile cố định 200** (an toàn VRAM 4GB khi chạy
-  batch dài, không giảm chất lượng). Muốn đổi thì sửa `FORMAT`/`TILE`/`SCALE` đầu file `.bat`.
-- ⚠️ Tool gốc **không tự đệ quy folder** — `lam-net.bat` đã xử lý sẵn: nó chạy ảnh phẳng trong
-  `input\` + lặp qua **từng folder con 1 cấp**. Nên để **folder chapter trực tiếp** trong
-  `input\`, đừng bọc thêm 1 lớp folder bộ truyện bên ngoài (2 cấp sẽ không được xử lý).
-- ⚠️ Ảnh ra vẫn là **WebP lossless 2x, nặng nhiều lần bản gốc**. Muốn đưa vào reader thì nên
-  **nén lại lossy** (JPG/WebP q80–85) — đừng để nguyên bản 2x lossless cho cả kho.
+- Xuất **PNG** (lossless) và **tile cố định 200** (an toàn VRAM 4GB khi chạy batch dài, không
+  giảm chất lượng). Muốn đổi thì sửa các hằng số `FORMAT`/`TILE`/`SCALE`/`MODEL` đầu `lam_net.py`.
+- **Đọc chương đúng thứ tự SỐ**: `lam_net.py` rút số ra khỏi tên folder rồi sort theo số
+  (`1, 2, 3, ..., 10, ..., 43.5`), không dính lỗi kiểu chữ-cái `Chapter 1 → Chapter 10 → Chapter 2`.
+  Hỗ trợ cả tên `Ch. 0.1`, chương thập phân.
+- **Tiến độ gọn** (giống tool tải): một dòng cập nhật tại chỗ `[Chương k/N] tên | ảnh i/n |
+  tổng x/y | ETA ...`, mỗi chương xong in 1 dòng chốt, cuối tổng kết. **1 ảnh lỗi → bỏ qua +
+  ghi log rồi chạy tiếp**, không treo cả bộ; cuối liệt kê chương có ảnh lỗi.
+- **Tự bỏ qua chương đã xong**: chạy lại tool, chương nào đã có **đủ ảnh** trong
+  `output-realesrgan\` sẽ bị **skip** (in "bỏ qua N chương đã xong"), chỉ làm chương mới/còn
+  thiếu → thêm chương vào bộ rồi chạy lại rất nhanh, không phí GPU làm lại. Chương làm **dở**
+  (output thiếu ảnh so với input) sẽ được **làm lại cả chương** cho chắc.
+- **Muốn ép làm lại từ đầu** (kể cả chương đã xong — vd đổi tham số, output lỗi): bấm
+  **`lam-net-lam-lai.bat`** (chạy `lam_net.py --force`), bỏ qua toàn bộ skip.
+- ⚠️ Để **folder chương trực tiếp** trong `input\`, đừng bọc thêm 1 lớp folder bộ truyện bên
+  ngoài (chỉ xử lý 1 cấp folder con).
+- ⚠️ Ảnh ra là **PNG 2x, nặng nhiều lần bản gốc**. Muốn đưa vào reader thì nên **nén lại**
+  (dùng `convert_webp.py` hoặc hạ JPG/WebP q80–85) — đừng để nguyên PNG 2x cho cả kho.
 - Thư mục `input\` và `output-realesrgan\` được `.gitignore` (không đẩy ảnh lên repo).
 - **Chạy tự động trên server**: chưa tích hợp vào `/tai`. Kế hoạch (xem HANDOFF): enhance là
   bước hậu xử lý sau tải, xếp hàng tuần tự (GPU chỉ 1 job/lúc), enhance → resize xuống → nén,
