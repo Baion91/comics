@@ -5,11 +5,24 @@ cd /d "%~dp0"
 
 REM ============================================================
 REM  Bo anh vao input\ (anh phang HOAC cac folder chuong con)
-REM  roi bam dup file nay. Ket qua ra output-realesrgan\ (PNG 2x).
-REM  Toan bo logic (sort chuong, tien do, bo qua anh loi) o lam_net.py
+REM  roi chay file nay. Ket qua ra output-realesrgan\ (PNG 2x).
+REM  Mac dinh: bo qua chuong da xong. Chon 'y' de lam lai tat ca.
 REM ============================================================
 
-python "%~dp0lam_net.py"
+echo ============================================================
+echo   LAM NET ANH TRUYEN (Real-ESRGAN)
+echo   Bo anh / folder chuong vao input\  roi tiep tuc.
+echo ============================================================
+echo.
+set "REDO="
+set /p REDO="Lam lai ca chuong DA XONG? (y/N): "
+
+echo.
+if /i "%REDO%"=="y" (
+  python "%~dp0lam_net.py" --force
+) else (
+  python "%~dp0lam_net.py"
+)
 
 echo.
 pause

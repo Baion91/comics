@@ -198,15 +198,21 @@ Tool AI làm nét/upscale cho **trang truyện scan mờ**. Bản portable (ncnn
 - **Đọc chương đúng thứ tự SỐ**: `lam_net.py` rút số ra khỏi tên folder rồi sort theo số
   (`1, 2, 3, ..., 10, ..., 43.5`), không dính lỗi kiểu chữ-cái `Chapter 1 → Chapter 10 → Chapter 2`.
   Hỗ trợ cả tên `Ch. 0.1`, chương thập phân.
+- **Chỉ tính file ảnh**: tổng và tiến độ chỉ đếm ảnh (`.png/.jpg/.jpeg/.webp/.bmp`). File
+  dấu của tool tải (`.done`, `.source.json`, `_COMIX_official_*.txt`) **bị bỏ qua hoàn toàn**,
+  không tính vào tổng, không báo lỗi ảo.
 - **Tiến độ gọn** (giống tool tải): một dòng cập nhật tại chỗ `[Chương k/N] tên | ảnh i/n |
-  tổng x/y | ETA ...`, mỗi chương xong in 1 dòng chốt, cuối tổng kết. **1 ảnh lỗi → bỏ qua +
-  ghi log rồi chạy tiếp**, không treo cả bộ; cuối liệt kê chương có ảnh lỗi.
+  tổng x/y | ETA ...`. Tiến độ đo bằng **số file output thật sinh ra** (không đọc `%` của exe)
+  nên **chính xác kể cả khi exe chạy đa luồng** và **không chớp tắt**. Mỗi chương xong in 1 dòng
+  chốt, cuối tổng kết. **1 ảnh THẬT lỗi (không ra file) → tính lỗi + bỏ qua + chạy tiếp**, không
+  treo cả bộ; cuối liệt kê chương có ảnh lỗi.
 - **Tự bỏ qua chương đã xong**: chạy lại tool, chương nào đã có **đủ ảnh** trong
   `output-realesrgan\` sẽ bị **skip** (in "bỏ qua N chương đã xong"), chỉ làm chương mới/còn
   thiếu → thêm chương vào bộ rồi chạy lại rất nhanh, không phí GPU làm lại. Chương làm **dở**
   (output thiếu ảnh so với input) sẽ được **làm lại cả chương** cho chắc.
-- **Muốn ép làm lại từ đầu** (kể cả chương đã xong — vd đổi tham số, output lỗi): bấm
-  **`lam-net-lam-lai.bat`** (chạy `lam_net.py --force`), bỏ qua toàn bộ skip.
+- **Muốn ép làm lại từ đầu** (kể cả chương đã xong — vd đổi tham số, output lỗi): lúc chạy
+  `lam-net.bat`, ở câu hỏi `Lam lai ca chuong DA XONG? (y/N)` chọn **`y`** (tương đương
+  `lam_net.py --force`). Bỏ trống/`n` = chế độ thường (bỏ qua chương đã xong).
 - ⚠️ Để **folder chương trực tiếp** trong `input\`, đừng bọc thêm 1 lớp folder bộ truyện bên
   ngoài (chỉ xử lý 1 cấp folder con).
 - ⚠️ Ảnh ra là **PNG 2x, nặng nhiều lần bản gốc**. Muốn đưa vào reader thì nên **nén lại**

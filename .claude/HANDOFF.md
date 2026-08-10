@@ -1,40 +1,14 @@
-# Handoff — cập nhật lần cuối: 2026-08-10 (tool làm nét ảnh: rewrite lõi sang lam_net.py)
+# Handoff — cập nhật lần cuối: 2026-08-10 (tool làm nét: đo tiến độ theo file output + gộp bat)
 
 ## Đang làm / dở dang
-- **[10/08] Thêm tool LÀM NÉT ảnh Real-ESRGAN vào repo — TOOL + engine Python XONG + TEST
-  THẬT OK, ĐẨY LÊN SERVER qua `/update` như code thường. Bước tích hợp tự động vào `/tai`
-  CHƯA làm.** Thư mục `realesrgan-ncnn-vulkan-v0.2.0-windows/` (portable, ncnn/Vulkan).
-  **Model đã chốt sau khi test thật (user tự soi crop zoom 3x): `realesr-animevideov3` scale
-  2x** — sắc nét rõ, gần như không đổi chi tiết, chạy nhanh; THẮNG waifu2x (`-n 3`, bị mờ) và
-  `realesrgan-x4plus-anime` (4x, vừa nặng vừa không hơn, bịa nét vùng gradient). **Đã xoá 2
-  model không dùng** (`realesrgan-x4plus` 32MB + `realesrgan-x4plus-anime` 8.6MB) → tool từ
-  51MB còn **9.9MB** cho nhẹ repo Public.
-  **Kiến trúc: `lam_net.py` (lõi) + `lam-net.bat` (chỉ là launcher gọi `python lam_net.py`,
-  giống `Tai truyen.bat`→`comic_downloader.py`).** Đổi từ .bat thuần sang Python vì cmd không
-  làm sạch được 2 việc: (1) **sort chương theo SỐ** — folder tải về đặt tên `Chapter 1/2/10`
-  (không đệm 0) nên `for /d` của cmd sort chữ-cái ra `1→10→11→2` (đúng lỗi user gặp); `lam_net.py`
-  rút số bằng regex `(\d+(?:\.\d+)?)` rồi sort float (chịu cả `Ch. 0.1`, chương thập phân).
-  (2) **tiến độ gọn**: exe in `%` mỗi ảnh mỗi dòng ngập màn hình; Python nuốt hết output exe,
-  tự vẽ **1 dòng cập nhật tại chỗ** `[Chương k/N] tên | ảnh i/n | tổng x/y | ETA`, đếm ảnh
-  bằng cách bắt `%` tụt về 0 = ảnh mới (gọi exe 1 lần/chương, model chỉ nạp 1 lần/chương —
-  không nạp lại từng ảnh). **Tham số: `-n realesr-animevideov3 -s 2 -f png -t 200`** (user
-  ĐỔI về **PNG**, không webp nữa; tile cố định 200 an toàn VRAM 4GB). Xử lý cả ảnh phẳng lẫn
-  folder chương con (1 cấp), **giữ nguyên cấu trúc** ra output. **1 ảnh lỗi → bỏ qua + log +
-  chạy tiếp** (đếm từ dòng "failed"), cuối liệt kê chương có ảnh lỗi. **SKIP chương đã xong**:
-  `is_done()` kiểm tra mỗi ảnh input đã có file output tương ứng (đổi đuôi sang PNG) chưa —
-  đủ thì bỏ qua, chỉ làm chương mới/thiếu (thêm chương rồi chạy lại rất nhanh); chương làm dở
-  (thiếu ảnh) làm lại CẢ chương (exe ghi đè). Nút **`lam-net-lam-lai.bat`** = `lam_net.py
-  --force` ép làm lại tất cả (bỏ qua skip). **Đã test thật**: (a) sort —
-  `Ch. 0.1 / Chapter 1 / Chapter 2 / Chapter 10 / (ảnh lẻ)` chạy đúng **thứ tự số** + ra đúng
-  cấu trúc PNG; (b) skip — chạy lại thì bỏ qua đủ, thêm Chapter 4 thì chỉ làm 1 chương, --force
-  làm lại cả 4. **`.gitignore`**: bỏ TRỌN `input/` + `output-realesrgan/` (lam-net.bat tự
-  `mkdir` lại; KHÔNG dùng .gitkeep vì .gitkeep trong input làm exe báo lỗi decode). Đã xoá
-  folder `.claude/` rác do session trước tự tạo trong tool. **Việc còn lại (theo tư vấn session
-  "Tư vấn dùng tool làm nét ảnh")**: tích hợp tự động vào luồng `/tai` — enhance là bước HẬU
-  XỬ LÝ sau tải, XẾP HÀNG TUẦN TỰ (1050 Ti chỉ 1 job/lúc), BẮT BUỘC resize xuống + nén JPG/WebP
-  ~80–85 sau upscale (PNG 2x nặng ~20x gốc), + báo Telegram khi hỏng, chỉ bật cho truyện scan
-  kém (whitelist), rollout bán tự động 1 tuần trước khi gắn hẳn. `lam_net.py` chính là code
-  server sẽ tái dùng cho bước này. CHƯA CODE phần tích hợp.**
+- **[10/08] Tool LÀM NÉT ảnh Real-ESRGAN (`realesrgan-ncnn-vulkan-v0.2.0-windows/`) — CODE +
+  TEST THẬT XONG, CHƯA push (đang chờ trong git), tích hợp `/tai` CHƯA làm.** `lam_net.py`
+  (lõi) + `lam-net.bat` (launcher, hỏi `Lam lai ca chuong DA XONG? (y/N)` → `--force`). Tham số
+  `realesr-animevideov3 -s 2 -f png -t 200`. Nhận ảnh phẳng HOẶC folder chương con (1 cấp) trong
+  `input\` → xuất `output-realesrgan\` giữ nguyên cấu trúc. Sort chương theo SỐ; tiến độ đo bằng
+  **đếm file output** (poll 0.3s); **skip** chương đã đủ output. Tool **9.9MB** (đã bỏ 2 model
+  x4plus không dùng). `input/`+`output-realesrgan/` đã gitignore. Chi tiết "tại sao" ở "Quyết
+  định gần đây"; việc còn lại (push + tích hợp `/tai`) ở "Việc tiếp theo".
 - **[10/08] Comix: TỰ DỰNG LẠI Chromium khi cửa sổ đóng giữa chừng + báo lỗi thật —
   CODE + TEST LOGIC OK trên PC dev, đang push phiên này, CHƯA nghiệm thu LIVE.** Sự cố
   user gặp: đang `/tai` comix thì cửa sổ Chromium trên server bị đóng → tải hỏng từ ch.22
@@ -159,6 +133,12 @@
   người `/adminclaim`), sau đó strict theo danh sách. `_is_admin` gác `/update`,`/tai`,`/admin*`.
 
 ## Quyết định gần đây (mới nhất trước)
+- 10/08: **Thêm tool làm nét ảnh Real-ESRGAN** (`lam_net.py`). Model chốt `realesr-animevideov3`
+  2x + **PNG** (user tự soi crop zoom 3x: thắng waifu2x/`x4plus-anime`; PNG để giữ lossless, nén
+  để bước sau). Viết Python (không .bat thuần) vì cần: sort chương theo SỐ (regex float, tránh
+  `1→10→2`); **đo tiến độ = đếm file output** (poll 0.3s) thay parse `%` của exe — vì exe chạy đa
+  luồng làm `%` xen kẽ (đếm phồng `175/31`) và file dấu `.done`/sidecar bị đếm **lỗi ảo**; đếm
+  theo mtime≥start nên đúng cả `--force`/chương dở; skip chương đã đủ output; nút y/N để làm lại.
 - 10/08: **Comix TỰ dựng lại Chromium khi cửa sổ đóng** (`comix_site.py`): browser chết
   giữa chừng giờ được phát hiện tường minh (`alive()`) và relaunch tại chỗ (cùng profile
   bền) rồi tải tiếp, thay vì nhầm thành "1 chương hụt" → hạ cấp "để sau" cả bộ → thoát 0
@@ -264,6 +244,14 @@
   sang git/GitHub + login username-only đã gói trong "Kiến trúc hiện tại" + "Đồng bộ code bằng git".)
 
 ## Việc tiếp theo
+- **[Tool làm nét — CHƯA push]** `day-len.bat` → `/update` để đẩy lên server (thêm `lam_net.py`,
+  `lam-net.bat`; XOÁ `lam-net-lam-lai.bat`; model + exe đã push đợt trước). Test trên server: bỏ
+  folder chương vào `input\` → chạy `lam-net.bat`. LƯU Ý: chương đã convert lỗi lần trước (output
+  cũ còn) sẽ bị **skip** — muốn làm lại thì chọn `y` ở câu hỏi đầu.
+- **[Tool làm nét — TƯƠNG LAI, chưa code]** Tích hợp tự động vào `/tai`: enhance là bước HẬU XỬ
+  LÝ sau tải, xếp hàng tuần tự (1050 Ti 1 job/lúc), enhance → resize xuống → nén JPG/WebP ~80–85,
+  báo Telegram khi hỏng, chỉ bật cho truyện scan kém (whitelist), rollout bán tự động 1 tuần.
+  `lam_net.py` tái dùng cho bước này.
 - **[COMIX relaunch — MỚI NHẤT, đang push]** Trên bot chạy **`/update`** là đủ (chỉ đổi
   `comix_site.py`; downloader spawn subprocess mới mỗi `/tai` nên tự nạp — KHỎI
   `cap-nhat.bat`, KHỎI restart tay). Nghiệm thu: `/tai` 1 bộ comix rồi **đóng tay cửa sổ
@@ -296,6 +284,10 @@
 - (Tùy chọn) đồng hồ server nhanh ~5 phút — sync giờ Windows nếu muốn log khớp.
 
 ## Lưu ý / rủi ro đang mở
+- **Tool làm nét**: ảnh ra là **PNG 2x, nặng nhiều lần gốc** — phải nén (convert_webp / JPG q80–85)
+  trước khi đưa vào reader, đừng để nguyên cả kho. Cần **GPU Vulkan** (1050 Ti OK). Skip dựa trên
+  "đủ output": chương lần trước lỗi (output cũ còn) sẽ bị bỏ qua khi chạy lại — chọn `y`/`--force`
+  để ép làm lại. Chỉ đệ quy **1 cấp** folder con (để folder chương trực tiếp trong `input\`).
 - **Comix**: phần dễ vỡ nhất là site đổi build/DOM (hook bắt ở tầng JSON.parse nên
   khá lì, nhưng check `navigator.webdriver` / cách phân trang `?page=N` có thể đổi).
   Tải comix bằng tay (`Tai truyen.bat`) trên PC dev cũng mở cửa sổ Chromium — bình

@@ -18,6 +18,7 @@ import os
 import re
 import sys
 import time
+import shutil
 import subprocess
 
 try:
@@ -85,8 +86,25 @@ def fmt_eta(seconds):
     return f"~{s}s"
 
 
-def clear_line(width=110):
-    sys.stdout.write("\r" + " " * width + "\r")
+def term_width():
+    try:
+        return shutil.get_terminal_size((100, 20)).columns
+    except Exception:
+        return 100
+
+
+def draw_line(text):
+    """Ve 1 dong tien do, dem khoang trang cho het be rong -> khong bi giat,
+    khong sot ky tu cua dong dai truoc, khong xuong hang lam lech \\r."""
+    w = max(20, term_width() - 1)
+    sys.stdout.write("\r" + text[:w].ljust(w))
+    sys.stdout.flush()
+
+
+def clear_line():
+    w = max(20, term_width() - 1)
+    sys.stdout.write("\r" + " " * w + "\r")
+    sys.stdout.flush()
 
 
 def build_groups():
@@ -128,58 +146,62 @@ def is_done(g):
     return True
 
 
+def count_done_outputs(g, since_ts):
+    """Dem so ANH cua nhom da co file output that su (mtime >= since_ts).
+    Chi xet dung cac output ky vong cua nhom -> bo qua file rac; dung mtime
+    de dung ca khi lam lai (--force) / chuong lam do co file cu san."""
+    done = 0
+    for name in g["imgs"]:
+        p = os.path.join(g["out"], expected_out_name(name))
+        try:
+            if os.path.getmtime(p) >= since_ts:
+                done += 1
+        except OSError:
+            pass
+    return done
+
+
 def process_group(g, gi, total_groups, total_imgs, overall_done, start_ts):
-    """Chay exe cho 1 nhom, ve tien do 1 dong. Tra ve (successes, failures)."""
+    """Chay exe cho 1 nhom, ve tien do 1 dong. Tra ve (successes, failures).
+    Tien do do bang SO FILE OUTPUT sinh ra (poll ~0.3s) -> chinh xac ke ca khi
+    exe chay da luong, va bo qua hoan toan file .done/.json (khong phai anh)."""
     n = len(g["imgs"])
     os.makedirs(g["out"], exist_ok=True)
+    since = time.time() - 2.0   # tru 2s tranh sai lech lam tron mtime
 
     cmd = [EXE, "-i", g["in"], "-o", g["out"],
            "-n", MODEL, "-s", SCALE, "-f", FORMAT, "-t", TILE]
-
     proc = subprocess.Popen(
         cmd, cwd=SCRIPT_DIR,
-        stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-        text=True, bufsize=1, encoding="utf-8", errors="replace",
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
     )
 
-    cur_img = 0
-    prev_pct = None
-    failures = 0
+    cur = 0
 
     def render():
-        done_live = overall_done + cur_img
+        done_live = overall_done + cur
         elapsed = time.time() - start_ts
         eta = None
         if done_live > 0 and elapsed > 1:
             rate = done_live / elapsed
             if rate > 0:
                 eta = (total_imgs - done_live) / rate
-        line = (f"[Chuong {gi}/{total_groups}] {g['label']}  |  "
-                f"anh {cur_img}/{n}  |  tong {done_live}/{total_imgs}  |  "
-                f"ETA {fmt_eta(eta)}")
-        clear_line()
-        sys.stdout.write(line[:110])
-        sys.stdout.flush()
+        draw_line(f"[Chuong {gi}/{total_groups}] {g['label']}  |  "
+                  f"anh {cur}/{n}  |  tong {done_live}/{total_imgs}  |  "
+                  f"ETA {fmt_eta(eta)}")
 
     render()
-    for raw in proc.stdout:
-        line = raw.strip()
-        if line.endswith("%"):
-            try:
-                pct = float(line[:-1])
-            except ValueError:
-                continue
-            if prev_pct is None or pct < prev_pct:
-                cur_img += 1
-                render()
-            prev_pct = pct
-        elif "failed" in line.lower():
-            failures += 1
-    proc.wait()
+    while proc.poll() is None:
+        time.sleep(0.3)
+        cur = count_done_outputs(g, since)
+        render()
+    cur = count_done_outputs(g, since)   # dem lan cuoi sau khi exe xong
+    render()
 
-    successes = max(0, n - failures)
+    successes = cur
+    failures = n - successes
     clear_line()
-    tick = "x" if (failures or proc.returncode) else "v"
+    tick = "x" if failures else "v"
     tail = f" ({failures} loi)" if failures else ""
     print(f"[{tick}] [{gi}/{total_groups}] {g['label']} - {successes}/{n} anh{tail}")
     return successes, failures
@@ -221,7 +243,7 @@ def main():
 
     if not todo:
         print("Tat ca chuong deu da xong -> khong co gi de lam.")
-        print(f"(Muon lam lai tu dau: bam 'lam-net-lam-lai.bat' hoac chay 'lam_net.py --force')")
+        print("(Muon lam lai tu dau: chay lai va chon 'y' o cau hoi dau.)")
         print(f"Ket qua nam trong: {OUT_DIR}")
         return 0
 
