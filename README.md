@@ -10,6 +10,7 @@ Các script trong thư mục này, mỗi cái một việc:
 | `Kiem tra truyen.bat` | Bấm để kiểm tra: chọn thư mục (chạy check_library) |
 | `asura_downloader.py` | (cũ, vẫn chạy) lối tắt chỉ-Asura của comic_downloader |
 | `convert_webp.py` | Chuyển folder ảnh PNG sang WebP để giảm dung lượng |
+| `realesrgan-.../lam-net.bat` | **Làm nét ảnh scan** bằng Real-ESRGAN (AI upscale 2x) |
 | `reader_server.py` | Web đọc truyện kiểu Asura, đọc từ PC lẫn điện thoại |
 
 ## Chuẩn bị (chỉ cần 1 lần)
@@ -177,6 +178,31 @@ python convert_webp.py "..." --jpg-too       :: nén cả JPG (lưu ý: lossy ch
   **không sửa/xóa gì ở thư mục gốc**. Ưng kết quả rồi mới tự tay xóa gốc.
 - Với truyện scan, q85 giảm ~50–80% dung lượng mà mắt thường không phân biệt
   được.
+
+## Làm nét ảnh scan — Real-ESRGAN (`realesrgan-ncnn-vulkan-v0.2.0-windows\lam-net.bat`)
+
+Tool AI làm nét/upscale cho **trang truyện scan mờ**. Bản portable (ncnn/Vulkan), cần **GPU**
+(máy này + server dùng GTX 1050 Ti). Cách dùng thủ công:
+
+1. Bỏ ảnh cần làm nét vào thư mục `realesrgan-ncnn-vulkan-v0.2.0-windows\input\` — có thể để
+   **ảnh phẳng** trực tiếp, HOẶC **copy cả các folder chapter** (chapter 1, 2, 3...) vào `input\`
+2. Bấm đúp `lam-net.bat` — chạy xong kết quả nằm ở `output-realesrgan\` (WebP, 2x), **giữ nguyên
+   cấu trúc folder chapter** như input (mỗi chapter ra 1 folder cùng tên)
+
+- **Model đã chốt: `realesr-animevideov3` scale 2x** — sau khi test thật (soi crop zoom 3x)
+  đây là bản sắc nét mà **giữ nguyên chi tiết gốc** tốt nhất, lại nhanh. Đã bỏ 2 model nặng
+  không dùng (`realesrgan-x4plus`, `realesrgan-x4plus-anime`) cho nhẹ.
+- Xuất **WebP** (lossless, nhẹ hơn PNG) và **tile cố định 200** (an toàn VRAM 4GB khi chạy
+  batch dài, không giảm chất lượng). Muốn đổi thì sửa `FORMAT`/`TILE`/`SCALE` đầu file `.bat`.
+- ⚠️ Tool gốc **không tự đệ quy folder** — `lam-net.bat` đã xử lý sẵn: nó chạy ảnh phẳng trong
+  `input\` + lặp qua **từng folder con 1 cấp**. Nên để **folder chapter trực tiếp** trong
+  `input\`, đừng bọc thêm 1 lớp folder bộ truyện bên ngoài (2 cấp sẽ không được xử lý).
+- ⚠️ Ảnh ra vẫn là **WebP lossless 2x, nặng nhiều lần bản gốc**. Muốn đưa vào reader thì nên
+  **nén lại lossy** (JPG/WebP q80–85) — đừng để nguyên bản 2x lossless cho cả kho.
+- Thư mục `input\` và `output-realesrgan\` được `.gitignore` (không đẩy ảnh lên repo).
+- **Chạy tự động trên server**: chưa tích hợp vào `/tai`. Kế hoạch (xem HANDOFF): enhance là
+  bước hậu xử lý sau tải, xếp hàng tuần tự (GPU chỉ 1 job/lúc), enhance → resize xuống → nén,
+  chỉ bật cho truyện scan kém.
 
 ## 4. Web đọc truyện — `reader_server.py`
 

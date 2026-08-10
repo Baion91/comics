@@ -1,6 +1,29 @@
-# Handoff — cập nhật lần cuối: 2026-08-10 (comix: tự relaunch Chromium khi cửa sổ đóng)
+# Handoff — cập nhật lần cuối: 2026-08-10 (thêm tool làm nét ảnh Real-ESRGAN vào repo)
 
 ## Đang làm / dở dang
+- **[10/08] Thêm tool LÀM NÉT ảnh Real-ESRGAN vào repo — TOOL + .bat XONG, ĐẨY LÊN SERVER
+  qua `/update` như code thường. Bước tích hợp tự động vào `/tai` CHƯA làm.** Thư mục
+  `realesrgan-ncnn-vulkan-v0.2.0-windows/` (portable, ncnn/Vulkan). **Model đã chốt sau khi
+  test thật (user tự soi crop zoom 3x): `realesr-animevideov3` scale **2x** — sắc nét rõ,
+  gần như không đổi chi tiết, chạy nhanh; THẮNG waifu2x (`-n 3`, bị mờ) và
+  `realesrgan-x4plus-anime` (4x, vừa nặng vừa không hơn, bịa nét vùng gradient). **Đã xoá 2
+  model không dùng** (`realesrgan-x4plus` 32MB + `realesrgan-x4plus-anime` 8.6MB) → tool từ
+  51MB còn **9.9MB** cho nhẹ repo Public. **`lam-net.bat`**: neo `%~dp0`, gọi exe bằng
+  đường dẫn tuyệt đối (`%EXE%`, tránh lỗi "không tìm thấy exe" khi cwd không nằm trong PATH),
+  đọc ảnh từ `input\` → xuất **WebP** 2x sang `output-realesrgan\`,
+  `-n realesr-animevideov3 -s 2 -f webp -t 200` (tile cố định 200 cho an toàn VRAM 4GB, không
+  giảm chất lượng), có `pause` + báo mã lỗi. **Hỗ trợ folder chapter con**: tool ncnn KHÔNG tự
+  đệ quy folder (đã test: để chapter con → output rỗng), nên bat tự lặp `for /d` qua từng
+  folder con 1 cấp và **giữ nguyên cấu trúc** ra output (mỗi chapter → 1 folder cùng tên). Đã
+  test thật: `input\flat.png` + `input\chapter 1\a.png` + `chapter 2\b.png` → ra đúng cấu
+  trúc webp tương ứng. **`.gitignore`**: bỏ ảnh trong `input/` + `output-realesrgan/`, chỉ
+  giữ folder rỗng bằng `.gitkeep` (tránh đẩy ảnh test/nặng lên repo Public). Đã xoá folder
+  `.claude/` rác do session trước tự tạo trong tool. **Việc còn lại (theo tư vấn session
+  "Tư vấn dùng tool làm nét ảnh")**: tích hợp tự động vào luồng `/tai` — enhance là bước
+  HẬU XỬ LÝ sau tải, XẾP HÀNG TUẦN TỰ (1050 Ti chỉ 1 job/lúc), BẮT BUỘC resize xuống + nén
+  JPG/WebP ~80–85 sau upscale (PNG 2x nặng ~20x gốc), set tile cố định + log lỗi theo trang
+  + báo Telegram khi hỏng, chỉ bật cho truyện scan kém (whitelist), rollout bán tự động 1
+  tuần trước khi gắn hẳn. CHƯA CODE phần này.**
 - **[10/08] Comix: TỰ DỰNG LẠI Chromium khi cửa sổ đóng giữa chừng + báo lỗi thật —
   CODE + TEST LOGIC OK trên PC dev, đang push phiên này, CHƯA nghiệm thu LIVE.** Sự cố
   user gặp: đang `/tai` comix thì cửa sổ Chromium trên server bị đóng → tải hỏng từ ch.22

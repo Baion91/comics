@@ -8,6 +8,10 @@ download-queue.txt
 # Cấu hình Claude Code riêng theo máy
 .claude/settings.local.json
 
+# ==== Real-ESRGAN: bỏ trọn ảnh input/output (nặng, đồ test); lam-net.bat tự tạo lại folder ====
+realesrgan-ncnn-vulkan-v0.2.0-windows/input/
+realesrgan-ncnn-vulkan-v0.2.0-windows/output-realesrgan/
+
 # ==== .reader-meta: bỏ toàn bộ data + secret + binary lớn, CHỈ GIỮ icon/brand ====
 .reader-meta/*
 !.reader-meta/brand.png
