@@ -19,6 +19,7 @@ chat_id để trống -> supervisor tự điền khi bạn nhắn /start cho bot
 import json
 import os
 import re
+import socket
 import subprocess
 import sys
 import threading
@@ -41,9 +42,27 @@ QUEUE_FILE = os.path.join(META_DIR, "bot-download-queue.json")
 DL_LOG_FILE = os.path.join(META_DIR, "tai-run.log")   # output downloader (tail xem tiến độ)
 DL_LOG_MAX = 2_000_000    # cắt log khi vượt ~2MB
 
-TUNNEL_RE = re.compile(r"https://[a-z0-9-]+\.trycloudflare\.com")
+# Bắt link tunnel: subdomain NGẪU NHIÊN .trycloudflare.com. Nhóm 1 = subdomain để LOẠI
+# 'api' — 'api.trycloudflare.com' là host cloudflared in trong DÒNG LỖI (không phải link);
+# regex cũ bắt nhầm nó -> báo link rác. Đêm 11/08 spam ~2900 "LINK MỚI: api.trycloudflare.com".
+TUNNEL_RE = re.compile(r"https://([a-z0-9][a-z0-9-]*)\.trycloudflare\.com")
 HEALTH_EVERY = 60          # giây giữa 2 lần health-check
 HEALTH_FAILS = 3           # số lần fail liên tiếp mới coi là tunnel chết
+# Backoff khi cloudflared bật lên rồi CHẾT NGAY (không lập nổi tunnel — thường do mất mạng/DNS):
+# thay vì quay vòng 3s/lần (2900 lần/đêm), giãn dần 3→6→12…→trần 5' tới khi mạng về.
+TUNNEL_BACKOFF_MIN = 3     # giây, lần đầu
+TUNNEL_BACKOFF_MAX = 300   # trần 5 phút
+TUNNEL_HEALTHY_SECS = 60   # tunnel chạy được ngần này coi như ổn -> reset backoff
+NET_RECHECK = 20           # giây giữa 2 lần dò mạng khi đang chờ mạng về
+NET_HOSTS = ["api.telegram.org", "one.one.one.one"]  # tên để thử PHÂN GIẢI (bắt lỗi DNS)
+NET_IP = ("1.1.1.1", 443)  # IP THUẦN (không cần DNS) -> phân biệt 'DNS hỏng' vs 'mất mạng hẳn'
+DL_NET_RETRY_MAX = 4       # mạng đã OK mà job vẫn fail kiểu-mạng quá số này -> coi là lỗi nội dung
+# Dấu hiệu lỗi MẠNG trong log downloader -> GIỮ job lại thử lại (khác lỗi nội dung -> xoá).
+NET_ERR_MARKERS = ("getaddrinfo", "nameresolution", "failed to resolve", "max retries",
+                   "mạng chập chờn", "connection aborted", "connectionreset",
+                   "connection reset", "timed out", "temporarily unavailable")
+HEARTBEAT_EVERY = 300      # giây giữa 2 nhịp heartbeat (5') ping RA dịch vụ giám sát ngoài
+HEARTBEAT_TIMEOUT = 10     # giây chờ mỗi cú ping
 NO_WINDOW = 0x08000000 if os.name == "nt" else 0   # đừng bật cửa sổ console con
 
 # In được tiếng Việt trên console Windows (cp1252)
@@ -74,6 +93,7 @@ def load_config():
         cfg = {}
     cfg.setdefault("bot_token", "")
     cfg.setdefault("reader_port", 8080)
+    cfg.setdefault("heartbeat_url", "")   # URL ping healthchecks.io (trống = tắt heartbeat)
     # chat_ids: DANH SÁCH người nhận (cả 2 anh em). Tự gom khi ai nhắn bot.
     ids = cfg.get("chat_ids")
     if not isinstance(ids, list):
@@ -157,6 +177,28 @@ HELP_TEXT = (
 )
 
 
+# --- Dò mạng: phân biệt 'mạng OK' / 'DNS hỏng' / 'mất mạng hẳn' -------------
+# Đêm 11/08 thủ phạm là DNS (getaddrinfo failed) chứ máy vẫn sống. Gate này để các
+# vòng (tunnel/tải/health) BIẾT KHI NÀO nên nằm im chờ thay vì quay cuồng vô ích.
+
+def _net_status():
+    """'ok' = phân giải được tên miền; 'dns' = với tới IP thuần nhưng KHÔNG phân giải
+    được tên (DNS hỏng); 'down' = không với tới cả IP (mất mạng hẳn)."""
+    ip_ok = False
+    try:
+        with socket.create_connection(NET_IP, timeout=4):
+            ip_ok = True
+    except OSError:
+        ip_ok = False
+    for host in NET_HOSTS:
+        try:
+            socket.getaddrinfo(host, 443)   # phép thử DNS THẬT (đúng khâu đêm 11/08 gục)
+            return "ok"
+        except OSError:
+            continue
+    return "dns" if ip_ok else "down"
+
+
 # --- Reader + cloudflared ---------------------------------------------------
 
 class Supervisor:
@@ -165,7 +207,8 @@ class Supervisor:
         self.stop = threading.Event()
         self.reader = None
         self.tunnel = None
-        self.link = None
+        self.link = None            # link ứng viên mới nhất (kể cả chưa xác minh) — cho /link
+        self._notified_link = None  # link ĐÃ báo Telegram gần nhất — chỉ báo khi link ĐỔI
         self.lock = threading.Lock()
         # Hàng đợi tải = DANH SÁCH bền hoá (không dùng queue.Queue để lưu ra đĩa được).
         # _jobs: [{"url","cid","state":pending|running,"resumed":bool}]. Condition vừa
@@ -204,8 +247,18 @@ class Supervisor:
         if not os.path.exists(CLOUDFLARED):
             log(f"! Không thấy {CLOUDFLARED} — không tạo được link chia sẻ.")
             return
+        backoff = TUNNEL_BACKOFF_MIN
         while not self.stop.is_set():
+            # GATE MẠNG: mất mạng/DNS thì cloudflared bật lên cũng chết ngay -> chờ mạng về,
+            # KHÔNG bật để khỏi quay vòng tạo link rác (đêm 11/08: 2900 lần bật vô ích).
+            st = _net_status()
+            if st != "ok":
+                log(f"! Mạng chưa sẵn sàng ({st}) — hoãn bật cloudflared, dò lại sau {NET_RECHECK}s.")
+                if self.stop.wait(NET_RECHECK):
+                    return
+                continue
             log("Bật cloudflared quick-tunnel ...")
+            started = time.monotonic()
             try:
                 self.tunnel = subprocess.Popen(
                     [CLOUDFLARED, "tunnel", "--url", self.reader_url()],
@@ -214,29 +267,69 @@ class Supervisor:
                     text=True, encoding="utf-8", errors="replace", bufsize=1)
             except Exception as e:
                 log(f"! Không bật được cloudflared: {e}")
-                self.stop.wait(5); continue
+                if self.stop.wait(backoff):
+                    return
+                backoff = min(backoff * 2, TUNNEL_BACKOFF_MAX)
+                continue
             found = None
             for line in self.tunnel.stdout:            # đọc output tới khi tiến trình thoát
                 m = TUNNEL_RE.search(line)
-                if m and m.group(0) != found:
-                    found = m.group(0)
-                    self.on_new_link(found)
+                if not m or m.group(1) == "api":       # 'api.trycloudflare.com' = host lỗi, bỏ
+                    continue
+                url = m.group(0)
+                if url != found:
+                    found = url
+                    self.on_new_link(url)              # đặt link + XÁC MINH rồi mới báo Telegram
             self.tunnel.wait()
             if self.stop.is_set():
                 return
-            log("! cloudflared thoát — tạo link mới sau 3s.")
+            ran = time.monotonic() - started
             self.link = None
-            self.stop.wait(3)
+            if ran >= TUNNEL_HEALTHY_SECS:             # tunnel vừa chạy ổn định -> reset backoff
+                backoff = TUNNEL_BACKOFF_MIN
+                log(f"! cloudflared thoát sau {ran:.0f}s — tạo lại sau {backoff}s.")
+                if self.stop.wait(backoff):
+                    return
+            else:                                      # thoát nhanh = chưa lập nổi tunnel -> giãn
+                log(f"! cloudflared thoát nhanh ({ran:.0f}s, chưa lập nổi tunnel) — "
+                    f"chờ {backoff}s (backoff) rồi thử lại.")
+                if self.stop.wait(backoff):
+                    return
+                backoff = min(backoff * 2, TUNNEL_BACKOFF_MAX)
 
     def on_new_link(self, url):
         with self.lock:
-            self.link = url
-        log(f"LINK MỚI: {url}")
+            self.link = url          # /link trả link mới nhất ngay (kể cả chưa xác minh)
+        log(f"Link ứng viên: {url}")
         try:
             with open(LINK_FILE, "w", encoding="utf-8") as f:
                 f.write(url + "\n")
         except OSError:
             pass
+        # Xác minh + báo Telegram ở LUỒNG NỀN: không chặn vòng đọc stdout của cloudflared,
+        # và chỉ báo khi link THẬT SỰ mở được reader + KHÁC link đã báo lần trước (chống spam).
+        self._run_bg(self._confirm_and_notify, url)
+
+    @staticmethod
+    def _tunnel_alive(url):
+        """GET thử qua link công khai -> có phản hồi HTTP = tunnel đã thông (không phải
+        link rác / chưa lập xong / đang mất mạng)."""
+        try:
+            req = urllib.request.Request(url, method="GET",
+                                         headers={"User-Agent": "toony-health"})
+            with urllib.request.urlopen(req, timeout=15) as r:
+                return 200 <= r.status < 500
+        except Exception:
+            return False
+
+    def _confirm_and_notify(self, url):
+        if not self._tunnel_alive(url):
+            return                   # tunnel chưa thông (vd đang mất mạng) -> IM, không spam
+        with self.lock:
+            if url == self._notified_link:
+                return               # link này đã báo rồi -> khỏi báo lại
+            self._notified_link = url
+        log(f"LINK MỚI (đã xác minh): {url}")
         notify_all(self.cfg, f"📖 Link đọc truyện MỚI:\n{url}\n\n(Link tạm — đổi mỗi lần "
                              f"server khởi động lại. Mở link rồi Thêm-vào-màn-hình-chính.)")
 
@@ -350,6 +443,9 @@ class Supervisor:
                 url = self.link
             if not url:
                 continue
+            if _net_status() != "ok":
+                fails = 0            # mất mạng/DNS: lỗi ở mạng, KHÔNG phải tunnel -> đừng kill
+                continue
             ok = False
             try:
                 req = urllib.request.Request(url, method="GET",
@@ -367,6 +463,35 @@ class Supervisor:
                     fails = 0
                     log("! Tunnel coi như chết — kill cloudflared để tạo link mới.")
                     self._kill(self.tunnel)   # run_tunnel sẽ tự bật lại + báo link mới
+
+    # heartbeat: ping RA dịch vụ ngoài (healthchecks.io) -> nó tự báo bạn KHI SERVER SẬP
+    def heartbeat_loop(self):
+        """Dead-man's-switch vá đúng khoảng mù 'mất mạng thì bot không tự báo được'.
+        Mỗi HEARTBEAT_EVERY giây ping 1 cú RA URL bí mật ở healthchecks.io. Dịch vụ đó
+        (chạy trên hạ tầng của họ, vẫn sống khi máy này chết) thấy im lặng quá kỳ hạn ->
+        gửi cảnh báo cho bạn (email/Telegram). Ping THẤT BẠI (đang mất mạng/DNS, hoặc
+        supervisor/máy chết) là ĐÚNG Ý ĐỒ: chính sự im lặng đó kích cảnh báo."""
+        url = (self.cfg.get("heartbeat_url") or "").strip()
+        if not url:
+            log("! Chưa có heartbeat_url trong notify-config.json — bỏ qua heartbeat. "
+                "(Muốn được báo khi server sập: tạo 1 check ở healthchecks.io, dán URL ping vào.)")
+            return
+        log(f"Heartbeat: bật — ping mỗi {HEARTBEAT_EVERY}s tới dịch vụ giám sát ngoài.")
+        last_ok = None
+        while not self.stop.is_set():
+            ok = False
+            try:
+                req = urllib.request.Request(url, headers={"User-Agent": "toony-heartbeat"})
+                with urllib.request.urlopen(req, timeout=HEARTBEAT_TIMEOUT) as r:
+                    ok = 200 <= r.status < 300
+            except Exception:
+                ok = False
+            if ok != last_ok:   # CHỈ log khi đổi trạng thái -> khỏi phình log mỗi 5'
+                log("Heartbeat: OK." if ok else
+                    "! Heartbeat: ping THẤT BẠI (mất mạng/DNS?) — nếu kéo dài, dịch vụ ngoài sẽ báo.")
+                last_ok = ok
+            if self.stop.wait(HEARTBEAT_EVERY):
+                return
 
     @staticmethod
     def _kill(proc):
@@ -711,6 +836,19 @@ class Supervisor:
         lines = [l.rstrip() for l in text[idx:].splitlines() if l.strip()]
         return "\n".join(lines)[:maxchars]
 
+    @staticmethod
+    def _read_log_text(start_pos, maxchars=4000):
+        """Đọc NGUYÊN đoạn log của job (từ start_pos) -> quét dấu hiệu lỗi mạng. Khác
+        _read_log_tail (chỉ lấy 1 dòng cuối): marker 'getaddrinfo' có thể nằm ở dòng
+        giữa (vd asura in getaddrinfo rồi in 'Không lấy được danh sách chương' ở dòng cuối)."""
+        try:
+            with open(DL_LOG_FILE, "r", encoding="utf-8", errors="replace") as f:
+                f.seek(start_pos)
+                text = f.read()
+        except OSError:
+            return ""
+        return text[-maxchars:]
+
     def download_loop(self):
         """Worker: tải tuần tự từng job trong _jobs (bền hoá ra đĩa), 1 lượt/lúc.
         Output downloader ghi ra FILE (không PIPE) -> supervisor chết không làm vỡ pipe
@@ -718,9 +856,19 @@ class Supervisor:
         RESTART giết đột ngột -> code xoá không kịp chạy -> ở lại file -> phiên sau resume."""
         while not self.stop.is_set():
             with self._dlq_lock:
+                has_pending = any(j["state"] == "pending" for j in self._jobs)
+                if not has_pending:
+                    self._dlq_lock.wait(timeout=1)     # ngủ tới khi có job mới / hết 1s
+                    continue
+            # Có job chờ nhưng MẠNG CHƯA LÊN -> đừng chạy (sẽ fail ngay rồi bị coi là lỗi).
+            # Chờ mạng về; hàng đợi GIỮ NGUYÊN (đêm 11/08 mất 8 truyện vì bỏ qua bước này).
+            if _net_status() != "ok":
+                if self.stop.wait(NET_RECHECK):
+                    return
+                continue
+            with self._dlq_lock:
                 job = next((j for j in self._jobs if j["state"] == "pending"), None)
                 if job is None:
-                    self._dlq_lock.wait(timeout=1)     # ngủ tới khi có job mới / hết 1s
                     continue
                 job["state"] = "running"
                 self._save_jobs_locked()
@@ -729,12 +877,15 @@ class Supervisor:
                 self._dl_cancelled = False
             url, cid = job["url"], job.get("cid")
             token = self.cfg.get("bot_token")
-            if token and cid is not None:
+            # Chỉ báo 'bắt đầu' ở lần chạy ĐẦU của job; lần thử lại do lỗi mạng (net_retries>0)
+            # thì im để khỏi lặp tin mỗi vòng.
+            if token and cid is not None and job.get("net_retries", 0) == 0:
                 tg_api(token, "sendMessage", {"chat_id": cid,
                     "text": (f"🔄 Đang tiếp tục truyện bị gián đoạn:\n{url}"
                              if job.get("resumed") else f"⏳ Bắt đầu tải:\n{url}"),
                     "disable_web_page_preview": "true"})
             start_pos = 0
+            keep = False        # True = lỗi MẠNG tạm -> giữ job trong hàng đợi, thử lại (không xoá)
             try:
                 try:      # cắt log nếu phình to
                     if os.path.getsize(DL_LOG_FILE) > DL_LOG_MAX:
@@ -772,24 +923,43 @@ class Supervisor:
                     summary = self._read_summary(start_pos)   # số liệu chương + ảnh
                     msg = f"✅ Tải xong:\n{url}" + (("\n\n" + summary) if summary else "")
                 else:
-                    tail = self._read_log_tail(start_pos)
-                    msg = f"❌ Lỗi tải:\n{url}" + (("\n" + tail) if tail else "")
+                    # LỖI MẠNG (mất mạng lúc này, HOẶC log có dấu hiệu mạng: getaddrinfo,
+                    # 'mạng chập chờn'...) -> GIỮ job trong hàng đợi, thử lại sau; KHÔNG xoá
+                    # (đêm 11/08 mất sạch 8 truyện vì xoá mọi job rc≠0). Chỉ khi mạng đã OK
+                    # mà vẫn fail kiểu-mạng quá DL_NET_RETRY_MAX lần -> coi lỗi nội dung, mới xoá.
+                    st = _net_status()
+                    body = self._read_log_text(start_pos).lower()
+                    net_like = st != "ok" or any(k in body for k in NET_ERR_MARKERS)
+                    if net_like and st == "ok":
+                        job["net_retries"] = job.get("net_retries", 0) + 1
+                    if net_like and (st != "ok" or job.get("net_retries", 0) <= DL_NET_RETRY_MAX):
+                        keep = True
+                        msg = None      # lỗi mạng tạm -> KHÔNG nhắn (tránh spam khi mạng chập chờn)
+                        log(f"! Tải lỗi MẠNG ({st}) — giữ job, thử lại sau: {url}")
+                    else:
+                        tail = self._read_log_tail(start_pos)
+                        msg = f"❌ Lỗi tải:\n{url}" + (("\n" + tail) if tail else "")
             except Exception as e:
                 msg = f"❌ Lỗi tải:\n{url}\n{e}"
             # Gửi báo TRƯỚC, rồi mới xoá job khỏi file: nếu bị giết giữa 2 việc thì thà
             # báo trùng (resume chạy lại thấy .done -> báo 'xong' lần nữa) còn hơn mất tin.
-            if token and cid is not None:
+            if msg and token and cid is not None:
                 tg_api(token, "sendMessage", {"chat_id": cid, "text": msg,
                     "disable_web_page_preview": "true"})
             with self._dlq_lock:
                 self._dl_proc = None
                 self._dl_cur = None
                 self._dl_logpos = 0
-                try:
-                    self._jobs.remove(job)
-                except ValueError:
-                    pass
+                if keep:
+                    job["state"] = "pending"      # trả về hàng đợi để thử lại (KHÔNG xoá)
+                else:
+                    try:
+                        self._jobs.remove(job)
+                    except ValueError:
+                        pass
                 self._save_jobs_locked()
+            if keep and self.stop.wait(NET_RECHECK):   # backoff trước khi thử lại job này
+                return
 
     def run(self):
         log("=== Supervisor khởi động ===")
@@ -807,7 +977,8 @@ class Supervisor:
                    threading.Thread(target=self.run_tunnel, daemon=True),
                    threading.Thread(target=self.health_loop, daemon=True),
                    threading.Thread(target=self.telegram_loop, daemon=True),
-                   threading.Thread(target=self.download_loop, daemon=True)]
+                   threading.Thread(target=self.download_loop, daemon=True),
+                   threading.Thread(target=self.heartbeat_loop, daemon=True)]
         for t in threads:
             t.start()
         try:
