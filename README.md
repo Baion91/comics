@@ -323,6 +323,12 @@ khi đăng nhập Windows, tự tạo link đọc từ xa và báo qua Telegram.
 - **Link đọc từ xa**: cloudflared quick-tunnel tự tạo link `…trycloudflare.com` và gửi qua
   **Telegram bot** cho ai đã nhắn bot. Link **đổi mỗi lần server/tunnel khởi động lại**.
   Trên server chạy `get-cloudflared.bat` một lần để tải cloudflared.
+- **Chống loạn khi mạng/DNS server chập chờn** (từ 11/08): trước đây mạng server rớt là
+  cloudflared quay vòng tạo link liên tục → **spam hàng loạt link** qua Telegram + **mất
+  sạch hàng chờ tải**. Nay supervisor **kiểm tra mạng trước khi bật lại tunnel** (mất mạng thì
+  nằm im chờ, có backoff), **chỉ báo link khi đã xác minh mở được** (không bắn link rác), và
+  **giữ nguyên hàng đợi khi lỗi do mạng** (tự thử lại thay vì xoá). Mất mạng thì reader vẫn
+  không vào được trong lúc đó (không tránh khỏi), nhưng **hết loạn link + không mất truyện**.
 - **Đồng bộ code bằng git** (repo GitHub `Baion91/comics`, Public — không chứa secret):
   - Máy dev: **`day-len.bat`** = đẩy code lên GitHub (git add + commit + push).
   - Server: **`cap-nhat.bat`** = kéo code mới + restart, HOẶC nhắn **`/update`** cho bot
@@ -349,6 +355,16 @@ khi đăng nhập Windows, tự tạo link đọc từ xa và báo qua Telegram.
   KHÔNG mất** — lên lại là bot tự tải tiếp (báo *"🔄 Đang tiếp tục"*), bỏ qua chương đã xong.
   Muốn xem tiến độ real-time: mở/tail file **`.reader-meta\tai-run.log`** (output downloader).
 - Token bot để trong `.reader-meta\notify-config.json` (**không** commit lên git).
+- **Báo khi SERVER SẬP (heartbeat — tùy chọn nhưng nên bật)**: khi server mất điện/mất
+  mạng/treo thì **chính con bot cũng câm** (nó gửi tin qua đúng đường mạng đã hỏng) → bạn
+  không hề hay biết. Cách vá: dùng dịch vụ giám sát NGOÀI. Server cứ 5 phút "ping" ra
+  **[healthchecks.io](https://healthchecks.io)** (free); quá hạn không nghe ping, dịch vụ
+  đó **tự báo bạn** (Email/Telegram) — báo được **cả khi server đã chết** vì nó chạy trên
+  hạ tầng của họ. Cách bật: tạo 1 check (Simple, Period 5 phút / Grace ~20 phút), copy
+  **Ping URL** dán vào `.reader-meta\notify-config.json` trường **`"heartbeat_url"`**, rồi
+  `cap-nhat.bat`. Trống trường này = tắt heartbeat. Muốn báo về **chính Toony bot**: thêm
+  một integration **Webhook** trên healthchecks trỏ tới `https://api.telegram.org/bot<TOKEN>/sendMessage`
+  (POST, body JSON `{"chat_id":"<id>","text":"..."}`). ⚠️ `heartbeat_url` là **bí mật** như token — không commit.
 - **Tải hàng loạt** (chạy tay): `Tai hang loat.bat` — dán nhiều link vào `download-queue.txt`
   rồi chạy lần lượt (bỏ qua chương đã đủ nhờ dấu `.done`). Tải xong nó báo **"Xong THẬT SỰ"**;
   nếu bị đứt/lỗi/crash giữa chừng thì báo **"CHƯA xong" rồi tự chạy lại để tải tiếp** (tối đa

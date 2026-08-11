@@ -169,6 +169,21 @@ cách chạy thật + decode thử ảnh.
   1254² để sinh icon), **`icon-{180,192,512,512-maskable}.png`** (icon PWA
   home-screen, tạo tĩnh 1 lần bằng script từ `icon-src.png`), `brand.png` (logo
   chữ), `cloudflared.exe`.
+- `supervisor.py` — **giám sát trên MÁY SERVER** (KHÔNG chạy máy dev): giữ `reader_server.py`
+  + `cloudflared` quick-tunnel sống, bắt link `…trycloudflare.com` gửi Telegram, vòng nghe
+  `getUpdates` xử lý lệnh bot (`/link /tai /update /stop…`, quyền `admin_chat_ids`), hàng đợi
+  tải BỀN HOÁ 1-worker tuần tự (xem `bot-download-queue.json`). Bật/tắt qua
+  `server-BAT-tudong.bat` / `server-TAT-tudong.bat`. **Lớp chống-chịu mạng (11/08/2026, sau
+  sự cố DNS)**: `_net_status()` (connect IP thuần `1.1.1.1` + `getaddrinfo`) phân biệt *ok /
+  dns hỏng / mất mạng hẳn*, làm CỔNG ở `run_tunnel` (mất mạng → KHÔNG bật cloudflared, chờ có
+  backoff `3→300s`), `download_loop` (offline → KHÔNG chạy job, giữ hàng đợi) và `health_loop`
+  (mạng hỏng → không kill tunnel oan). Báo link **chỉ khi đã xác minh mở được**
+  (`_confirm_and_notify` thử lại trong cửa sổ `CONFIRM_WINDOW=120s`, hết vẫn chưa được thì báo
+  kèm ghi chú) + **khác link đã báo** (`_notified_link`) → hết spam link rác; regex `TUNNEL_RE`
+  loại `api.trycloudflare.com` (host trong dòng lỗi). Job lỗi kiểu-mạng (`NET_ERR_MARKERS`
+  hoặc offline) → giữ `pending` thử lại, KHÔNG xoá (tránh mất hàng đợi khi mạng chập).
+  **Heartbeat** (`heartbeat_loop`): mỗi 5' ping `heartbeat_url` (healthchecks.io) RA ngoài →
+  dịch vụ ngoài báo khi server sập (kênh độc lập, sống cả khi bot câm); trống = tắt.
 - `Chia se link doc thu.bat` / `Tat chia se link.bat` — bật/tắt cloudflared
   quick tunnel (link trycloudflare ngẫu nhiên) cho người ngoài đọc thử.
 - `downloads/<Tên truyện>/Chapter N/001.webp...` — thư viện; mỗi truyện 1 folder.
@@ -194,6 +209,17 @@ cách chạy thật + decode thử ảnh.
 
 ## Quyết định quan trọng & lý do
 
+- **Supervisor chống-chịu mạng + heartbeat** (11/08/2026, sau sự cố DNS đêm 10→11): DNS server
+  chập ~5 tiếng làm cloudflared crash-loop ~3s/lần → **2900 link rác** gửi Telegram + worker
+  **nhai sạch 8 truyện** trong hàng đợi (mỗi job fail vì mạng → bị xoá vĩnh viễn), tin lỗi cũng
+  không gửi được (`getaddrinfo failed`). Gốc rễ là môi trường (DNS) nhưng CODE khuếch đại sự cố
+  nhỏ thành thảm hoạ. Sửa (chỉ `supervisor.py`, KHÔNG đổi kiến trúc quick-tunnel vì user chưa có
+  domain): gate mạng ở mọi vòng + backoff cloudflared; **xác minh-rồi-mới-báo-link** (có retry
+  trong cửa sổ để KHÔNG bỏ sót link thật lúc restart — bản one-shot đầu tiên gây regression
+  "không thấy bắn link"); **giữ hàng đợi khi lỗi-mạng**; regex loại link rác `api.*`. Thêm
+  **heartbeat RA healthchecks.io** vì bot KHÔNG thể tự báo khi mạng server chết (cùng đường mạng
+  đã hỏng) → cần kênh cảnh báo NGOÀI. Còn để ngỏ: **named-tunnel + domain** (URL cố định, xoá tận
+  gốc đổi-link + lỗi 1033) — chưa làm vì chưa có domain.
 - **Engine chung + provider adapter thay vì copy 2 script** (22/07): 2 site chỉ khác
   đúng cách lấy danh sách chương + URL ảnh (~2 hàm); phần còn lại (PoliteGate/cầu dao
   429, tải resume, cbz, folder layout) giống hệt. Yếu tố quyết định là **không muốn 2
