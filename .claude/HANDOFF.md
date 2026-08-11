@@ -21,6 +21,16 @@
   phải nhận Telegram "🔄 tự mở lại" + tải tiếp; đóng lặp >3 lần → "❌ Lỗi tải" (không báo "xong" giả).
 
 ## Quyết định gần đây (mới nhất trước)
+- **11/08: ACGNProvider (comic.acgn.cc, truyện tiếng Trung) — ĐÃ code, CHƯA nghiệm thu tải
+  LIVE trên server.** HTML tĩnh, không JS/API (giống Dilib/TruyenQQ): ảnh nhúng `_src` trong
+  `view-{id}.htm`, danh sách tập ở `manhua-{slug}.htm`, số chương từ text `VOL`/`第N話`. Dán URL
+  1 tập thì `series_slug` tự tải trang đó lấy breadcrumb `manhua-` để về slug. **Tên folder GIỮ
+  tiếng Trung** (user chọn, thay vì pinyin — tránh thêm dep `pypinyin`; nhờ vậy **deploy chỉ cần
+  `/update`**, không cần `cap-nhat.bat`). `referer=None` (đã kiểm CDN không đòi). Đã test parse
+  từ máy dev OK (zzzs 22 tập, codebreaker 228 chương/1 trang → không phân trang, VOL17=78 ảnh).
+  **Chưa tải ảnh thật được từ máy dev**: CDN `img.acgn.cc` lọc vùng → 522 ngoài VN; server VN đã
+  test `Invoke-WebRequest` trả 200 (~64KB, không cần Referer). Nghiệm thu = `/tai` link acgn trên
+  server rồi soi `check_library.py`.
 - **11/08: Supervisor chống-chịu mạng + heartbeat** — sau sự cố DNS. Gate mạng `_net_status()`
   ở run_tunnel/download_loop/health_loop; backoff cloudflared 3→300s; **báo link chỉ khi đã xác
   minh** (retry trong cửa sổ, tránh spam + tránh bỏ sót lúc restart); **giữ hàng đợi khi lỗi-mạng**
@@ -47,6 +57,10 @@
   login username-only, chuyển git/GitHub — đã gói trong ARCHITECTURE.md.)
 
 ## Việc tiếp theo
+- **[ACGN nghiệm thu]** `day-len.bat` (dev) → `/update` trên bot (đủ, vì chỉ sửa `providers.py`,
+  không thêm dep). Rồi `/tai https://comic.acgn.cc/view-11338.htm` (hoặc `manhua-zzzs.htm`) → xác
+  nhận ra bộ `摺紙戰士` 22 tập, ảnh tải + decode OK; `check_library.py` soi. Nếu server báo 522 khi
+  tải ảnh → origin đổi vùng lọc (hiếm), đợi/đổi đường ra.
 - **[Heartbeat]** Bật trên server: tạo check healthchecks.io → dán `heartbeat_url` → `cap-nhat.bat`.
   Kiểm "Last Ping" chuyển xanh trong 5'. Thêm webhook cho chat_id em trai (integration Webhook thứ 2).
 - **[Supervisor resilience]** Nghiệm thu tự nhiên: lần tới mạng server chập, xác nhận KHÔNG còn spam

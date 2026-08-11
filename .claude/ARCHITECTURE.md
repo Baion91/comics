@@ -32,7 +32,10 @@ cách chạy thật + decode thử ảnh.
     chương; Raven = URL trang chương). `PROVIDERS`/`by_name`/`REGISTRY` (map domain).
     Đang có: **AsuraProvider** (API JSON), **RavenProvider** (parse HTML + `ts_reader`),
     **DilibProvider** (parse HTML PHP), **MangaDexProvider** (API JSON, bản dịch `en`),
-    **TruyenQQProvider** (parse HTML, `truyenqqko.com`).
+    **TruyenQQProvider** (parse HTML, `truyenqqko.com`), **ACGNProvider** (parse HTML tĩnh,
+    `comic.acgn.cc`, truyện tiếng Trung — ảnh nhúng `_src` trong trang `view-{id}.htm`,
+    danh sách tập ở `manhua-{slug}.htm`; số chương từ text `VOL`/`第N話`; referer=None;
+    CDN `img.acgn.cc` lọc theo vùng → 522 ngoài VN).
   - `comic_downloader.py` — CLI mỏng: `resolve_provider()` tự nhận site theo domain
     của URL (hoặc cờ `--site`), rồi gọi qua `dispatch()`: provider thường → `core.run`;
     provider có `custom_run` (hiện chỉ comix) → loop riêng. Cờ giữ y hệt bản cũ

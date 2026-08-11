@@ -25,7 +25,7 @@ Các script trong thư mục này, mỗi cái một việc:
 ## 1. Tải truyện — `comic_downloader.py` (hoặc bấm `Tai truyen.bat`)
 
 Một tool cho MỌI site, tự nhận site theo link (hiện hỗ trợ **Asura**, **Raven**, **Dilib**,
-**MangaDex**, **TruyenQQ**, **Comix**).
+**MangaDex**, **TruyenQQ**, **Comix**, **ACGN**).
 
 > **Raven Scans đã đổi `ravenscans.org` → `ravenscans.net`** (và đổi cấu trúc URL chương) —
 > dùng link `.net` mới; link `.org` cũ vẫn được nhận.
@@ -41,6 +41,14 @@ Một tool cho MỌI site, tự nhận site theo link (hiện hỗ trợ **Asura
 > (truyenqq.com → ...to → ...ko → ...); nếu link cũ không nhận nữa thì dùng **domain hiện hành**,
 > hoặc báo để thêm domain mới vào provider.
 
+> **ACGN** (comic.acgn.cc, 動漫戲說 — truyện tiếng Trung phồn thể): dán link trang truyện
+> `https://comic.acgn.cc/manhua-{slug}.htm` **hoặc** link 1 tập `https://comic.acgn.cc/view-{id}.htm`
+> (dán tập nào tool tự tìm về cả bộ). Site HTML tĩnh nên tải thẳng, không cần mở trình duyệt.
+> **Tên folder giữ nguyên tiếng Trung** (vd `摺紙戰士`) — Windows/reader đọc bình thường; chương
+> đánh số theo `VOL`/`第N話` trên site. ⚠️ CDN ảnh `img.acgn.cc` **lọc theo vùng**: server VN tải
+> OK, nhưng nhiều nơi ngoài VN bị Cloudflare báo lỗi **522** (không phải lỗi tool) — nên **tải trên
+> server** là chắc ăn.
+>
 > **Comix** (comix.to, tức Comick): dán link `https://comix.to/title/...`. Site mã hóa API nên
 > tool phải **mở 1 cửa sổ Chromium** để lấy danh sách chương/ảnh — **đừng đóng cửa sổ đó**,
 > xong tool tự đóng (cần cài 1 lần: `pip install -r requirements.txt` rồi

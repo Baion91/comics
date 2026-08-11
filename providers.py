@@ -425,9 +425,119 @@ class TruyenQQProvider:
         return u if u.startswith("http") else self.BASE + u
 
 
+class ACGNProvider:
+    """comic.acgn.cc (動漫戲說/ACGN.cc) - truyện tiếng Trung phồn thể, HTML TĨNH.
+
+    KHÔNG cần JS/API/Playwright: URL ảnh nhúng SẴN trong trang đọc. Hai loại trang:
+      - Series : /manhua-{slug}.htm   (vd manhua-zzzs.htm) — tên + bìa + danh sách tập
+      - Tập/ch : /view-{id}.htm        (vd view-11338.htm)  — trang đọc, nhúng ảnh
+
+    Danh sách chương ở trang series: `<a href="view-{id}.htm" ...>VOL22</a>` — SỐ chương
+    nằm trong TEXT thẻ <a> (giống Raven: VOL/第N話/第N集), view-id chỉ là "chìa" (ref).
+    Ảnh mỗi tập: `<div id="pN" class="pic" _src="https://img.acgn.cc/img/{grp}/{id}/{n}.jpg">`
+    — regex `_src` theo đúng thứ tự trang (đã kiểm: sạch, không lẫn div quảng cáo .img1).
+
+    Người dùng hay dán URL 1 TẬP (/view-{id}.htm) chứ không phải series → series_slug tự
+    tải trang tập đó, lấy link breadcrumb /manhua-{slug}.htm để về slug truyện (1 request).
+
+    CDN ảnh img.acgn.cc: đã kiểm trên server VN -> 200, và KHÔNG đòi Referer (có/không đều
+    trả cùng ảnh) nên referer=None. LƯU Ý: origin img.acgn.cc lọc theo vùng — nhiều nơi
+    (vd DC ngoài VN) bị Cloudflare 522; server VN tải bình thường. Chương chưa có ảnh (mới
+    tạo trang rỗng) -> _src rỗng -> skip như chương khóa.
+
+    Tên hiển thị = tiếng Trung lấy từ <h1> (giữ nguyên chữ Hán theo ý user; safe_name của
+    engine giữ CJK, chỉ bỏ ký tự cấm Windows). Chương KHÔNG rút được số (番外/特別篇...) bị
+    bỏ qua như nút điều hướng — hiếm gặp.
+    """
+
+    name = "acgn"
+    BASE = "https://comic.acgn.cc"
+    domains = ["comic.acgn.cc"]
+    referer = None   # đã kiểm: CDN ảnh KHÔNG đòi Referer
+
+    def __init__(self):
+        self._html_cache = {}  # đỡ tải lại trang series (list_chapters + title + cover)
+
+    def _series_html(self, slug: str) -> str:
+        if slug not in self._html_cache:
+            self._html_cache[slug] = get_text(f"{self.BASE}/manhua-{slug}.htm") or ""
+        return self._html_cache[slug]
+
+    def series_slug(self, text: str) -> str:
+        text = text.strip()
+        base = re.split(r"[?#]", text)[0].rstrip("/")
+        m = re.search(r"/manhua-([^/.]+)\.html?", base, re.I)
+        if m:
+            return m.group(1)
+        # dán URL 1 tập /view-{id}.htm -> tải trang đó, lấy slug từ breadcrumb manhua-
+        m = re.search(r"/view-\d+\.html?", base, re.I)
+        if m:
+            url = base if base.startswith("http") else self.BASE + m.group(0)
+            html = get_text(url) or ""
+            mm = re.search(r"/manhua-([^/.]+)\.html?", html, re.I)
+            if mm:
+                return mm.group(1)
+        # dự phòng: đoạn cuối path, bỏ tiền tố manhua-/đuôi .htm
+        seg = base.rsplit("/", 1)[-1]
+        return re.sub(r"\.html?$", "", re.sub(r"^manhua-", "", seg, flags=re.I), flags=re.I)
+
+    def title_from_slug(self, slug: str) -> str:
+        html = self._series_html(slug)
+        m = re.search(r"<h1[^>]*>([^<]+)</h1>", html, re.I)
+        if m:
+            return m.group(1).strip()
+        return slug
+
+    def list_chapters(self, slug: str):
+        html = self._series_html(slug)
+        # bó về khối danh sách chương cho chắc (trang chỉ liệt kê view- của CHÍNH bộ này,
+        # nhưng cắt từ #comic_chapter tránh dính widget khác nếu site đổi layout)
+        i = html.find("comic_chapter")
+        area = html[i:] if i != -1 else html
+        pat = re.compile(
+            r'href="([^"]*view-\d+\.html?)"[^>]*>\s*([^<]+?)\s*</a>', re.I)
+        seen = {}  # số chương -> url (mỗi tập có thể xuất hiện nhiều lần, dedup giữ đầu)
+        for href, txt in pat.findall(area):
+            m = re.search(r"(\d+(?:\.\d+)?)", txt)
+            if not m:
+                continue                       # 番外/nút điều hướng không số -> bỏ
+            try:
+                num = float(m.group(1))
+            except ValueError:
+                continue
+            if num in seen:
+                continue
+            if not href.startswith("http"):
+                href = f"{self.BASE}/{href.lstrip('/')}"
+            seen[num] = href
+        return [Chapter(num, "", seen[num]) for num in sorted(seen)]
+
+    def chapter_images(self, chapter):
+        html = get_text(chapter.ref)
+        if not html:
+            return []
+        seen, out = set(), []   # giữ nguyên thứ tự xuất hiện, bỏ trùng
+        for u in re.findall(r'_src=["\'](https?://img\.acgn\.cc/[^"\']+)["\']', html):
+            low = u.split("?", 1)[0].lower()
+            if not low.endswith((".jpg", ".jpeg", ".png", ".webp", ".gif")):
+                continue
+            if u not in seen:
+                seen.add(u)
+                out.append(u)
+        return out
+
+    def cover_url(self, slug: str):
+        html = self._series_html(slug)
+        m = re.search(r'<meta property="og:image" content="([^"]+)"', html)
+        if not m:
+            return None
+        u = m.group(1)
+        return u if u.startswith("http") else self.BASE + u
+
+
 # --- Đăng ký: thêm site mới = thêm 1 dòng vào đây -------------------------------
 PROVIDERS = [AsuraProvider(), RavenProvider(), DilibProvider(), MangaDexProvider(),
-             TruyenQQProvider()]
+             TruyenQQProvider(), ACGNProvider()]
 
 by_name = {p.name: p for p in PROVIDERS}                 # tra theo cờ --site
 REGISTRY = {d: p for p in PROVIDERS for d in p.domains}  # tra theo domain của URL
