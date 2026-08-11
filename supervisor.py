@@ -63,6 +63,8 @@ NET_ERR_MARKERS = ("getaddrinfo", "nameresolution", "failed to resolve", "max re
                    "connection reset", "timed out", "temporarily unavailable")
 HEARTBEAT_EVERY = 300      # giây giữa 2 nhịp heartbeat (5') ping RA dịch vụ giám sát ngoài
 HEARTBEAT_TIMEOUT = 10     # giây chờ mỗi cú ping
+CONFIRM_WINDOW = 120       # giây: thử xác minh tunnel MỚI tối đa ngần này trước khi báo Telegram
+CONFIRM_RETRY = 6          # giây giữa 2 lần thử xác minh (edge Cloudflare cần vài giây mới thông)
 NO_WINDOW = 0x08000000 if os.name == "nt" else 0   # đừng bật cửa sổ console con
 
 # In được tiếng Việt trên console Windows (cp1252)
@@ -323,15 +325,34 @@ class Supervisor:
             return False
 
     def _confirm_and_notify(self, url):
-        if not self._tunnel_alive(url):
-            return                   # tunnel chưa thông (vd đang mất mạng) -> IM, không spam
+        # Tunnel vừa IN url nhưng edge Cloudflare / reader có thể cần vài giây mới thông ->
+        # THỬ LẠI trong một cửa sổ thay vì one-shot. (Bản trước one-shot: cú GET đầu fail là
+        # bỏ luôn -> link THẬT khi restart cũng không được báo = 'không thấy bắn link'.)
+        deadline = time.monotonic() + CONFIRM_WINDOW
+        alive = False
+        while time.monotonic() < deadline:
+            with self.lock:
+                if self.link != url:
+                    return           # đã có link mới hơn (tunnel restart) -> để lần đó lo
+            if self._tunnel_alive(url):
+                alive = True
+                break
+            if self.stop.wait(CONFIRM_RETRY):
+                return
         with self.lock:
-            if url == self._notified_link:
-                return               # link này đã báo rồi -> khỏi báo lại
+            if self.link != url or url == self._notified_link:
+                return               # link đã đổi / đã báo rồi -> khỏi báo
             self._notified_link = url
-        log(f"LINK MỚI (đã xác minh): {url}")
+        if alive:
+            log(f"LINK MỚI (đã xác minh): {url}")
+            note = ""
+        else:
+            # Hết cửa sổ chưa xác minh được -> VẪN báo (kèm ghi chú) để không bao giờ im lặng.
+            # Spam đã bị chặn ở tầng khác (regex loại 'api' + gate mạng + backoff + dedup này).
+            log(f"! LINK MỚI (CHƯA xác minh được sau {CONFIRM_WINDOW}s) — vẫn báo: {url}")
+            note = "\n(Chưa tự kiểm được — nếu mở lỗi, đợi chút rồi gõ /link.)"
         notify_all(self.cfg, f"📖 Link đọc truyện MỚI:\n{url}\n\n(Link tạm — đổi mỗi lần "
-                             f"server khởi động lại. Mở link rồi Thêm-vào-màn-hình-chính.)")
+                             f"server khởi động lại. Mở link rồi Thêm-vào-màn-hình-chính.)" + note)
 
     def cur_link(self):
         with self.lock:
