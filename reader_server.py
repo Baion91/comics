@@ -4,8 +4,8 @@
 
 Chạy:  python reader_server.py  (tùy chọn: --port 8080)
 
-- Tự quét truyện trong thư mục này và trong "downloads" (folder nào có
-  chương chứa ảnh là thành truyện, không cần khai báo).
+- Tự quét truyện trong folder "downloads" (folder nào có chương chứa ảnh
+  là thành truyện, không cần khai báo).
 - Đọc trên PC: http://localhost:8080
 - Đọc trên điện thoại cùng Wi-Fi: http://<IP-máy-tính>:8080 (in ra khi chạy).
 - Không sửa/ghi gì vào folder truyện; vị trí đọc lưu trong trình duyệt.
@@ -34,8 +34,12 @@ except ImportError:
     Image = None
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-SCAN_ROOTS = [BASE_DIR, os.path.join(BASE_DIR, "downloads")]
-# Folder bỏ qua khi quét truyện (không phải thư viện ảnh truyện)
+# CHỈ quét thư viện trong "downloads" — không quét thư mục gốc project để tránh
+# các folder công cụ/phụ trợ (realesrgan-*, cover, cover_webp...) bị nhận nhầm
+# thành truyện. Truyện chỉ nằm trong downloads.
+SCAN_ROOTS = [os.path.join(BASE_DIR, "downloads")]
+# Folder bỏ qua khi quét truyện (không phải thư viện ảnh truyện). Giữ "downloads"
+# cho chắc dù giờ nó không còn là folder con của root nào được quét.
 EXCLUDE_DIRS = {".claude", "downloads", "so-sanh-webp", "__pycache__"}
 IMG_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp", ".avif"}
 MIME = {

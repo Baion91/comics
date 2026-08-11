@@ -105,7 +105,10 @@ cách chạy thật + decode thử ảnh.
   không đụng cây gốc. Tách riêng khỏi asura_downloader vì Asura đã webp sẵn.
 - `reader_server.py` — web reader kiểu Asura (HTML/CSS/JS inline trong Python
   stdlib, không dependency ngoài Pillow tùy chọn), port mặc định **8080**, user
-  bật thủ công bằng shortcut Desktop **"Toony"**. Tính năng chính: quét tự động
+  bật thủ công bằng shortcut Desktop **"Toony"**. **CHỈ quét thư viện trong
+  `downloads/`** (`SCAN_ROOTS`; trước đây quét cả gốc project → các folder công cụ
+  như `realesrgan-*`/`cover`/`cover_webp` có sub-folder chứa ảnh bị nhận nhầm thành
+  truyện — đã bỏ quét gốc 11/08). Tính năng chính: quét tự động
   2 tầng folder (arc/chương) lẫn phẳng, sort số chương tự nhiên (0.1, 14.2...),
   ghép trang đôi thủ công (nút ⧉ → POST `/api/spread`), bộ nạp ảnh tuần tự JS
   kèm retry (tự thử lại 3 lần backoff 1s-3s-8s → ô "chạm để tải lại" → hồi cả

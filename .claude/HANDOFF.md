@@ -21,6 +21,10 @@
   phải nhận Telegram "🔄 tự mở lại" + tải tiếp; đóng lặp >3 lần → "❌ Lỗi tải" (không báo "xong" giả).
 
 ## Quyết định gần đây (mới nhất trước)
+- **11/08: Reader CHỈ quét `downloads/`** (`SCAN_ROOTS` bỏ `BASE_DIR`) — trước quét cả
+  gốc project nên `realesrgan-ncnn-vulkan-*` (có `input/`+`output-realesrgan/` chứa ảnh) hiện
+  thành 1 bộ "truyện" giả; `cover`/`cover_webp` cũng chực vỡ. Đã xác nhận không có truyện thật
+  nào ở gốc (series-meta 8 key = 8 folder downloads). Deploy `/update` + **restart** reader.
 - **11/08: ACGNProvider (comic.acgn.cc, truyện tiếng Trung) — ĐÃ code, CHƯA nghiệm thu tải
   LIVE trên server.** HTML tĩnh, không JS/API (giống Dilib/TruyenQQ): ảnh nhúng `_src` trong
   `view-{id}.htm`, danh sách tập ở `manhua-{slug}.htm`, số chương từ text `VOL`/`第N話`. Dán URL
