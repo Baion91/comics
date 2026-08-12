@@ -47,8 +47,12 @@ cách chạy thật + decode thử ảnh.
     Chromium thật (Playwright HEADFUL, dep tùy chọn import lười) cho JS site tự gọi
     API rồi **hook `JSON.parse`** bắt payload đã giải mã; và 1 chương có NHIỀU bản
     upload (Official/scan) cần chọn + upgrade — không nhét vừa hợp đồng provider.
-    Chỉ browser lo metadata; ảnh vẫn tải bằng requests (Referer `comix.to`, URL ảnh
-    `*.wowpicN.store` KHÔNG có đuôi file → tải xong sniff magic bytes đổi đuôi).
+    Chỉ browser lo metadata; ảnh tải bằng HTTP client RIÊNG `ComixImageClient`
+    (KHÔNG dùng `core.session` chung — xem "Danh tính tách đôi" ở Quyết định): giả
+    vân tay TLS Chrome (`curl_cffi` impersonate, thiếu thì lùi về `requests`) + MƯỢN
+    cf_clearance/UA thật từ browser đang sống; refresh vé ở MAIN THREAD (đầu mỗi
+    chương + khi 403); 403 chỉ gắn cookie cho host `*.comix.to`, wowpic không cần.
+    URL ảnh `*.wowpicN.store` KHÔNG có đuôi file → tải xong sniff magic bytes đổi đuôi.
     Luật chọn per chương: `isOfficial` trước → scan `id` (chapterId) lớn nhất
     (id tăng đơn điệu = độ mới; API không có timestamp thô, chỉ "2mos ago").
     Upgrade→Official: điều kiện `has_content AND not on_disk_official AND
@@ -182,14 +186,27 @@ cách chạy thật + decode thử ảnh.
   `server-BAT-tudong.bat` / `server-TAT-tudong.bat`. **Lớp chống-chịu mạng (11/08/2026, sau
   sự cố DNS)**: `_net_status()` (connect IP thuần `1.1.1.1` + `getaddrinfo`) phân biệt *ok /
   dns hỏng / mất mạng hẳn*, làm CỔNG ở `run_tunnel` (mất mạng → KHÔNG bật cloudflared, chờ có
-  backoff `3→300s`), `download_loop` (offline → KHÔNG chạy job, giữ hàng đợi) và `health_loop`
-  (mạng hỏng → không kill tunnel oan). Báo link **chỉ khi đã xác minh mở được**
-  (`_confirm_and_notify` thử lại trong cửa sổ `CONFIRM_WINDOW=120s`, hết vẫn chưa được thì báo
-  kèm ghi chú) + **khác link đã báo** (`_notified_link`) → hết spam link rác; regex `TUNNEL_RE`
-  loại `api.trycloudflare.com` (host trong dòng lỗi). Job lỗi kiểu-mạng (`NET_ERR_MARKERS`
-  hoặc offline) → giữ `pending` thử lại, KHÔNG xoá (tránh mất hàng đợi khi mạng chập).
+  backoff `3→300s`) và `download_loop` (offline → KHÔNG chạy job, giữ hàng đợi). Báo link khi
+  **reader NỘI BỘ `127.0.0.1` đã phục vụ** (`_confirm_and_notify` → `_reader_alive`, chờ tối đa
+  `READER_WAIT=60s`) + **khác link đã báo** (`_notified_link`) → hết spam. **KHÔNG** GET link
+  CÔNG KHAI để đoán tunnel sống (mạng server không hairpin về chính tunnel của nó → sai ~2/3);
+  regex `TUNNEL_RE` loại `api.trycloudflare.com` (host trong dòng lỗi). **Đã BỎ `health_loop`**
+  (11/08): nó dùng cú GET công khai đó, 3 fail/180s → kill tunnel, hoá ra **giết nhầm tunnel
+  đang tốt cho người đọc** mỗi ~3' → đổi link liên tục. Giờ tin cloudflared tự reconnect/thoát
+  (chết thật → `run_tunnel` bắt + tạo link mới); reader chết → `run_reader` bật lại. Đánh đổi:
+  reader TREO-mà-chưa-chết không tự phục hồi (ca hiếm, restart tay). Job lỗi kiểu-mạng
+  (`NET_ERR_MARKERS` hoặc offline) → giữ `pending` thử lại, KHÔNG xoá (tránh mất hàng đợi khi mạng chập).
   **Heartbeat** (`heartbeat_loop`): mỗi 5' ping `heartbeat_url` (healthchecks.io) RA ngoài →
   dịch vụ ngoài báo khi server sập (kênh độc lập, sống cả khi bot câm); trống = tắt.
+- **Auto-start / sống qua reboot** (Phương án A, 12/08/2026): `server-BAT-tudong.bat` đăng ký task
+  Windows `ToonyServer` (`schtasks /sc onlogon`) chạy `supervisor.py` khi ĐĂNG NHẬP — bằng **đường
+  dẫn TUYỆT ĐỐI** tới `python.exe` (task onlogon không có PATH → tên trần `python`/`pythonw` lỗi
+  `0x80070002`; suy `python.exe` từ `pythonw.exe` đã resolve để cùng thư mục). Dùng `python.exe`
+  (CÓ cửa sổ log) chứ không `pythonw` ẩn — để nhìn được log lúc autostart. Trigger là *onlogon* nên
+  cần một phiên đăng nhập; muốn tự lên sau reboot **không cần gõ mật khẩu** = `server-AUTOLOGIN.bat`
+  bật **Sysinternals Autologon** (mã hoá mật khẩu vào LSA secret, không plaintext). Hệ quả A:
+  supervisor gắn với phiên interactive Administrator → **Switch user** giữ sống, **Sign out** giết;
+  desktop tự mở khoá sau reboot (đánh đổi bảo mật đã chấp nhận).
 - `Chia se link doc thu.bat` / `Tat chia se link.bat` — bật/tắt cloudflared
   quick tunnel (link trycloudflare ngẫu nhiên) cho người ngoài đọc thử.
 - `downloads/<Tên truyện>/Chapter N/001.webp...` — thư viện; mỗi truyện 1 folder.
@@ -215,17 +232,44 @@ cách chạy thật + decode thử ảnh.
 
 ## Quyết định quan trọng & lý do
 
+- **Comix: danh tính tách đôi → mượn vé sống + giả TLS Chrome** (12/08/2026, sau sự cố
+  403/503 khi site siết): tải trót lọt cả ngày rồi bỗng **403 tại `static.comix.to`** + **503
+  tại `wowpic`**, trong khi **mở Chrome trên server đọc vẫn bình thường**. Gốc rễ: metadata đi
+  bằng Playwright (có cf_clearance + UA thật, qua Cloudflare ngon) nhưng ẢNH đi bằng `requests`
+  trần (chỉ UA cứng + Referer, KHÔNG cf_clearance) — hai "người" khác nhau. Khi Cloudflare nâng
+  độ nhạy, `static.comix.to` (sau Cloudflare) đòi vé → client trần bị 403; còn `wowpic` (CDN
+  riêng, KHÔNG sau Cloudflare) 503 là transient thật. **Vì sao KHÔNG "clear cho sạch để đỡ bị
+  soi"**: với Cloudflare, request vô danh = khách CHƯA xác minh = ÍT tin nhất; cf_clearance là
+  VÉ QUA CỬA (buộc cứng IP+UA), reuse nhất quán mới giảm nghi, xoay/sạch mới bị challenge.
+  Fix (Bậc 1+2): `ComixImageClient` **mượn cf_clearance+UA sống từ browser**, refresh ở MAIN
+  THREAD (Playwright sync API cấm gọi chéo luồng — worker chỉ đọc snapshot dict) đầu mỗi chương
+  + khi 403 (làm mới vé rồi thử NỐT 1 lần, vẫn 403 → dừng phiên; KHÔNG thử mù kẻo tụt điểm IP);
+  **`curl_cffi` impersonate Chrome** cho vân tay TLS/JA3 giống Chrome thật (Cloudflare soi cả
+  TLS — `requests`/urllib3 lộ ngay là Python nên vé Chrome chìa qua handshake không-Chrome bị
+  coi replay → 403), thiếu curl_cffi thì lùi về `requests` (vẫn mượn vé, kém chắc). **Tách 403
+  vs 503**: thêm `core.Forbidden(Blocked)` (403, cho phép refresh-retry) + breaker riêng
+  `gate.tripped_503` (503 lùi giờ 15→180s, chịu 5 đợt mới bỏ — trước 1 cú 503 giết cả phiên);
+  `gate.recover()` reset cầu dao sau mỗi chương trọn. Client riêng để KHÔNG rò cf_clearance/UA
+  sang `core.session` dùng chung 5 site. curl_cffi thêm vào `requirements.txt` (optional,
+  `cap-nhat.bat` tự cài lúc `/update`).
 - **Supervisor chống-chịu mạng + heartbeat** (11/08/2026, sau sự cố DNS đêm 10→11): DNS server
   chập ~5 tiếng làm cloudflared crash-loop ~3s/lần → **2900 link rác** gửi Telegram + worker
   **nhai sạch 8 truyện** trong hàng đợi (mỗi job fail vì mạng → bị xoá vĩnh viễn), tin lỗi cũng
   không gửi được (`getaddrinfo failed`). Gốc rễ là môi trường (DNS) nhưng CODE khuếch đại sự cố
   nhỏ thành thảm hoạ. Sửa (chỉ `supervisor.py`, KHÔNG đổi kiến trúc quick-tunnel vì user chưa có
-  domain): gate mạng ở mọi vòng + backoff cloudflared; **xác minh-rồi-mới-báo-link** (có retry
-  trong cửa sổ để KHÔNG bỏ sót link thật lúc restart — bản one-shot đầu tiên gây regression
-  "không thấy bắn link"); **giữ hàng đợi khi lỗi-mạng**; regex loại link rác `api.*`. Thêm
-  **heartbeat RA healthchecks.io** vì bot KHÔNG thể tự báo khi mạng server chết (cùng đường mạng
-  đã hỏng) → cần kênh cảnh báo NGOÀI. Còn để ngỏ: **named-tunnel + domain** (URL cố định, xoá tận
-  gốc đổi-link + lỗi 1033) — chưa làm vì chưa có domain.
+  domain): gate mạng ở mọi vòng + backoff cloudflared; **giữ hàng đợi khi lỗi-mạng**; regex loại
+  link rác `api.*`. Thêm **heartbeat RA healthchecks.io** vì bot KHÔNG thể tự báo khi mạng server
+  chết (cùng đường mạng đã hỏng) → cần kênh cảnh báo NGOÀI. Còn để ngỏ: **named-tunnel + domain**
+  (URL cố định, xoá tận gốc đổi-link + lỗi 1033) — chưa làm vì chưa có domain.
+- **Bỏ `health_loop` + xác minh link bằng reader NỘI BỘ, không GET link công khai** (11/08/2026,
+  sau khi soi log thật): cách "xác minh/health-check bằng GET chính URL công khai từ server" **sai
+  ~2/3** vì mạng server không hairpin được về tunnel của nó (mỗi tunnel rơi edge Cloudflare khác;
+  server chỉ với được vài edge — log bimodal: link nào verify thì trong 7-8s + sống mãi, link
+  "xịt" thì fail suốt 180s). Hệ quả: `health_loop` (3 fail/180s → kill) **giết nhầm tunnel đang
+  tốt cho người đọc** mỗi ~3' → đổi link liên tục + spam link "chưa xác minh". Sửa: **bỏ hẳn
+  `health_loop`**; `_confirm_and_notify` chỉ chờ **reader `127.0.0.1`** (localhost tin cậy, không
+  hairpin) rồi báo. Tin cloudflared tự reconnect/thoát. User chọn "bỏ luôn cho đơn giản"; đánh đổi
+  đã chấp nhận: reader treo-mà-chưa-chết không tự phục hồi (heartbeat cũng không thấy) → restart tay.
 - **Engine chung + provider adapter thay vì copy 2 script** (22/07): 2 site chỉ khác
   đúng cách lấy danh sách chương + URL ảnh (~2 hàm); phần còn lại (PoliteGate/cầu dao
   429, tải resume, cbz, folder layout) giống hệt. Yếu tố quyết định là **không muốn 2
@@ -238,8 +282,9 @@ cách chạy thật + decode thử ảnh.
   **không đòi Referer** (đã test 206). Chương khóa → images rỗng → skip như premium Asura.
 - **Raven giữ .jpg, KHÔNG convert sang WebP**: nguồn đã JPEG lossy → nén lại chồng suy
   hao (đúng chính sách WebP bên dưới). Thư viện thành hỗn hợp webp(Asura)+jpg(Raven);
-  reader đọc cả hai (`IMG_EXTS`). Cloudflare hiện chưa challenge GET thường → chưa thêm
-  cloudscraper/curl_cffi, để cầu dao 403/503 dừng gọn, thêm khi thực sự vỡ.
+  reader đọc cả hai (`IMG_EXTS`). Cloudflare Raven hiện chưa challenge GET thường → Raven vẫn
+  dùng `core.session` trần, để cầu dao 403/503 dừng gọn. (curl_cffi giả-TLS đã thêm NHƯNG chỉ
+  cho comix qua `ComixImageClient`; site khác chưa cần — thêm khi thực sự vỡ.)
 - **MangaDex dùng API công khai** (`api.mangadex.org`): slug = UUID trong `/title/{uuid}/`;
   chương từ `/manga/{uuid}/feed?translatedLanguage[]=en` + `contentRating[]` đủ 4 mức
   (mặc định API loại `pornographic` → manga 18+ ra rỗng nếu không xin) + `order[volume]=asc

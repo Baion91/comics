@@ -328,15 +328,27 @@ khi đăng nhập Windows, tự tạo link đọc từ xa và báo qua Telegram.
 - **Bật/tắt trên server**: `server-BAT-tudong.bat` (đăng ký chạy-khi-đăng-nhập + bật ngay
   reader + cloudflared + Telegram; **tự kill tiến trình cũ** nên bấm lại an toàn) /
   `server-TAT-tudong.bat` (tắt hết + gỡ đăng ký).
+- **Tự lên sau reboot mà KHÔNG cần gõ mật khẩu** (Phương án A, từ 12/08): task chạy-khi-đăng-nhập
+  chỉ lên khi có người đăng nhập Windows. Muốn sau reboot (vd Windows Update) server tự lên không
+  cần thao tác: chạy **`server-AUTOLOGIN.bat`** một lần (quyền Admin) để bật Windows **tự đăng nhập**
+  (dùng Sysinternals Autologon, mật khẩu mã hoá vào LSA — không lưu plaintext). Sau đó reboot là
+  Windows tự đăng nhập → task tự chạy → **hiện cửa sổ log** + báo link Telegram.
+  - **Lưu ý dùng phương án A**: server gắn với phiên đăng nhập → muốn chuyển tài khoản mà vẫn giữ
+    server chạy thì bấm **Switch user** (ĐỪNG **Sign out** — sign out sẽ tắt server). Cửa sổ log là
+    `python.exe`: đừng đóng/Ctrl-C (sẽ tắt server); tắt sạch bằng `server-TAT-tudong.bat`. Đánh đổi:
+    desktop tự mở khoá sau reboot. Muốn tắt autologon: mở lại Autologon → **Disable**.
 - **Link đọc từ xa**: cloudflared quick-tunnel tự tạo link `…trycloudflare.com` và gửi qua
   **Telegram bot** cho ai đã nhắn bot. Link **đổi mỗi lần server/tunnel khởi động lại**.
   Trên server chạy `get-cloudflared.bat` một lần để tải cloudflared.
 - **Chống loạn khi mạng/DNS server chập chờn** (từ 11/08): trước đây mạng server rớt là
   cloudflared quay vòng tạo link liên tục → **spam hàng loạt link** qua Telegram + **mất
   sạch hàng chờ tải**. Nay supervisor **kiểm tra mạng trước khi bật lại tunnel** (mất mạng thì
-  nằm im chờ, có backoff), **chỉ báo link khi đã xác minh mở được** (không bắn link rác), và
+  nằm im chờ, có backoff), **chỉ báo link sau khi reader đã sẵn sàng** (mở link không dính 502), và
   **giữ nguyên hàng đợi khi lỗi do mạng** (tự thử lại thay vì xoá). Mất mạng thì reader vẫn
   không vào được trong lúc đó (không tránh khỏi), nhưng **hết loạn link + không mất truyện**.
+  (Lưu ý kỹ thuật: đã **bỏ health-check kiểu tự-GET link công khai** — mạng server không "vòng
+  về" chính tunnel của nó được nên hay báo nhầm tunnel chết → đổi link liên tục mỗi ~3 phút. Giờ
+  tin cloudflared tự lo kết nối; đổi lại nếu **reader treo mà chưa chết hẳn** thì phải bật lại tay.)
 - **Đồng bộ code bằng git** (repo GitHub `Baion91/comics`, Public — không chứa secret):
   - Máy dev: **`day-len.bat`** = đẩy code lên GitHub (git add + commit + push).
   - Server: **`cap-nhat.bat`** = kéo code mới + restart, HOẶC nhắn **`/update`** cho bot
