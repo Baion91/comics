@@ -15,6 +15,10 @@ set "PY=python"
 set "PYW=pythonw"
 if exist "%~dp0.venv\Scripts\python.exe"  set "PY=%~dp0.venv\Scripts\python.exe"
 if exist "%~dp0.venv\Scripts\pythonw.exe" set "PYW=%~dp0.venv\Scripts\pythonw.exe"
+rem --- Task onlogon KHONG co PATH cua user -> ten tran 'pythonw' se loi 0x80070002
+rem     (file not found). Doi PYW sang DUONG DAN TUYET DOI de task chay duoc khi dang nhap. ---
+if /i "%PYW%"=="pythonw" for /f "delims=" %%i in ('where pythonw 2^>nul') do set "PYW=%%i"
+if /i "%PYW%"=="pythonw" for /f "delims=" %%i in ('where python 2^>nul') do set "PYW=%%~dpipythonw.exe"
 
 rem --- tao notify-config.json tu mau neu chua co (dien token o day) ---
 if not exist "%~dp0.reader-meta" mkdir "%~dp0.reader-meta"

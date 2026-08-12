@@ -46,8 +46,6 @@ DL_LOG_MAX = 2_000_000    # cắt log khi vượt ~2MB
 # 'api' — 'api.trycloudflare.com' là host cloudflared in trong DÒNG LỖI (không phải link);
 # regex cũ bắt nhầm nó -> báo link rác. Đêm 11/08 spam ~2900 "LINK MỚI: api.trycloudflare.com".
 TUNNEL_RE = re.compile(r"https://([a-z0-9][a-z0-9-]*)\.trycloudflare\.com")
-HEALTH_EVERY = 60          # giây giữa 2 lần health-check
-HEALTH_FAILS = 3           # số lần fail liên tiếp mới coi là tunnel chết
 # Backoff khi cloudflared bật lên rồi CHẾT NGAY (không lập nổi tunnel — thường do mất mạng/DNS):
 # thay vì quay vòng 3s/lần (2900 lần/đêm), giãn dần 3→6→12…→trần 5' tới khi mạng về.
 TUNNEL_BACKOFF_MIN = 3     # giây, lần đầu
@@ -63,8 +61,12 @@ NET_ERR_MARKERS = ("getaddrinfo", "nameresolution", "failed to resolve", "max re
                    "connection reset", "timed out", "temporarily unavailable")
 HEARTBEAT_EVERY = 300      # giây giữa 2 nhịp heartbeat (5') ping RA dịch vụ giám sát ngoài
 HEARTBEAT_TIMEOUT = 10     # giây chờ mỗi cú ping
-CONFIRM_WINDOW = 120       # giây: thử xác minh tunnel MỚI tối đa ngần này trước khi báo Telegram
-CONFIRM_RETRY = 6          # giây giữa 2 lần thử xác minh (edge Cloudflare cần vài giây mới thông)
+# Chờ READER NỘI BỘ (127.0.0.1) sẵn sàng trước khi báo link (để user mở link không dính 502).
+# KHÔNG kiểm URL công khai nữa: mạng server không "hairpin" được về chính tunnel của nó (sai ~2/3)
+# → trước đây làm health_loop giết nhầm tunnel đang sống + báo link 'chưa xác minh'. Localhost thì
+# luôn tin cậy được (không qua Cloudflare/hairpin).
+READER_WAIT = 60           # giây: chờ reader nội bộ tối đa ngần này rồi vẫn báo
+READER_RETRY = 3           # giây giữa 2 lần thử reader nội bộ
 NO_WINDOW = 0x08000000 if os.name == "nt" else 0   # đừng bật cửa sổ console con
 
 # In được tiếng Việt trên console Windows (cp1252)
@@ -312,47 +314,39 @@ class Supervisor:
         # và chỉ báo khi link THẬT SỰ mở được reader + KHÁC link đã báo lần trước (chống spam).
         self._run_bg(self._confirm_and_notify, url)
 
-    @staticmethod
-    def _tunnel_alive(url):
-        """GET thử qua link công khai -> có phản hồi HTTP = tunnel đã thông (không phải
-        link rác / chưa lập xong / đang mất mạng)."""
+    def _reader_alive(self):
+        """GET reader NỘI BỘ 127.0.0.1 -> đang phục vụ HTTP chưa. Localhost nên KHÔNG dính
+        hairpin/Cloudflare (khác hẳn GET link công khai) -> tín hiệu đáng tin để biết mở link
+        ra có 502 không."""
         try:
-            req = urllib.request.Request(url, method="GET",
+            req = urllib.request.Request(self.reader_url(), method="GET",
                                          headers={"User-Agent": "toony-health"})
-            with urllib.request.urlopen(req, timeout=15) as r:
+            with urllib.request.urlopen(req, timeout=10) as r:
                 return 200 <= r.status < 500
         except Exception:
             return False
 
     def _confirm_and_notify(self, url):
-        # Tunnel vừa IN url nhưng edge Cloudflare / reader có thể cần vài giây mới thông ->
-        # THỬ LẠI trong một cửa sổ thay vì one-shot. (Bản trước one-shot: cú GET đầu fail là
-        # bỏ luôn -> link THẬT khi restart cũng không được báo = 'không thấy bắn link'.)
-        deadline = time.monotonic() + CONFIRM_WINDOW
-        alive = False
+        # cloudflared đã IN url = ĐÃ đăng ký với edge (tunnel dùng được cho người đọc). Ta chỉ
+        # chờ READER NỘI BỘ sẵn sàng để user mở link không dính 502, rồi báo. KHÔNG GET link
+        # công khai để "xác minh" nữa: mạng server không hairpin về chính nó (sai ~2/3) → từng
+        # làm health_loop giết nhầm tunnel tốt + kẹt 120s báo 'chưa xác minh'.
+        deadline = time.monotonic() + READER_WAIT
         while time.monotonic() < deadline:
             with self.lock:
                 if self.link != url:
-                    return           # đã có link mới hơn (tunnel restart) -> để lần đó lo
-            if self._tunnel_alive(url):
-                alive = True
+                    return           # đã có link mới hơn (cloudflared restart) -> để lần đó lo
+            if self._reader_alive():
                 break
-            if self.stop.wait(CONFIRM_RETRY):
+            if self.stop.wait(READER_RETRY):
                 return
         with self.lock:
             if self.link != url or url == self._notified_link:
                 return               # link đã đổi / đã báo rồi -> khỏi báo
             self._notified_link = url
-        if alive:
-            log(f"LINK MỚI (đã xác minh): {url}")
-            note = ""
-        else:
-            # Hết cửa sổ chưa xác minh được -> VẪN báo (kèm ghi chú) để không bao giờ im lặng.
-            # Spam đã bị chặn ở tầng khác (regex loại 'api' + gate mạng + backoff + dedup này).
-            log(f"! LINK MỚI (CHƯA xác minh được sau {CONFIRM_WINDOW}s) — vẫn báo: {url}")
-            note = "\n(Chưa tự kiểm được — nếu mở lỗi, đợi chút rồi gõ /link.)"
+        log(f"LINK MỚI: {url}")
         notify_all(self.cfg, f"📖 Link đọc truyện MỚI:\n{url}\n\n(Link tạm — đổi mỗi lần "
-                             f"server khởi động lại. Mở link rồi Thêm-vào-màn-hình-chính.)" + note)
+                             f"server khởi động lại. Mở link rồi Thêm-vào-màn-hình-chính.)")
 
     def cur_link(self):
         with self.lock:
@@ -456,34 +450,10 @@ class Supervisor:
                         + "\n\nGõ /link bất cứ lúc nào để lấy link mới nhất.",
                 "disable_web_page_preview": "true"})
 
-    # health-check: tunnel còn sống thật không (khác với 'tiến trình còn chạy')
-    def health_loop(self):
-        fails = 0
-        while not self.stop.wait(HEALTH_EVERY):
-            with self.lock:
-                url = self.link
-            if not url:
-                continue
-            if _net_status() != "ok":
-                fails = 0            # mất mạng/DNS: lỗi ở mạng, KHÔNG phải tunnel -> đừng kill
-                continue
-            ok = False
-            try:
-                req = urllib.request.Request(url, method="GET",
-                                             headers={"User-Agent": "toony-health"})
-                with urllib.request.urlopen(req, timeout=15) as r:
-                    ok = 200 <= r.status < 500   # có phản hồi HTTP = tunnel còn thông
-            except Exception:
-                ok = False
-            if ok:
-                fails = 0
-            else:
-                fails += 1
-                log(f"! Health-check fail {fails}/{HEALTH_FAILS} cho {url}")
-                if fails >= HEALTH_FAILS:
-                    fails = 0
-                    log("! Tunnel coi như chết — kill cloudflared để tạo link mới.")
-                    self._kill(self.tunnel)   # run_tunnel sẽ tự bật lại + báo link mới
+    # (Đã BỎ health_loop: nó GET link CÔNG KHAI để đoán tunnel sống/chết, nhưng mạng server
+    # không hairpin về chính tunnel của nó (sai ~2/3) → giết nhầm tunnel đang tốt cho người đọc,
+    # gây đổi link liên tục mỗi ~3'. Giờ tin cloudflared tự reconnect/thoát: cloudflared chết
+    # thật thì run_tunnel bắt được + tạo link mới. Reader chết thì run_reader bật lại.)
 
     # heartbeat: ping RA dịch vụ ngoài (healthchecks.io) -> nó tự báo bạn KHI SERVER SẬP
     def heartbeat_loop(self):
@@ -996,7 +966,6 @@ class Supervisor:
         self.resume_jobs()   # dọn downloader lạc + nạp lại hàng đợi -> tải tiếp sau restart
         threads = [threading.Thread(target=self.run_reader, daemon=True),
                    threading.Thread(target=self.run_tunnel, daemon=True),
-                   threading.Thread(target=self.health_loop, daemon=True),
                    threading.Thread(target=self.telegram_loop, daemon=True),
                    threading.Thread(target=self.download_loop, daemon=True),
                    threading.Thread(target=self.heartbeat_loop, daemon=True)]

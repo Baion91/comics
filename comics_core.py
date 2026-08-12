@@ -415,6 +415,13 @@ class Blocked(Exception):
     """Server trả 403/503 (challenge) - IP đang bị nghi ngờ, phải dừng ngay."""
 
 
+class Forbidden(Blocked):
+    """403 CỤ THỂ (khác 503) — tách khỏi Blocked chung để caller có cơ hội LÀM MỚI
+    danh tính (vd comix: đọc lại cf_clearance + UA từ browser đang sống) rồi thử lại,
+    thay vì dừng phiên ngay. Vẫn là con của Blocked nên mọi `except Blocked` cũ
+    (5 site khác) bắt được y như trước -> không đổi hành vi của chúng."""
+
+
 class TooMany429(Exception):
     """Bị nhắc 429 quá nhiều lần trong một phiên - dừng để giữ uy tín IP."""
 
@@ -433,6 +440,7 @@ class PoliteGate:
         self.min_gap, self.max_gap = min_gap, max_gap
         self.next_ok = 0.0   # mốc monotonic sớm nhất được gửi request kế tiếp
         self.trips = 0
+        self.trips_503 = 0   # đếm riêng 503 (CDN chập chờn) — khoan hơn 429
         self.abort = False
 
     def wait_turn(self):
@@ -459,6 +467,31 @@ class PoliteGate:
             delay = retry_after or (90.0, 300.0, 900.0)[self.trips - 1]
             self.next_ok = now + delay
             return delay
+
+    def tripped_503(self, retry_after: float | None) -> float:
+        """503 = CDN/nguồn tạm quá tải (hay transient), KHÁC 429 (mình gửi nhanh quá).
+        Không giết phiên ngay: đẩy lùi thời điểm gửi tiếp cho MỌI luồng rồi thử lại;
+        backoff nhẹ hơn 429 và ngưỡng chịu đựng cao hơn (5 đợt) vì 503 thường tự khỏi.
+        Quá ngưỡng -> ném Blocked (nguồn hỏng thật -> dừng, chờ vài giờ)."""
+        with self.lock:
+            now = time.monotonic()
+            if self.next_ok > now + 10:
+                return self.next_ok - now  # luồng khác vừa kéo cầu dao rồi
+            self.trips_503 += 1
+            if self.trips_503 > 5:
+                self.abort = True
+                raise Blocked("bị 503 quá nhiều lần trong phiên — nguồn/CDN đang lỗi")
+            delay = retry_after or (15.0, 30.0, 60.0, 120.0, 180.0)[self.trips_503 - 1]
+            self.next_ok = now + delay
+            return delay
+
+    def recover(self):
+        """Tải được thêm nội dung = IP/CDN đang khỏe lại -> xoá sạch bộ đếm cầu dao để
+        một đợt chập chờn ĐỘC LẬP về sau có đủ ngân sách retry (không cộng dồn cả phiên
+        thành abort oan). Gọi khi một chương hoàn tất trọn vẹn."""
+        with self.lock:
+            self.trips = self.trips_503 = 0
+            self.abort = False
 
 
 gate = PoliteGate()
@@ -487,8 +520,13 @@ def _request(url: str, retries: int = 3):
                 print(f"\n  ! Server nhắc 429 - tạm dừng toàn bộ {delay:.0f}s "
                       f"rồi tự chạy tiếp...", flush=True)
                 continue
-            if r.status_code in (403, 503):
-                raise Blocked(f"HTTP {r.status_code} khi gọi {url}")
+            if r.status_code == 503:   # transient: lùi giờ + thử lại, chưa vội bỏ cuộc
+                delay = gate.tripped_503(_retry_after(r))
+                print(f"\n  ! Server 503 (nguồn tạm quá tải?) - tạm dừng {delay:.0f}s "
+                      f"rồi thử lại...", flush=True)
+                continue
+            if r.status_code == 403:
+                raise Forbidden(f"HTTP 403 khi gọi {url}")
             r.raise_for_status()
             return r
         except (Blocked, TooMany429):
@@ -519,10 +557,16 @@ def get_text(url: str, retries: int = 3):
     return r.text if r is not None else None
 
 
-def download_image(url: str, dest: Path) -> bool:
+def download_image(url: str, dest: Path, client=None) -> bool:
     """Tải 1 ảnh, KIỂM TRA rồi mới ghi. Chỉ ghi khi qua tầng 1+2 -> file trên đĩa
     luôn là ảnh dùng được; ảnh hỏng KHÔNG để lại file chuẩn nên resume tự tải lại
-    lần sau. Tải bù thành công thì xóa file .bad cách ly kế bên (nếu có)."""
+    lần sau. Tải bù thành công thì xóa file .bad cách ly kế bên (nếu có).
+
+    `client` (tùy chọn): HTTP client thay cho `session` mặc định — comix truyền vào
+    một client giả vân tay Chrome (curl_cffi) + mang cf_clearance/UA mượn từ browser.
+    Chỉ cần có `.get(url, timeout=...)` trả response kiểu requests và tự gói lỗi mạng
+    thành requests.RequestException. 403 -> raise Forbidden để caller thử làm mới vé."""
+    cli = client if client is not None else session
     if dest.exists() and dest.stat().st_size > 0:
         return True  # đã tải rồi -> bỏ qua, không tốn request
     if not RETRY_BROKEN and is_known_broken(dest):
@@ -532,18 +576,26 @@ def download_image(url: str, dest: Path) -> bool:
     for attempt in range(5):
         gate.wait_turn()
         try:
-            r = session.get(url, timeout=60)
+            r = cli.get(url, timeout=60)
             if r.status_code == 429:
                 delay = gate.tripped_429(_retry_after(r))
                 print(f"\n  ! Server nhắc 429 - tạm dừng toàn bộ {delay:.0f}s "
                       f"rồi tự tải tiếp...", flush=True)
                 continue  # sau cữ nghỉ sẽ thử lại đúng ảnh này
-            if r.status_code in (403, 503):
-                raise Blocked(f"HTTP {r.status_code} tại {url}")
+            if r.status_code == 503:   # transient (CDN quá tải) -> lùi giờ + thử lại
+                delay = gate.tripped_503(_retry_after(r))
+                print(f"\n  ! Server 503 (CDN tạm quá tải?) - tạm dừng {delay:.0f}s "
+                      f"rồi tự tải tiếp...", flush=True)
+                continue
+            if r.status_code == 403:   # thiếu/hết vé Cloudflare -> caller lo làm mới vé
+                raise Forbidden(f"HTTP 403 tại {url}")
             if r.status_code == 404:
                 print(f"    ! Không tồn tại (404): {url}", file=sys.stderr)
                 return False
-            r.raise_for_status()
+            if r.status_code >= 400:   # 5xx khác/4xx khác: coi là lỗi thoáng qua -> thử lại
+                reason = f"HTTP {r.status_code}"
+                time.sleep(1.5 * (attempt + 1))
+                continue
             data = r.content
 
             # Tầng 1 — độ dài truyền tải: server báo N byte mà nhận thiếu = tải cụt
@@ -617,7 +669,7 @@ def fmt_num(num) -> str:
     return int(num) if float(num).is_integer() else num
 
 
-def download_cover(url: str, out_root: Path):
+def download_cover(url: str, out_root: Path, client=None):
     """Tải ảnh bìa về cover.<ext>. Đã có cover.* thì thôi, không tốn request."""
     if any(p.stem.lower() == "cover" and p.suffix.lower() in IMG_EXTS
            for p in out_root.iterdir() if p.is_file()):
@@ -625,7 +677,7 @@ def download_cover(url: str, out_root: Path):
     ext = "." + url.split("?")[0].rsplit(".", 1)[-1].lower()
     if ext not in IMG_EXTS:
         ext = ".webp"
-    if download_image(url, out_root / f"cover{ext}"):
+    if download_image(url, out_root / f"cover{ext}", client=client):
         print(f"Đã tải ảnh bìa: cover{ext}")
 
 

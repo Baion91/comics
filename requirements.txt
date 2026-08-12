@@ -5,6 +5,10 @@
 #   .venv\Scripts\pip install -r requirements.txt
 requests
 Pillow
+# curl_cffi: CHI cho site comix.to — client tai anh gia van tay TLS cua Chrome that,
+# de vuot Cloudflare khi site siet (403 tren static.comix.to). Thieu no van chay duoc
+# (tu lui ve requests, chi kem chac). Cai kem: pip install curl_cffi
+curl_cffi
 # playwright: CHI can cho site comix.to (Comick). Cai xong PHAI chay them 1 lan
 # (cap-nhat.bat tu lam, kem PLAYWRIGHT_BROWSERS_PATH tro vao .reader-meta\pw-browsers):
 #   python -m playwright install chromium

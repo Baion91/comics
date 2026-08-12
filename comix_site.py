@@ -67,6 +67,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
 
+import requests
+
 import comics_core as core
 
 # Chromium của Playwright để TRONG PROJECT (.reader-meta/pw-browsers), KHÔNG dùng
@@ -443,6 +445,93 @@ class ComixSession:
         return out
 
 
+# --- Client tải ảnh (giả vân tay Chrome + mượn vé Cloudflare) ---------------------
+
+class ComixImageClient:
+    """HTTP client CHỈ để tải ảnh comix, khác `core.session` mặc định ở 2 điểm:
+
+    1. VÂN TAY TLS: dùng curl_cffi impersonate="chrome" -> handshake JA3/JA4 + HTTP2
+       giống Chrome thật. Cloudflare đời mới soi cả vân tay TLS; `requests` (urllib3)
+       lộ ngay là "Python" nên khi site siết, vé cf_clearance chìa qua handshake
+       không-phải-Chrome bị coi là replay -> 403. Impersonate xoá đúng lỗ hổng đó.
+       Thiếu curl_cffi -> tự lùi về requests thường (vẫn mượn vé, chỉ không giả TLS).
+    2. DANH TÍNH MƯỢN SỐNG: đọc UA thật + cookie .comix.to (gồm cf_clearance) từ
+       CHÍNH browser Playwright đang mở, nạp vào client. Nhờ vậy request ảnh mang cùng
+       "vé + UA + Referer + TLS" như trình duyệt đang qua cửa -> Cloudflare cho đi.
+
+    An toàn luồng: refresh_identity() ĐỘNG tới browser (page.evaluate/ctx.cookies) nên
+    CHỈ được gọi ở MAIN THREAD (Playwright sync API cấm gọi chéo luồng). get() không
+    đụng browser -> worker thread gọi thoải mái. Vé làm mới CHỦ ĐỘNG mỗi chương + khi
+    dính 403 (đều ở main thread), worker chỉ đọc snapshot dict đã nạp sẵn."""
+
+    def __init__(self, cs: "ComixSession"):
+        self.cs = cs
+        self._cookies = {}          # {name: value} cookie .comix.to (snapshot, đọc từ worker OK)
+        self._impl = None
+        self.backend = None
+        self._build()
+        self.refresh_identity()
+        print(f"  (client tải ảnh: {self.backend})", flush=True)
+
+    def _build(self):
+        """Dựng client nền: ưu tiên curl_cffi (giả TLS Chrome), thiếu thì requests riêng."""
+        try:
+            from curl_cffi import requests as cffi
+            self._impl = cffi.Session(impersonate="chrome")
+            self.backend = "curl_cffi (giả vân tay Chrome)"
+            return
+        except Exception:
+            pass
+        # Fallback Bậc 1: requests RIÊNG (không đụng core.session dùng chung 5 site) —
+        # vẫn mượn được vé + UA, chỉ thiếu lớp giả TLS.
+        self._impl = requests.Session()
+        self.backend = "requests (KHÔNG giả TLS — cài curl_cffi để chắc hơn)"
+
+    def refresh_identity(self):
+        """Đọc UA thật + cookie .comix.to từ browser, nạp vào client. Gọi ở MAIN THREAD:
+        lúc khởi tạo, đầu mỗi chương (vé có thể xoay), và ngay khi dính 403."""
+        try:
+            ua = self.cs.page.evaluate("() => navigator.userAgent")
+            if ua:
+                self._impl.headers["User-Agent"] = ua
+        except Exception:
+            pass   # giữ UA cũ nếu page đang bận/hụt
+        self._impl.headers["Referer"] = REFERER
+        cookies = {}
+        try:
+            for c in self.cs.ctx.cookies():
+                dom = (c.get("domain") or "").lstrip(".").lower()
+                if dom == "comix.to" or dom.endswith(".comix.to"):
+                    cookies[c["name"]] = c["value"]
+        except Exception:
+            pass
+        if cookies:                # chỉ đè khi đọc được, tránh xoá sạch vé lúc đọc hụt
+            self._cookies = cookies
+
+    def get(self, url, timeout=60):
+        """Bề mặt kiểu requests cho core.download_image. Gắn cookie comix CHỈ cho host
+        *.comix.to (wowpic không cần vé, cookie sai host còn phản tác dụng). Gói lỗi
+        nền (curl_cffi ném lớp riêng) thành requests.RequestException để core coi như
+        lỗi mạng mà retry, thay vì vỡ ra ngoài."""
+        try:
+            host = (urllib.parse.urlparse(url).hostname or "").lower()
+        except Exception:
+            host = ""
+        send = self._cookies if host.endswith("comix.to") else None
+        try:
+            return self._impl.get(url, timeout=timeout, cookies=send)
+        except requests.RequestException:
+            raise
+        except Exception as e:
+            raise requests.RequestException(str(e)) from e
+
+    def close(self):
+        try:
+            self._impl.close()
+        except Exception:
+            pass
+
+
 # --- Chọn bản + sidecar ----------------------------------------------------------
 
 def series_slug(text):
@@ -653,6 +742,7 @@ def run(args):
 
     try:
         with ComixSession() as cs:
+            img_client = ComixImageClient(cs)   # tải ảnh: giả TLS Chrome + mượn vé sống
             title, cover, items = _resilient(cs, lambda: cs.fetch_series(slug))
             by_num = group_versions(items)
             if not by_num:
@@ -682,13 +772,21 @@ def run(args):
                 for d in tmp_root.glob("*.__trash"):
                     shutil.rmtree(d, ignore_errors=True)
             if cover:
-                # thử bản full (bỏ '@280') trước, hụt (404) thì lấy luôn bản thumb
+                # fetch_series vừa (có thể) giải Cloudflare -> lấy vé mới cho cover.
+                img_client.refresh_identity()
+                # thử bản full (bỏ '@280') trước, hụt (404) thì lấy luôn bản thumb.
+                # Cover là phụ: 403/lỗi ở đây KHÔNG được giết cả phiên tải chương.
                 full = re.sub(r"@\d+(\.\w+)$", r"\1", cover)
-                for cu in dict.fromkeys([full, cover]):
-                    core.download_cover(cu, out_root)
-                    if any(p.stem.lower() == "cover" for p in out_root.iterdir()
-                           if p.is_file() and p.suffix.lower() in core.IMG_EXTS):
-                        break
+                try:
+                    for cu in dict.fromkeys([full, cover]):
+                        core.download_cover(cu, out_root, client=img_client)
+                        if any(p.stem.lower() == "cover" for p in out_root.iterdir()
+                               if p.is_file() and p.suffix.lower() in core.IMG_EXTS):
+                            break
+                except core.Blocked:
+                    print("  ! Bỏ qua ảnh bìa (bị chặn tạm) — tải chương vẫn tiếp tục.",
+                          file=sys.stderr)
+                    core.gate.abort = False   # gỡ cầu dao nếu cover vừa kéo, để tải chương
             print(f"Sẽ xử lý {len(nums)} chương vào: {out_root.resolve()}\n")
 
             total = len(nums)
@@ -803,26 +901,54 @@ def run(args):
                 print(f"\r{prefix} [{tag}] — {done_ct}/{len(urls)} ảnh, đang tải...   ",
                       end="", flush=True)
                 if jobs:
-                    with ThreadPoolExecutor(max_workers=args.workers) as pool_ex:
-                        futures = [pool_ex.submit(core.download_image, u,
-                                                  dest / f"{i:03d}.webp")
-                                   for i, u in jobs]
+                    # Vé mới nhất từ browser TRƯỚC khi tải (main thread) — bắt kịp ca
+                    # cf_clearance hết hạn qua đêm / vừa xoay giữa phiên.
+                    img_client.refresh_identity()
+                    forbidden_retry = 0
+                    while True:
+                        remaining = [(i, u) for i, u in jobs
+                                     if _page_file(dest, i) is None]
+                        if not remaining:
+                            break
+                        done_ct = len(urls) - len(
+                            [i for i, _ in pages if _page_file(dest, i) is None])
                         try:
-                            for f in as_completed(futures):
-                                if f.result():
-                                    ok += 1
-                                done_ct += 1
-                                print(f"\r{prefix} [{tag}] — {done_ct}/{len(urls)} ảnh, "
-                                      "đang tải...   ", end="", flush=True)
-                        except (core.Blocked, core.TooMany429):
-                            core.gate.abort = True
-                            pool_ex.shutdown(cancel_futures=True)
-                            raise
+                            with ThreadPoolExecutor(max_workers=args.workers) as pool_ex:
+                                futures = [pool_ex.submit(core.download_image, u,
+                                                          dest / f"{i:03d}.webp", img_client)
+                                           for i, u in remaining]
+                                try:
+                                    for f in as_completed(futures):
+                                        if f.result():
+                                            ok += 1
+                                        done_ct += 1
+                                        print(f"\r{prefix} [{tag}] — {done_ct}/{len(urls)} "
+                                              "ảnh, đang tải...   ", end="", flush=True)
+                                except (core.Blocked, core.TooMany429):
+                                    core.gate.abort = True
+                                    pool_ex.shutdown(cancel_futures=True)
+                                    raise
+                            break   # mẻ xong không lỗi -> thôi vòng retry
+                        except core.Forbidden:
+                            # 403 giữa chương: nhiều khả năng vé vừa xoay. Làm mới vé
+                            # (main thread) rồi tải NỐT phần thiếu ĐÚNG 1 lần; vẫn 403
+                            # -> để Forbidden bay ra = dừng phiên (chờ vài giờ). KHÔNG
+                            # thử mù nhiều lần kẻo tụt điểm uy tín IP.
+                            if forbidden_retry >= 1:
+                                raise
+                            forbidden_retry += 1
+                            core.gate.abort = False   # gỡ cầu dao do pool vừa kéo
+                            img_client.refresh_identity()
+                            print(f"\n{prefix} — 403 (vé Cloudflare?), đã làm mới vé từ "
+                                  "browser, thử lại phần còn thiếu...", flush=True)
+                            time.sleep(2.0)
                     # URL không có đuôi -> sửa đuôi theo định dạng thật sau khi tải
                     for i, _ in jobs:
                         p = dest / f"{i:03d}.webp"
                         if p.exists() and p.stat().st_size > 0:
                             _fix_ext(p)
+                # ok/done chuẩn theo ĐĨA (retry có thể làm lệch bộ đếm cộng dồn)
+                ok = len([i for i, _ in pages if _page_file(dest, i) is not None])
 
                 missing = [i for i, _ in pages if _page_file(dest, i) is None]
                 broken = [i for i in missing
@@ -832,6 +958,7 @@ def run(args):
 
                 if complete:
                     _mark_done(dest)
+                    core.gate.recover()   # 1 chương trọn vẹn = IP/CDN khỏe -> reset cầu dao
                     if upgrade:
                         # Tráo an toàn: cũ -> __trash (cùng ổ đĩa, rename là xong),
                         # tạm -> tên thật, rồi mới xóa rác. Crash điểm nào cũng còn
@@ -895,6 +1022,7 @@ def run(args):
             # Đóng dấu folder comix (Cách 1) — quét lại toàn bộ chương để số official/
             # tổng phản ánh đúng trạng thái sau lượt này.
             write_series_marker(out_root, slug)
+            img_client.close()
     except (core.Blocked, core.TooMany429) as e:
         print(f"\n!!! Dừng phiên: {e}", file=sys.stderr)
         print("Ảnh đã tải không mất. Chờ một lúc (429: ~1 giờ; 403/503/Cloudflare: "
