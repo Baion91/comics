@@ -124,7 +124,11 @@ cách chạy thật + decode thử ảnh.
   Newest/Oldest, END OF CHAPTER...); comment code + log terminal giữ tiếng Việt.
   **Trang chủ** 2 mục có header ô-icon kiểu Asura: **Bookmarked** (slider ngang
   `.frow`, icon sao vàng; card ghi chương đang đọc / chưa đọc thì chương đầu, dựng
-  lại client từ `FOLLOWDATA`+`BM` khi bấm bookmark) + **All Comics** (grid, icon
+  lại client từ `FOLLOWDATA`+`BM` khi bấm bookmark). **Thứ tự = thời điểm bấm
+  bookmark** (truyện bấm đầu đứng trái nhất; bỏ-rồi-bấm-lại về cuối) — server sắp
+  `follows` theo `ud["bookmarks"]` (mảng append theo lần bấm) và truyền `BM` theo
+  đúng thứ tự đó (KHÔNG `set()`); `renderFollows()` client duyệt theo `BM`, không
+  theo thứ tự lưới. + **All Comics** (grid, icon
   menu_book). Card = `<div>` chứa `<a.cardlink>`(bìa+`.ct` 1 dòng ellipsis+`.cm`
   "N chaps · status") + nút `.bkbtn` (Bookmark tím → Bookmarked nền xám/sao+chữ
   vàng). Trang truyện: bìa trái, cột phải title+meta + nút Bookmark ghim đáy

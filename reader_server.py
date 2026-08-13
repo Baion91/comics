@@ -1347,7 +1347,11 @@ def html_home(lib, user=None):
     admin = is_admin(user)
     ud = user_data(user["id"]) if user else _default_udata()
     bmset = set(ud["bookmarks"])                       # bookmark của tài khoản đang đăng nhập
-    follows = [s for s in ordered if s["id"] in bmset]
+    byid = {s["id"]: s for s in ordered}
+    # Hàng "Bookmarked" sắp theo THỨ TỰ BẤM (ud["bookmarks"] append theo lần bấm,
+    # bỏ-rồi-bấm-lại về cuối), KHÔNG theo thứ tự lưới. Bỏ sid không còn trong thư viện.
+    bmorder = [sid for sid in ud["bookmarks"] if sid in byid]
+    follows = [byid[sid] for sid in bmorder]
     slider = ('<section class="follows' + (' open' if follows else '') + '" id="follows">'
               + '<div class="follows-inner">'
               + sect_head("star", SECT_STAR_SVG, "Bookmarked")
@@ -1371,7 +1375,7 @@ def html_home(lib, user=None):
         followdata[s["id"]] = {"cover": cover_url(s), "title": s["title"],
                                "url": url, "label": label}
     body = ('<div class="wrap">' + account_header(user) + slider + grid + '</div>' + TOTOP_HTML
-            + f'<script>const FOLLOWDATA={js(followdata)};let BM={js(list(bmset))};'
+            + f'<script>const FOLLOWDATA={js(followdata)};let BM={js(bmorder)};'
             f'const LOGGEDIN={js(bool(user))};const ADMIN={js(admin)};</script>'
             f'<script>{LS_JS}</script><script>{ACCT_JS}</script><script>{HOME_JS}</script>'
             + (f'<script>{ADMIN_JS}</script>' if admin else ''))
@@ -1656,13 +1660,14 @@ HOME_JS = """
       '<div class="fcm">'+esc(d.label)+'</div>';
     return a;
   }
-  // đồng bộ hàng "Bookmarked" theo BM + thứ tự lưới, CHÈN/GỠ từng card
+  // đồng bộ hàng "Bookmarked" theo THỨ TỰ BẤM (BM), CHÈN/GỠ từng card
   // (không dựng lại innerHTML -> ảnh không tải lại/chớp). Đóng/mở mục co giãn mượt.
+  // BM giữ thứ tự bấm (afterToggle push cuối, bỏ-rồi-bấm-lại về cuối); lọc truyện
+  // không còn dữ liệu card.
   function renderFollows(){
     var sec=document.getElementById('follows'), row=document.getElementById('frow');
     if(!sec||!row) return;
-    var ids=[].map.call(grid.querySelectorAll('.card'),function(c){return c.dataset.sid;})
-      .filter(function(s){return BM.indexOf(s)>=0;});
+    var ids=BM.filter(function(s){return !!FOLLOWDATA[s];});
     if(ids.length===0){ sec.classList.remove('open'); return; }
     var idset={}; ids.forEach(function(s){idset[s]=1;});
     var have={};
