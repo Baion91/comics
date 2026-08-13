@@ -1271,9 +1271,11 @@ def sect_head(icon_cls, svg, title):
 
 
 def follow_card_html(s, progress=None):
-    url, label = continue_info(s, progress)
+    # Click card -> trang LIST CHƯƠNG của truyện (không nhảy thẳng vào chương).
+    # Nhãn .fcm vẫn hiện chương đang đọc dở / chương đầu (label từ continue_info).
+    _url, label = continue_info(s, progress)
     t = html.escape(s["title"])
-    return (f'<a class="fcard" data-sid="{html.escape(s["id"], quote=True)}" href="{url}">'
+    return (f'<a class="fcard" data-sid="{html.escape(s["id"], quote=True)}" href="{u("series", s["id"])}">'
             f'<img src="{cover_url(s)}" loading="lazy" alt="">'
             f'<div class="fct" title="{t}">{t}</div>'
             f'<div class="fcm">{html.escape(label)}</div></a>')
@@ -1371,9 +1373,10 @@ def html_home(lib, user=None):
     # dữ liệu để JS dựng lại slider khi bấm bookmark (không tải lại trang)
     followdata = {}
     for s in ordered:
-        url, label = continue_info(s, ud["progress"])
+        _url, label = continue_info(s, ud["progress"])
+        # url -> trang list chương (khớp follow_card_html), label giữ chương đang đọc dở
         followdata[s["id"]] = {"cover": cover_url(s), "title": s["title"],
-                               "url": url, "label": label}
+                               "url": u("series", s["id"]), "label": label}
     body = ('<div class="wrap">' + account_header(user) + slider + grid + '</div>' + TOTOP_HTML
             + f'<script>const FOLLOWDATA={js(followdata)};let BM={js(bmorder)};'
             f'const LOGGEDIN={js(bool(user))};const ADMIN={js(admin)};</script>'
