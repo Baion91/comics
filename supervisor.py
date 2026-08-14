@@ -41,6 +41,14 @@ CLOUDFLARED = os.path.join(META_DIR, "cloudflared.exe")
 QUEUE_FILE = os.path.join(META_DIR, "bot-download-queue.json")
 DL_LOG_FILE = os.path.join(META_DIR, "tai-run.log")   # output downloader (tail xem tiến độ)
 DL_LOG_MAX = 2_000_000    # cắt log khi vượt ~2MB
+# Watchlist auto-check chương mới. watchlist.json = 1 NƠI quản lý danh sách truyện tự
+# check (gitignore .reader-meta/* nên sống qua git reset của cap-nhat.bat). check_updates.py
+# chạy dạng SUBPROCESS (cô lập requests/providers khỏi supervisor stdlib) và ghi kết quả
+# ra CHECK_RESULT_FILE để supervisor đọc lại (KHÔNG parse stdout — _request có thể in 429/503).
+WATCHLIST_FILE = os.path.join(META_DIR, "watchlist.json")
+CHECK_SCRIPT = os.path.join(BASE_DIR, "check_updates.py")
+CHECK_RESULT_FILE = os.path.join(META_DIR, "watch-check-result.json")
+CHECK_TIMEOUT = 1500      # giây tối đa cho 1 lần quét cả watchlist
 
 # Bắt link tunnel: subdomain NGẪU NHIÊN .trycloudflare.com. Nhóm 1 = subdomain để LOẠI
 # 'api' — 'api.trycloudflare.com' là host cloudflared in trong DÒNG LỖI (không phải link);
@@ -98,6 +106,8 @@ def load_config():
     cfg.setdefault("bot_token", "")
     cfg.setdefault("reader_port", 8080)
     cfg.setdefault("heartbeat_url", "")   # URL ping healthchecks.io (trống = tắt heartbeat)
+    cfg.setdefault("check_hour", 3)       # giờ (0-23) chạy auto-check chương mới hằng ngày
+    cfg.setdefault("check_min", 0)        # phút (0-59)
     # chat_ids: DANH SÁCH người nhận (cả 2 anh em). Tự gom khi ai nhắn bot.
     ids = cfg.get("chat_ids")
     if not isinstance(ids, list):
@@ -173,7 +183,12 @@ HELP_TEXT = (
     "/killnow — chỉ dừng truyện đang tải (của bạn)\n"
     "/clearq — chỉ xoá hàng chờ (của bạn)\n"
     "/stopall — dừng tất cả + xoá sạch hàng chờ (mọi người)\n"
-    "/update — cập nhật code + restart reader\n"
+    "/update — cập nhật code + restart reader\n\n"
+    "Tự động check chương mới:\n"
+    "/watchlist — xem danh sách truyện được auto-check\n"
+    "/watch <link> — thêm truyện vào danh sách\n"
+    "/unwatch <số|link> — bỏ truyện khỏi danh sách\n"
+    "/checknow [link] — kiểm tra chương mới NGAY (tất cả, hoặc 1 truyện)\n"
     "/adminlist — xem chat đã đăng ký / admin\n"
     "/adminclaim — nhận quyền admin (khi chưa có ai)\n"
     "/adminadd <id> — thêm admin\n"
@@ -223,6 +238,8 @@ class Supervisor:
         self._dl_cur = None         # job dict đang tải — để biết 'của ai'
         self._dl_cancelled = False  # cờ: lần kill này là do người dùng huỷ (không phải lỗi)
         self._dl_logpos = 0         # offset đầu log của job đang chạy — /trangthai đọc tiến độ
+        self._wl_lock = threading.Lock()   # bảo vệ ghi watchlist.json (supervisor = writer duy nhất)
+        self._checking = False             # đang chạy 1 lần auto-check -> chặn chạy chồng
 
     def reader_url(self):
         return f"http://127.0.0.1:{self.cfg.get('reader_port', 8080)}"
@@ -367,6 +384,10 @@ class Supervisor:
             {"command": "clearq", "description": "Chỉ xoá hàng chờ của bạn (admin)"},
             {"command": "stopall", "description": "Dừng tất cả + xoá sạch hàng chờ (admin)"},
             {"command": "update", "description": "Cập nhật code (admin)"},
+            {"command": "watchlist", "description": "Xem danh sách truyện auto-check (admin)"},
+            {"command": "watch", "description": "Thêm truyện vào danh sách: /watch <link> (admin)"},
+            {"command": "unwatch", "description": "Bỏ truyện: /unwatch <số|link> (admin)"},
+            {"command": "checknow", "description": "Kiểm tra chương mới ngay (admin)"},
             {"command": "adminlist", "description": "Xem chat đã đăng ký / admin"},
             {"command": "adminclaim", "description": "Nhận quyền admin (khi chưa có ai)"},
             {"command": "adminadd", "description": "Thêm admin: /adminadd <id>"},
@@ -416,6 +437,14 @@ class Supervisor:
                 "disable_web_page_preview": "true"})
         elif text.startswith("/update"):
             self._run_bg(self.handle_update, token, cid)
+        elif text.startswith("/watchlist"):   # PHẢI xét trước /watch (tiền tố trùng)
+            self.handle_watchlist(token, cid)
+        elif text.startswith("/watch"):
+            self.handle_watch(token, cid, raw)
+        elif text.startswith("/unwatch"):
+            self.handle_unwatch(token, cid, raw)
+        elif text.startswith("/checknow"):
+            self.handle_checknow(token, cid, raw)
         elif text.startswith("/whoami"):
             tg_api(token, "sendMessage", {"chat_id": cid,
                 "text": f"chat_id của bạn: {cid}"})
@@ -678,6 +707,25 @@ class Supervisor:
                 self._save_jobs_locked()
             log(f"Nạp lại {len(loaded)} truyện trong hàng đợi từ phiên trước -> tải tiếp.")
 
+    def _enqueue_jobs(self, pairs):
+        """Thêm [(url, cid), ...] vào hàng đợi tải. Chống trùng: URL đã có (pending HOẶC
+        đang chạy) thì bỏ. Trả (added, dup). Dùng chung cho /tai và auto-check chương mới."""
+        added, dup = [], 0
+        with self._dlq_lock:
+            have = {j["url"] for j in self._jobs}
+            for url, cid in pairs:
+                if url in have:
+                    dup += 1
+                else:
+                    self._jobs.append({"url": url, "cid": cid, "state": "pending",
+                                       "resumed": False})
+                    have.add(url)
+                    added.append(url)
+            if added:
+                self._save_jobs_locked()
+                self._dlq_lock.notify()   # đánh thức worker
+        return added, dup
+
     # --- Tải truyện qua bot (/tai <url...>) -> hàng đợi, worker chạy nền ----
     def handle_tai(self, token, cid, raw):
         if not self._is_admin(cid):
@@ -688,22 +736,7 @@ class Supervisor:
             tg_api(token, "sendMessage", {"chat_id": cid,
                 "text": "Gửi: /tai <link truyện> [link2 ...]"})
             return
-        with self._dlq_lock:
-            # Chống trùng: URL đã ở trong hàng (pending HOẶC đang chạy) thì bỏ qua —
-            # thêm lại chỉ tốn 1 lượt khởi động downloader + quét mạng vô ích.
-            have = {j["url"] for j in self._jobs}
-            added, dup = [], 0
-            for u in urls:
-                if u in have:
-                    dup += 1
-                else:
-                    self._jobs.append({"url": u, "cid": cid, "state": "pending",
-                                       "resumed": False})
-                    have.add(u)
-                    added.append(u)
-            if added:
-                self._save_jobs_locked()
-                self._dlq_lock.notify()   # đánh thức worker
+        added, dup = self._enqueue_jobs([(u, cid) for u in urls])
         parts = []
         if added:
             parts.append(f"📥 Đã thêm {len(added)} truyện vào hàng đợi.")
@@ -952,6 +985,361 @@ class Supervisor:
             if keep and self.stop.wait(NET_RECHECK):   # backoff trước khi thử lại job này
                 return
 
+    # --- Watchlist + auto-check chương mới ---------------------------------
+    @staticmethod
+    def _fmt_num(n):
+        """50.0 -> 50 ; 12.5 -> 12.5 ; None/khác -> nguyên trạng (hiển thị số chương)."""
+        if n is None:
+            return "?"
+        try:
+            return int(n) if float(n).is_integer() else n
+        except (TypeError, ValueError):
+            return n
+
+    def _load_watchlist(self):
+        """Đọc watchlist.json -> dict {series:[...], last_run:"YYYY-MM-DD"}. Không lỗi
+        khi file thiếu/hỏng (trả cấu trúc rỗng). Supervisor là NGƯỜI GHI DUY NHẤT."""
+        try:
+            with open(WATCHLIST_FILE, encoding="utf-8") as f:
+                data = json.load(f)
+        except (OSError, ValueError):
+            data = {}
+        if not isinstance(data, dict):
+            data = {}
+        if not isinstance(data.get("series"), list):
+            data["series"] = []
+        data.setdefault("last_run", "")
+        return data
+
+    def _save_watchlist_locked(self, data):
+        """Ghi watchlist.json (nguyên tử). PHẢI đang giữ self._wl_lock khi gọi."""
+        try:
+            os.makedirs(META_DIR, exist_ok=True)
+            tmp = WATCHLIST_FILE + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=1)
+            os.replace(tmp, WATCHLIST_FILE)
+        except OSError as e:
+            log(f"! Không ghi được watchlist: {e}")
+
+    def _update_watchlist(self, fn):
+        """Đọc-sửa-ghi watchlist trong khoá (đọc+ghi liền nhau để khỏi giẫm lệnh khác).
+        `fn(data)` sửa data tại chỗ; giá trị fn trả về được chuyển tiếp cho người gọi."""
+        with self._wl_lock:
+            data = self._load_watchlist()
+            result = fn(data)
+            self._save_watchlist_locked(data)
+        return result
+
+    def _mark_checked_today(self):
+        today = datetime.now().strftime("%Y-%m-%d")
+
+        def _set(d):
+            d["last_run"] = today
+        self._update_watchlist(_set)
+
+    def _default_notify_cid(self):
+        """Chat nhận báo tải cho truyện auto-check thiếu 'added_by': admin đầu, rồi chat đầu."""
+        admins = self._admins()
+        if admins:
+            return admins[0]
+        ids = self.cfg.get("chat_ids") or []
+        return ids[0] if ids else None
+
+    def handle_watchlist(self, token, cid):
+        if not self._is_admin(cid):
+            tg_api(token, "sendMessage", {"chat_id": cid, "text": "⛔ Bạn không phải admin."})
+            return
+        wl = self._load_watchlist()
+        series = wl.get("series", [])
+        if not series:
+            tg_api(token, "sendMessage", {"chat_id": cid,
+                "text": "📭 Watchlist trống.\nThêm bằng: /watch <link truyện>"})
+            return
+        lines = ["📚 Đang auto-check (mỗi ngày):"]
+        for i, s in enumerate(series, 1):
+            title = s.get("title") or self._slug(s.get("url", ""))
+            mx = s.get("last_max")
+            info = f" — mới nhất ch.{self._fmt_num(mx)}" if mx is not None else ""
+            flags = ""
+            if s.get("provider"):
+                flags += f" [{s['provider']}]"
+            if s.get("paused"):
+                flags += " ⏸"
+            lines.append(f"{i}. {title}{info}{flags}")
+        hh = int(self.cfg.get("check_hour", 3))
+        mm = int(self.cfg.get("check_min", 0))
+        lines.append("")
+        lines.append(f"⏰ Giờ check: {hh:02d}:{mm:02d}"
+                     + (f" · lần cuối {wl.get('last_run')}" if wl.get("last_run") else ""))
+        lines.append("/watch <link> thêm · /unwatch <số|link> bỏ · /checknow kiểm ngay")
+        tg_api(token, "sendMessage", {"chat_id": cid, "text": "\n".join(lines),
+            "disable_web_page_preview": "true"})
+
+    def handle_watch(self, token, cid, raw):
+        if not self._is_admin(cid):
+            tg_api(token, "sendMessage", {"chat_id": cid, "text": "⛔ Bạn không phải admin."})
+            return
+        urls = [w for w in raw.split()[1:] if w.startswith("http")]
+        if not urls:
+            tg_api(token, "sendMessage", {"chat_id": cid,
+                "text": "Gửi: /watch <link truyện> [link2 ...]"})
+            return
+        now = datetime.now().strftime("%Y-%m-%d %H:%M")
+
+        def _add(d):
+            have = {s.get("url") for s in d["series"]}
+            added = []
+            for u in urls:
+                if u in have:
+                    continue
+                d["series"].append({"url": u, "title": self._slug(u), "provider": "",
+                                    "added_by": str(cid), "added_at": now,
+                                    "last_check": "", "last_max": None, "paused": False})
+                have.add(u)
+                added.append(u)
+            return added
+        added = self._update_watchlist(_add)
+        dup = len(urls) - len(added)
+        parts = []
+        if added:
+            parts.append(f"➕ Đã thêm {len(added)} truyện vào watchlist.")
+        if dup:
+            parts.append(f"⏭ {dup} đã có sẵn trong watchlist.")
+        if added:
+            parts.append("Đang kiểm tra chương mới cho truyện vừa thêm "
+                         "(có chương mới sẽ tự tải)...")
+        tg_api(token, "sendMessage", {"chat_id": cid, "text": "\n".join(parts),
+            "disable_web_page_preview": "true"})
+        if added:
+            self._run_bg(self.run_check, cid, added, False)
+
+    def handle_unwatch(self, token, cid, raw):
+        if not self._is_admin(cid):
+            tg_api(token, "sendMessage", {"chat_id": cid, "text": "⛔ Bạn không phải admin."})
+            return
+        parts = raw.split()
+        if len(parts) < 2:
+            tg_api(token, "sendMessage", {"chat_id": cid,
+                "text": "Gửi: /unwatch <số thứ tự trong /watchlist | link>"})
+            return
+        arg = parts[1]
+
+        def _rm(d):
+            series = d["series"]
+            idx = None
+            if arg.isdigit():
+                i = int(arg) - 1
+                if 0 <= i < len(series):
+                    idx = i
+            else:
+                for i, s in enumerate(series):
+                    if s.get("url") == arg or arg in (s.get("url") or ""):
+                        idx = i
+                        break
+            return series.pop(idx) if idx is not None else None
+        removed = self._update_watchlist(_rm)
+        if removed:
+            tg_api(token, "sendMessage", {"chat_id": cid,
+                "text": f"➖ Đã bỏ khỏi watchlist:\n{removed.get('title') or removed.get('url')}",
+                "disable_web_page_preview": "true"})
+        else:
+            tg_api(token, "sendMessage", {"chat_id": cid,
+                "text": "Không tìm thấy truyện đó (xem /watchlist để lấy số thứ tự)."})
+
+    def handle_checknow(self, token, cid, raw):
+        if not self._is_admin(cid):
+            tg_api(token, "sendMessage", {"chat_id": cid, "text": "⛔ Bạn không phải admin."})
+            return
+        parts = raw.split()
+        only = [parts[1]] if len(parts) > 1 and parts[1].startswith("http") else None
+        tg_api(token, "sendMessage", {"chat_id": cid,
+            "text": "🔍 Đang kiểm tra chương mới "
+                    + ("(1 truyện)..." if only else "(cả watchlist)...")})
+        self._run_bg(self.run_check, cid, only, False)
+
+    def _read_check_result(self):
+        try:
+            with open(CHECK_RESULT_FILE, encoding="utf-8") as f:
+                data = json.load(f)
+        except (OSError, ValueError):
+            return None
+        if not isinstance(data, dict) or not isinstance(data.get("results"), list):
+            return None
+        return data
+
+    def run_check(self, cid=None, only_urls=None, scheduled=False):
+        """Chạy check_updates.py (subprocess) rồi enqueue truyện có chương mới + báo tóm
+        tắt. cid=None -> báo cho mọi người (notify_all, dùng cho lần chạy hẹn giờ);
+        có cid -> chỉ trả lời người gọi (/checknow, /watch). scheduled=True -> đánh dấu
+        đã chạy hôm nay (để watch_loop khỏi chạy lại)."""
+        token = self.cfg.get("bot_token")
+        if self._checking:
+            if cid is not None and token:
+                tg_api(token, "sendMessage", {"chat_id": cid,
+                    "text": "⏳ Đang có một lần kiểm tra chạy dở — đợi nó xong đã."})
+            return
+        self._checking = True
+        try:
+            if _net_status() != "ok":
+                log("! Auto-check: mạng chưa sẵn sàng — hoãn.")
+                if cid is not None and token:
+                    tg_api(token, "sendMessage", {"chat_id": cid,
+                        "text": "⚠️ Mạng chưa sẵn sàng — thử lại sau."})
+                return   # scheduled: KHÔNG mark last_run -> watch_loop thử lại phút sau
+            wl = self._load_watchlist()
+            active = [s for s in wl.get("series", []) if not s.get("paused")]
+            if only_urls:
+                want = set(only_urls)
+                active = [s for s in active if s.get("url") in want]
+            if not active:
+                if cid is not None and token:
+                    tg_api(token, "sendMessage", {"chat_id": cid,
+                        "text": ("📭 Watchlist trống — thêm bằng /watch <link>."
+                                 if not only_urls else
+                                 "Truyện chưa có trong watchlist — dùng /watch để thêm trước.")})
+                if scheduled:
+                    self._mark_checked_today()
+                return
+            cmd = [sys.executable, "-u", CHECK_SCRIPT]
+            for u in (only_urls or []):
+                cmd += ["--only", u]
+            log(f"Auto-check: quét {len(active)} truyện ...")
+            try:
+                subprocess.run(cmd, cwd=BASE_DIR, creationflags=NO_WINDOW,
+                               timeout=CHECK_TIMEOUT, stdout=subprocess.DEVNULL,
+                               stderr=subprocess.DEVNULL)
+            except subprocess.TimeoutExpired:
+                log("! Auto-check quá thời gian.")
+                if cid is not None and token:
+                    tg_api(token, "sendMessage", {"chat_id": cid,
+                        "text": "❌ Kiểm tra quá thời gian."})
+                return
+            payload = self._read_check_result()
+            if payload is None:
+                log("! Auto-check: không đọc được kết quả.")
+                if cid is not None and token:
+                    tg_api(token, "sendMessage", {"chat_id": cid,
+                        "text": "❌ Không đọc được kết quả kiểm tra."})
+                return
+            self._apply_check_results(payload, cid)
+            if scheduled:
+                self._mark_checked_today()
+        finally:
+            self._checking = False
+
+    def _apply_check_results(self, payload, cid):
+        """Cập nhật watchlist theo kết quả check, enqueue truyện cần tải, gửi tóm tắt."""
+        results = payload.get("results", [])
+        supported = payload.get("supported", [])
+        token = self.cfg.get("bot_token")
+        now = datetime.now().strftime("%Y-%m-%d %H:%M")
+        wl0 = self._load_watchlist()
+        added_by = {s.get("url"): s.get("added_by") for s in wl0.get("series", [])}
+        by_url = {r["url"]: r for r in results}
+        unsupported = {r["url"] for r in results if r.get("status") == "unsupported"}
+
+        def _upd(d):
+            keep = []
+            for s in d.get("series", []):
+                u = s.get("url")
+                if u in unsupported:
+                    continue    # site chưa hỗ trợ -> bỏ khỏi watchlist (không check được)
+                r = by_url.get(u)
+                if r:
+                    s["last_check"] = now
+                    if r.get("status") == "ok":
+                        s["last_max"] = r.get("listed_max")
+                        if r.get("title"):
+                            s["title"] = r["title"]
+                    if r.get("provider"):
+                        s["provider"] = r["provider"]
+                keep.append(s)
+            d["series"] = keep
+        self._update_watchlist(_upd)
+
+        # Enqueue: comix (mỗi ngày) + provider thường còn thiếu chương (mới/khoá/dở).
+        pairs = []
+        for r in results:
+            st = r.get("status")
+            if st == "comix" or (st == "ok" and r.get("missing_count", 0) > 0):
+                job_cid = added_by.get(r["url"]) or cid or self._default_notify_cid()
+                pairs.append((r["url"], job_cid))
+        added, dup = self._enqueue_jobs(pairs) if pairs else ([], 0)
+
+        text = self._summary_text(results, supported, added, dup)
+        if cid is not None:
+            if token:
+                tg_api(token, "sendMessage", {"chat_id": cid, "text": text,
+                    "disable_web_page_preview": "true"})
+        else:
+            notify_all(self.cfg, text)
+
+    def _summary_text(self, results, supported, added, dup):
+        ok = [r for r in results if r.get("status") == "ok"]
+        new = [r for r in ok if r.get("new_since_last") and r.get("missing_count", 0) > 0]
+        catching = [r for r in ok
+                    if r.get("missing_count", 0) > 0 and not r.get("new_since_last")]
+        uptodate = [r for r in ok if r.get("missing_count", 0) == 0]
+        comix = [r for r in results if r.get("status") == "comix"]
+        errs = [r for r in results if r.get("status") == "error"]
+        unsup = [r for r in results if r.get("status") == "unsupported"]
+
+        def _names(rs, n=8):
+            out = ", ".join(r.get("title") or r.get("url") for r in rs[:n])
+            return out + (" …" if len(rs) > n else "")
+
+        lines = [f"🔍 Đã kiểm tra {len(results)} truyện."]
+        if new:
+            lines.append("")
+            lines.append("🆕 Chương mới:")
+            for r in new[:20]:
+                lines.append(f"• {r['title']} → ch.{self._fmt_num(r.get('listed_max'))}")
+        if catching:
+            lines.append(f"⤵️ Tải tiếp/bù ({len(catching)}): {_names(catching)}")
+        if comix:
+            lines.append(f"📘 comix (kiểm khi tải): {len(comix)}")
+        lines.append(f"✅ Không đổi: {len(uptodate)}")
+        if errs:
+            lines.append(f"⚠️ Lỗi kiểm tra ({len(errs)}): {_names(errs)}")
+        if unsup:
+            lines.append(f"⛔ Đã bỏ (site chưa hỗ trợ): {_names(unsup)}")
+            lines.append("   Đang hỗ trợ: " + ", ".join(supported))
+        lines.append("")
+        if added:
+            lines.append(f"📥 Thêm {len(added)} truyện vào hàng đợi tải"
+                         + (f" (bỏ {dup} đã có trong hàng)." if dup else "."))
+        elif dup:
+            lines.append(f"📥 {dup} truyện cần tải đã có sẵn trong hàng đợi.")
+        else:
+            lines.append("📥 Không có gì cần tải thêm.")
+        return "\n".join(lines)
+
+    def watch_loop(self):
+        """Auto-check chương mới 1 lần/ngày vào giờ hẹn (check_hour:check_min, giờ server).
+        Bù nếu server tắt lúc đến hẹn: khởi động lại sau giờ đó mà hôm nay chưa chạy ->
+        chạy ngay. Mạng chưa sẵn sàng -> run_check tự hoãn (không mark) -> thử lại phút sau."""
+        while not self.stop.is_set():
+            if self.stop.wait(60):
+                return
+            try:
+                hour = int(self.cfg.get("check_hour", 3))
+                minute = int(self.cfg.get("check_min", 0))
+            except (TypeError, ValueError):
+                hour, minute = 3, 0
+            now = datetime.now()
+            today = now.strftime("%Y-%m-%d")
+            if self._load_watchlist().get("last_run") == today:
+                continue
+            target = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+            if now < target:
+                continue
+            log("Đến giờ auto-check chương mới hằng ngày.")
+            try:
+                self.run_check(cid=None, only_urls=None, scheduled=True)
+            except Exception as e:
+                log(f"! Lỗi auto-check: {e}")
+
     def run(self):
         log("=== Supervisor khởi động ===")
         try:
@@ -968,7 +1356,8 @@ class Supervisor:
                    threading.Thread(target=self.run_tunnel, daemon=True),
                    threading.Thread(target=self.telegram_loop, daemon=True),
                    threading.Thread(target=self.download_loop, daemon=True),
-                   threading.Thread(target=self.heartbeat_loop, daemon=True)]
+                   threading.Thread(target=self.heartbeat_loop, daemon=True),
+                   threading.Thread(target=self.watch_loop, daemon=True)]
         for t in threads:
             t.start()
         try:

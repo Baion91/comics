@@ -170,6 +170,11 @@ cách chạy thật + decode thử ảnh.
   **tải tiếp qua restart**; job xong/lỗi/huỷ-lệnh bị xoá, job bị restart-giết ở lại → resume),
   `tai-run.log` (output tiến trình `comic_downloader.py` do bot chạy — ghi thẳng ra file thay
   PIPE để supervisor chết không vỡ pipe + tail xem real-time; tự cắt khi >2MB),
+  `watchlist.json` (**danh sách truyện auto-check chương mới**, 1 nơi quản lý qua Telegram:
+  `{last_run:"YYYY-MM-DD", series:[{url,title,provider,added_by,added_at,last_check,last_max,paused}]}`;
+  supervisor ghi độc quyền, `check_updates.py` chỉ đọc),
+  `watch-check-result.json` (kết quả 1 lần dò của `check_updates.py` để supervisor đọc lại:
+  `{results:[{url,title,provider,status,listed_max,done_max,missing_count,new_since_last,error}], supported:[...]}`),
   `spreads.json` (cặp trang đôi đã ghép {left,right} theo sid/chương),
   `series-meta.json` ({sid: {status: complete|ongoing, order: N, title?: "tên hiển thị"}},
   key=tên folder; status thiếu=ongoing; `order` = thứ tự Home, sửa tay được, truyện mới
@@ -204,6 +209,26 @@ cách chạy thật + decode thử ảnh.
   (`NET_ERR_MARKERS` hoặc offline) → giữ `pending` thử lại, KHÔNG xoá (tránh mất hàng đợi khi mạng chập).
   **Heartbeat** (`heartbeat_loop`): mỗi 5' ping `heartbeat_url` (healthchecks.io) RA ngoài →
   dịch vụ ngoài báo khi server sập (kênh độc lập, sống cả khi bot câm); trống = tắt.
+  **Auto-check chương mới** (`watch_loop`, 14/08/2026): mỗi ngày 1 lần lúc `check_hour:check_min`
+  (mặc định 03:00 giờ server; bù nếu server tắt lúc đến hẹn — dò `last_run` trong watchlist so ngày
+  hôm nay) chạy `check_updates.py` (subprocess) → `_apply_check_results`: cập nhật watchlist
+  (`last_check`/`last_max`/`title`/`provider`, BỎ truyện site chưa hỗ trợ) + enqueue truyện cần tải
+  vào ĐÚNG hàng đợi `/tai` (`_enqueue_jobs` dùng chung với `handle_tai`) + báo tóm tắt Telegram
+  (`_summary_text`: 🆕 chương mới / ⤵️ tải bù / 📘 comix / ✅ không đổi / ⚠️ lỗi / ⛔ chưa hỗ trợ).
+  Lệnh `/watchlist /watch /unwatch /checknow` (admin). Supervisor là NGƯỜI GHI DUY NHẤT
+  `watchlist.json` (khoá `_wl_lock`, `_update_watchlist` đọc-sửa-ghi nguyên khối). enqueue auto đặt
+  `cid` = `added_by` của truyện (người thêm nhận tin bắt đầu/xong tải). `_checking` chặn chạy chồng.
+- `check_updates.py` — **dò chương mới cho watchlist, chạy dạng SUBPROCESS** (supervisor gọi; KHÔNG
+  import vào supervisor để giữ nó stdlib-only + cô lập lỗi provider/mạng). Đọc `watchlist.json`, với
+  mỗi truyện `resolve_provider` (bản riêng, trả None thay vì `sys.exit` khi site lạ) → `list_chapters`
+  (peek CHỈ metadata, KHÔNG tải ảnh, qua PoliteGate chung) → so tập số chương với ĐĨA
+  (`done_numbers`: folder `Chapter N` có `.done` **HOẶC chứa ảnh** — bắt cả thư viện cũ thiếu `.done`)
+  → `missing_count` + `listed_max`/`done_max` + `new_since_last` (max tăng so `last_max` cũ). Status:
+  `ok` (thiếu>0 → supervisor enqueue) / `comix` (luôn enqueue, không peek được — Chromium) /
+  `unsupported` (site chưa provider) / `error` (list rỗng/lỗi, KHÔNG đụng state). Ghi kết quả ra
+  `.reader-meta/watch-check-result.json` (supervisor đọc lại — KHÔNG parse stdout vì `_request` in
+  429/503 ra stdout). Cờ `--only <url>` (lặp được) để check 1 vài truyện (dùng cho `/checknow`,
+  `/watch` sau khi thêm). KHÔNG ghi watchlist (supervisor ghi).
 - **Auto-start / sống qua reboot** (Phương án A, 12/08/2026): `server-BAT-tudong.bat` đăng ký task
   Windows `ToonyServer` (`schtasks /sc onlogon`) chạy `supervisor.py` khi ĐĂNG NHẬP — bằng **đường
   dẫn TUYỆT ĐỐI** tới `python.exe` (task onlogon không có PATH → tên trần `python`/`pythonw` lỗi

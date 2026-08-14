@@ -1,9 +1,22 @@
-# Handoff — cập nhật lần cuối: 2026-08-13 (Bookmarked ở Home sắp theo thời điểm bấm)
+# Handoff — cập nhật lần cuối: 2026-08-14 (Auto-check chương mới hằng ngày qua watchlist)
 
 > Kiến trúc ổn định (reader, provider, comix, supervisor, mạng…) nằm ở `.claude/ARCHITECTURE.md`.
 > File này chỉ ghi TRẠNG THÁI hiện tại + việc đang dở.
 
 ## Đang làm / dở dang
+- **[14/08] Auto-check chương mới hằng ngày — ĐÃ code + push, CHƯA nghiệm thu LIVE trên server.**
+  Watchlist `.reader-meta/watchlist.json` (1 nơi quản lý, gitignore) + script mới `check_updates.py`
+  (subprocess, cô lập requests/providers khỏi supervisor stdlib): peek `list_chapters` (chỉ metadata,
+  KHÔNG tải ảnh) so với ĐĨA (folder `Chapter N` có `.done` HOẶC chứa ảnh) → ra tập chương thiếu.
+  Supervisor thêm luồng `watch_loop` (chạy 1 lần/ngày lúc `check_hour:check_min`, mặc định 03:00, bù
+  nếu server tắt lúc đến hẹn) → gọi `check_updates.py` → báo tóm tắt Telegram + enqueue truyện có
+  chương mới vào ĐÚNG hàng đợi `/tai`. Lệnh mới: `/watchlist /watch /unwatch /checknow`. comix =
+  enqueue mỗi ngày (không peek rẻ được, loop comix tự lo new + "v"-tick upgrade). Site chưa hỗ trợ →
+  `/watch` báo "chưa hỗ trợ", không nhận. **Đã test dev**: unsupported/comix/paused path OK; peek thật
+  Asura Overgeared (334 ch, đĩa 20 → thiếu 315) OK; `done_numbers` đếm đúng thư viện CŨ thiếu `.done`
+  (Solo Leveling 201, Worn And Torn 243). **Nghiệm thu LIVE**: sửa `supervisor.py` nên phải deploy
+  bằng `cap-nhat.bat` + chạy lại `server-BAT-tudong.bat` (KHÔNG chỉ `/update`); rồi `/watch <link>`
+  vài bộ → `/watchlist` → `/checknow` xem tóm tắt + hàng đợi chạy.
 - **[12/08] Auto-start phương án A: server tự lên sau reboot KHÔNG cần gõ mật khẩu — ĐÃ code,
   CHƯA nghiệm thu LIVE.** Task `ToonyServer` (onlogon) đổi sang `python.exe` (có cửa sổ log) +
   đường dẫn tuyệt đối (suy từ `pythonw.exe` đã resolve); thêm `server-AUTOLOGIN.bat` (Sysinternals
@@ -33,6 +46,20 @@
 - **[10/08] Tool LÀM NÉT Real-ESRGAN — ĐÃ push. Tích hợp tự động vào `/tai` CHƯA làm.**
 
 ## Quyết định gần đây (mới nhất trước)
+- **14/08: Dò chương mới = so `list_chapters` với ĐĨA, KHÔNG lưu `last_max` làm chuẩn** — vì chương
+  khoá premium được site LIỆT KÊ nhưng chưa tải được: nếu chuẩn là `last_max` thì max không tăng →
+  kẹt, không bao giờ thử lại. So với đĩa thì chương chưa có ảnh luôn "thiếu" → tự thử lại tới khi mở
+  khoá. `last_max` CHỈ để highlight "🆕 chương mới" trong noti (số cao nhất tăng so lần trước).
+- **14/08: "Đã có trên đĩa" = folder chứa ẢNH, không chỉ `.done`** — thư viện CŨ (Solo Leveling,
+  Worn And Torn…) đủ ảnh nhưng THIẾU marker `.done` (tải trước khi có cơ chế đó); nếu chỉ xét `.done`
+  sẽ báo nhầm "thiếu cả bộ" rồi enqueue tải lại vô ích. Checker chỉ lo DÒ CHƯƠNG MỚI, việc soát
+  đủ-trang là của downloader khi thực sự tải.
+- **14/08: comix enqueue mỗi ngày (không peek)** — comix không có peek rẻ (phải mở Chromium) và số
+  chương KHÔNG phản ánh việc bản "v" tick thay scan; chỉ loop comix mới quyết đúng new/upgrade/skip →
+  cứ đổ vào hàng đợi hằng ngày, nó tự bỏ qua `.done` + tự nâng cấp. Đánh đổi: mở Chromium ~1-2'/ngày.
+- **14/08: `check_updates.py` là SUBPROCESS, không import vào supervisor** — giữ supervisor stdlib-only
+  (bền); mọi lỗi provider/mạng cô lập trong tiến trình con. Kết quả ghi ra `watch-check-result.json`
+  (KHÔNG parse stdout vì `_request` in 429/503 ra stdout). Supervisor là NGƯỜI GHI DUY NHẤT watchlist.
 - **13/08: Click card Bookmarked → trang LIST CHƯƠNG** (trước: nhảy thẳng chương đang đọc/mới nhất).
   Đổi `href` trong `follow_card_html` + `FOLLOWDATA.url` sang `u("series",sid)`; nhãn `.fcm` giữ
   nguyên (label chương đang đọc dở từ `continue_info`).
@@ -67,6 +94,11 @@
 - 09/08: **Chống crash tầng C downloader** (`faulthandler`+breadcrumb+chặn bom) + `.bat` báo trung thực.
 
 ## Việc tiếp theo
+- **[Auto-check nghiệm thu LIVE]** Server: `cap-nhat.bat` → **chạy lại `server-BAT-tudong.bat`**
+  (đổi supervisor phải restart, `/update` không nạp lại supervisor) → `/watch <link>` vài bộ đang
+  theo dõi → `/watchlist` xác nhận có tên + provider + "mới nhất ch.N" → `/checknow` xem tóm tắt +
+  hàng đợi tải chạy. Chỉnh giờ check qua `check_hour`/`check_min` trong `notify-config.json` nếu muốn
+  khác 03:00. Sau 1 đêm: xác nhận có tin tóm tắt "🔍 Đã kiểm tra N truyện…" đúng giờ.
 - **[Auto-start A nghiệm thu]** Trên server: `cap-nhat.bat` → chạy lại `server-BAT-tudong.bat` (đăng
   ký lại task bằng `python.exe`) → `server-AUTOLOGIN.bat` gõ pass (Enable) → reboot không đụng gì →
   xác nhận cửa sổ log "ToonyServer" hiện + Telegram link mới + heartbeat 🟢 + `/trangthai` trả lời.

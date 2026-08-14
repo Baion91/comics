@@ -362,6 +362,9 @@ khi đăng nhập Windows, tự tạo link đọc từ xa và báo qua Telegram.
     `/killnow` **chỉ** dừng truyện đang tải · `/clearq` **chỉ** xoá hàng chờ · `/stopall`
     dừng tất cả + xoá **sạch** hàng chờ (của mọi người). `/stop`/`/killnow`/`/clearq` chỉ
     đụng request **do chính bạn** gửi; dừng truyện của người kia thì dùng `/stopall`.
+  - **Tự động check chương mới** (admin): `/watchlist` xem danh sách truyện đang theo dõi ·
+    `/watch <link>` thêm truyện · `/unwatch <số|link>` bỏ · `/checknow [link]` kiểm tra
+    NGAY (bỏ trống = cả danh sách; kèm link = 1 truyện).
 - **`/tai` tải TUẦN TỰ, 1 hàng đợi CHUNG cho mọi admin**: `/tai` của **bất kỳ admin nào** đều
   đổ vào **cùng 1 hàng đợi**, chỉ **1 truyện tải mỗi lúc**, theo thứ tự **vào trước chạy trước**
   (không phân biệt ai gửi). Cố ý 1 luồng để **giữ nhịp chống chặn IP** (2 truyện song song =
@@ -370,6 +373,18 @@ khi đăng nhập Windows, tự tạo link đọc từ xa và báo qua Telegram.
   ngoài hàng đợi bot nên chạy **song song** với bot, gấp đôi request → dễ bị chặn IP.
 - **Huỷ xong tải lại vẫn an toàn**: chương đã tải xong được đánh dấu `.done`, nên lần sau
   `/tai` lại đúng link đó sẽ **tự bỏ qua chương cũ**, chỉ tải tiếp phần còn dở.
+- **Tự động check chương mới hằng ngày** (mới): bot giữ **1 danh sách theo dõi** (watchlist,
+  ở `.reader-meta\watchlist.json`). Mỗi ngày **1 lần** (mặc định **03:00 giờ server**, đổi
+  bằng `"check_hour"`/`"check_min"` trong `notify-config.json`) bot **dò chương mới** cho từng
+  truyện — chỉ gọi **metadata** (danh sách chương), **không tải ảnh**, nên rất nhẹ — rồi **báo
+  tóm tắt** qua Telegram; truyện nào có chương mới thì **tự đổ vào hàng đợi tải** (đúng cơ chế
+  `/tai`, tuần tự, chống trùng). Cách dò: so danh sách chương của site với **ảnh đã có trên
+  đĩa** → xử đúng cả các ca **chương khoá premium** (chưa có ảnh → tự thử lại mỗi ngày tới khi
+  mở khoá), **comix bản "v" tick thay scan** (comix được enqueue mỗi ngày để loop comix tự nâng
+  cấp), **truyện thư viện cũ** (đã có ảnh nhưng chưa có `.done` vẫn tính là đã tải). Quản lý
+  bằng `/watch` / `/unwatch` / `/watchlist`, ép chạy ngay bằng `/checknow`. Server tắt đúng giờ
+  hẹn thì **bật lại sẽ check bù** cho ngày đó. Site **chưa có provider** thì `/watch` báo "chưa
+  hỗ trợ" và không nhận vào danh sách.
 - **Sống qua restart server**: hàng đợi tải được **lưu ra đĩa** (`.reader-meta\bot-download-queue.json`),
   nên khi cập nhật code (`cap-nhat.bat`) hay bật lại server, **truyện đang tải dở + hàng chờ
   KHÔNG mất** — lên lại là bot tự tải tiếp (báo *"🔄 Đang tiếp tục"*), bỏ qua chương đã xong.
