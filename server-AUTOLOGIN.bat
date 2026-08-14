@@ -36,12 +36,13 @@ if not exist "%~dp0.reader-meta" mkdir "%~dp0.reader-meta"
 if exist "%DEST%" goto :launch
 
 echo Dang tai Autologon tu Sysinternals (nguon Microsoft chinh thuc)...
-rem curl co san tren Windows 10 (1803+)/11
-curl -L -o "%DEST%" "%URL%"
+rem --- Uu tien PowerShell + ep TLS 1.2 (server Windows cu mac dinh TLS 1.0 -> tai hut).
+rem     curl co the KHONG co tren Windows Server cu -> dung lam du phong. ---
+powershell -NoProfile -Command "try{[Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12;Invoke-WebRequest -UseBasicParsing -Uri '%URL%' -OutFile '%DEST%'}catch{exit 1}"
 if not exist "%DEST%" (
   echo.
-  echo !!! curl that bai. Thu bang PowerShell...
-  powershell -NoProfile -Command "try{Invoke-WebRequest -Uri '%URL%' -OutFile '%DEST%'}catch{exit 1}"
+  echo !!! PowerShell that bai. Thu bang curl (neu co)...
+  curl -L -o "%DEST%" "%URL%" 2>nul
 )
 if not exist "%DEST%" (
   echo.
