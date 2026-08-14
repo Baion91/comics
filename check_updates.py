@@ -109,7 +109,8 @@ def check_one(entry):
     res = {
         "url": url, "title": entry.get("title") or url, "provider": "",
         "status": "error", "listed_max": None, "done_max": None,
-        "missing_count": 0, "new_since_last": False, "error": None,
+        "listed_count": 0, "missing_count": 0, "missing_str": "",
+        "new_since_last": False, "error": None,
     }
     provider = resolve_provider(url)
     if provider is None:
@@ -144,7 +145,9 @@ def check_one(entry):
         res["status"] = "ok"
         res["listed_max"] = listed_max
         res["done_max"] = max(done) if done else None
+        res["listed_count"] = len(listed)
         res["missing_count"] = len(missing)
+        res["missing_str"] = core.compact_chapters(missing)   # 'ch. 21-334' gọn
         # 'chương mới thật' = số chương cao nhất tăng so với lần check trước (dùng để
         # HIGHLIGHT noti; chương khoá thử-lại-hằng-ngày thì missing>0 nhưng KHÔNG new).
         if isinstance(prev_max, (int, float)) and listed_max is not None:

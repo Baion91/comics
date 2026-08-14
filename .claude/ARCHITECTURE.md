@@ -239,7 +239,15 @@ cách chạy thật + decode thử ảnh.
   `unsupported` (site chưa provider) / `error` (list rỗng/lỗi, KHÔNG đụng state). Ghi kết quả ra
   `.reader-meta/watch-check-result.json` (supervisor đọc lại — KHÔNG parse stdout vì `_request` in
   429/503 ra stdout). Cờ `--only <url>` (lặp được) để check 1 vài truyện (dùng cho `/checknow`,
-  `/watch` sau khi thêm). KHÔNG ghi watchlist (supervisor ghi).
+  `/watch` sau khi thêm). KHÔNG ghi watchlist (supervisor ghi). **Báo cáo chi tiết** (14/08):
+  status `ok` xuất thêm `listed_count` (tổng chương site) + `missing_str` (`core.compact_chapters`:
+  gộp dải `21-334`, số lẻ `.5` riêng, cắt bớt khi quá nhiều nhóm) → `supervisor._summary_text` in
+  per-truyện `X/Y chương (thiếu K: ch. …)` theo nhóm 🆕 mới / ⤵️ tải-bù / ✅ đủ / 📘 comix / ⚠️ lỗi /
+  ⛔ chưa-hỗ-trợ. comix KHÔNG có số ở đây (phải mở Chromium) → báo riêng từ lượt tải:
+  `comix_site._report_comix_plan()` nhắn Telegram `X/Y` + "cần nâng cấp → Official {ch}" + "cần tải
+  {ch}" ngay sau khi quét xong danh sách, TRƯỚC khi tải ảnh (chỉ đọc đĩa, phân loại MIRROR vòng lặp
+  chính; "Official" = bản tick "v"). `core.compact_chapters` là helper dùng chung (khác `compact_ints`
+  thuần-int: in số chương không đuôi `.0`, xử lý chương lẻ).
 - **Auto-start / sống qua reboot** (Phương án A, 12/08/2026): `server-BAT-tudong.bat` đăng ký task
   Windows `ToonyServer` (`schtasks /sc onlogon`) chạy `supervisor.py` khi ĐĂNG NHẬP — bằng **đường
   dẫn TUYỆT ĐỐI** tới `python.exe` (task onlogon không có PATH → tên trần `python`/`pythonw` lỗi

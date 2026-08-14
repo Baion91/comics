@@ -387,7 +387,11 @@ khi đăng nhập Windows, tự tạo link đọc từ xa và báo qua Telegram.
   `/tai`, tuần tự, chống trùng). Cách dò: so danh sách chương của site với **ảnh đã có trên
   đĩa** → xử đúng cả các ca **chương khoá premium** (chưa có ảnh → tự thử lại mỗi ngày tới khi
   mở khoá), **comix bản "v" tick thay scan** (comix được enqueue mỗi ngày để loop comix tự nâng
-  cấp), **truyện thư viện cũ** (đã có ảnh nhưng chưa có `.done` vẫn tính là đã tải). Quản lý
+  cấp), **truyện thư viện cũ** (đã có ảnh nhưng chưa có `.done` vẫn tính là đã tải). **Báo cáo
+  chi tiết**: mỗi truyện ghi rõ **`X/Y chương (thiếu K: ch. …)`** — ví dụ *"Solo Leveling —
+  200/205 (thiếu 5: ch. 201–205)"*. Riêng **comix** không đếm nhanh được (phải mở Chromium), nên
+  số chương của nó (X/Y + danh sách "cần nâng cấp → Official" + "cần tải") được **báo riêng ngay
+  khi lượt tải mở Chromium quét xong**, trước khi tải ảnh. Quản lý
   bằng `/watch` / `/unwatch` / `/watchlist`, ép chạy ngay bằng `/checknow`. Server tắt đúng giờ
   hẹn thì **bật lại sẽ check bù** cho ngày đó. Site **chưa có provider** thì `/watch` báo "chưa
   hỗ trợ" và không nhận vào danh sách.

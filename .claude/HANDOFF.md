@@ -59,6 +59,14 @@
 - **[10/08] Tool LÀM NÉT Real-ESRGAN — ĐÃ push. Tích hợp tự động vào `/tai` CHƯA làm.**
 
 ## Quyết định gần đây (mới nhất trước)
+- **14/08: Báo cáo check chi tiết X/Y + chương thiếu (A: site thường; B: comix báo từ lượt tải)** —
+  trước chỉ in tên truyện, giờ mỗi truyện in `X/Y chương (thiếu K: ch. …)`. Site thường: `check_updates.py`
+  xuất thêm `listed_count`+`missing_str` (dùng `core.compact_chapters` gộp dải `21-334`, cắt bớt khi
+  quá nhiều nhóm); `supervisor._summary_text` in per-truyện theo nhóm 🆕/⤵️/✅/📘/⚠️/⛔. comix KHÔNG
+  đếm nhanh được (phải mở Chromium) → `comix_site._report_comix_plan()` nhắn Telegram X/Y + danh sách
+  "cần nâng cấp → Official" + "cần tải" NGAY sau khi Chromium quét xong, TRƯỚC khi tải ảnh (chỉ đọc đĩa,
+  không thêm request; báo trễ ~30-60s chứ không tức thì — bản chất site). "Official" = bản tick "v"
+  (isOfficial). **Deploy: cần `cap-nhat.bat` + chạy lại `server-BAT-tudong.bat`** (đụng `supervisor.py`).
 - **14/08: Comix tự dọn profile TRƯỚC mỗi lần chạy + watchdog khâu launch** — profile Chromium bền
   (`comix-profile`) mà còn con mồ côi ôm nó thì con mới "chuyển URL cho con cũ rồi tự thoát" →
   Playwright treo about:blank. Không chỉ dựa bộ dọn-lúc-khởi-động của supervisor (không per-job);

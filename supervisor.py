@@ -1275,6 +1275,20 @@ class Supervisor:
         else:
             notify_all(self.cfg, text)
 
+    @staticmethod
+    def _detail_line(r):
+        """1 dòng 'Tên — X/Y (thiếu K: ch. …)' cho site thường (đã có listed_count +
+        missing_str). Y=0 (dữ liệu cũ/chưa có) -> chỉ in tên cho khỏi '0/0'."""
+        y = r.get("listed_count") or 0
+        miss = r.get("missing_count", 0)
+        if not y:
+            return f"• {r.get('title')}"
+        line = f"• {r.get('title')} — {y - miss}/{y} chương"
+        if miss:
+            ms = r.get("missing_str") or ""
+            line += f" (thiếu {miss}" + (f": ch. {ms}" if ms else "") + ")"
+        return line
+
     def _summary_text(self, results, supported, added, dup):
         ok = [r for r in results if r.get("status") == "ok"]
         new = [r for r in ok if r.get("new_since_last") and r.get("missing_count", 0) > 0]
@@ -1285,25 +1299,34 @@ class Supervisor:
         errs = [r for r in results if r.get("status") == "error"]
         unsup = [r for r in results if r.get("status") == "unsupported"]
 
-        def _names(rs, n=8):
-            out = ", ".join(r.get("title") or r.get("url") for r in rs[:n])
-            return out + (" …" if len(rs) > n else "")
+        def _bucket(header, rs, cap=15):
+            out = ["", header]
+            out += [self._detail_line(r) for r in rs[:cap]]
+            if len(rs) > cap:
+                out.append(f"   … và {len(rs) - cap} truyện nữa")
+            return out
 
         lines = [f"🔍 Đã kiểm tra {len(results)} truyện."]
         if new:
-            lines.append("")
-            lines.append("🆕 Chương mới:")
-            for r in new[:20]:
-                lines.append(f"• {r['title']} → ch.{self._fmt_num(r.get('listed_max'))}")
+            lines += _bucket("🆕 Có chương mới:", new)
         if catching:
-            lines.append(f"⤵️ Tải tiếp/bù ({len(catching)}): {_names(catching)}")
+            lines += _bucket("⤵️ Tải tiếp/bù (chưa đủ từ trước):", catching)
         if comix:
-            lines.append(f"📘 comix (kiểm khi tải): {len(comix)}")
-        lines.append(f"✅ Không đổi: {len(uptodate)}")
+            lines.append("")
+            lines.append(f"📘 comix ({len(comix)}) — số chương sẽ báo riêng khi mở Chromium tải:")
+            lines += [f"• {r.get('title')}" for r in comix[:15]]
+            if len(comix) > 15:
+                lines.append(f"   … và {len(comix) - 15} truyện nữa")
+        if uptodate:
+            lines += _bucket("✅ Không đổi (đã đủ):", uptodate)
         if errs:
-            lines.append(f"⚠️ Lỗi kiểm tra ({len(errs)}): {_names(errs)}")
+            lines.append("")
+            lines.append(f"⚠️ Lỗi kiểm tra ({len(errs)}):")
+            lines += [f"• {r.get('title')} — {r.get('error') or 'lỗi'}" for r in errs[:10]]
         if unsup:
-            lines.append(f"⛔ Đã bỏ (site chưa hỗ trợ): {_names(unsup)}")
+            lines.append("")
+            lines.append("⛔ Đã bỏ (site chưa hỗ trợ): "
+                         + ", ".join(r.get("title") or r.get("url") for r in unsup[:8]))
             lines.append("   Đang hỗ trợ: " + ", ".join(supported))
         lines.append("")
         if added:

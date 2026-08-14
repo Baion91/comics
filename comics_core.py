@@ -751,6 +751,28 @@ def compact_ints(nums) -> str:
     return ", ".join(f"{a}" if a == b else f"{a}-{b}" for a, b in runs)
 
 
+def compact_chapters(nums, max_groups=12) -> str:
+    """Danh sách SỐ CHƯƠNG (có thể lẻ .5) -> chuỗi gọn: [21,22,...,334] -> '21-334';
+    [119,120,121,130] -> '119-121, 130'. Số nguyên liền nhau gộp thành dải, số lẻ đứng
+    riêng; số nguyên in không đuôi .0 (khác compact_ints thuần-int). Cắt bớt nếu quá
+    max_groups nhóm -> tin Telegram khỏi dài lê thê khi thiếu cả trăm chương."""
+    vals = sorted({float(n) for n in nums})
+    if not vals:
+        return ""
+    groups, i, N = [], 0, len(vals)
+    while i < N:
+        j = i
+        while (j + 1 < N and vals[j].is_integer() and vals[j + 1].is_integer()
+               and vals[j + 1] == vals[j] + 1):
+            j += 1
+        groups.append(f"{fmt_num(vals[i])}" if j == i
+                      else f"{fmt_num(vals[i])}-{fmt_num(vals[j])}")
+        i = j + 1
+    if len(groups) > max_groups:
+        return ", ".join(groups[:max_groups]) + f", … (+{len(groups) - max_groups} nhóm)"
+    return ", ".join(groups)
+
+
 def _mark_done(folder: Path):
     """Ghi dấu .done vào thư mục chương đã đủ -> lần chạy sau BỎ QUA, khỏi quét mạng.
     (.done không phải ảnh nên list_images/make_cbz/reader đều lờ đi.)"""

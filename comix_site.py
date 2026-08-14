@@ -731,6 +731,44 @@ def _folder_has_images(folder: Path) -> bool:
     return False
 
 
+def _report_comix_plan(title, nums, by_num, out_root, args):
+    """Nhắn Telegram BÁO CÁO SỚM cho comix: X/Y chương + danh sách cần nâng cấp/tải,
+    tính TỪ ĐĨA (không thêm request), TRƯỚC khi tải ảnh. Phân loại MIRROR đúng vòng lặp
+    chính (official-sẵn / đã-có / nâng-cấp-lên-Official / cần-tải) — sửa luật ở loop thì
+    nhớ sửa cả đây. 'Official' = bản tick 'v' (isOfficial). Best-effort, không raise ra."""
+    official_have, have_other, upgrade_list, need_list = [], [], [], []
+    recheck = getattr(args, "recheck", False)
+    for num in nums:
+        folder = out_root / f"Chapter {core.fmt_num(num)}"
+        cands = candidates_for(by_num.get(num) or [])
+        best = cands[0] if cands else {}
+        side = read_sidecar(folder)
+        done = (folder / ".done").exists() and not recheck
+        on_disk_official = bool(side) and side.get("isOfficial")
+        if on_disk_official and done:
+            official_have.append(num)
+            continue
+        upgrade = (_folder_has_images(folder) and not on_disk_official
+                   and bool(best.get("isOfficial")))
+        if done and not upgrade:
+            have_other.append(num)
+        elif upgrade:
+            upgrade_list.append(num)
+        else:
+            need_list.append(num)
+    have_total = len(official_have) + len(have_other)
+    lines = [f"📘 {title} — comix",
+             f"• Trên site: {len(nums)} chương",
+             f"• Đã có sẵn: {have_total} (Official {len(official_have)})",
+             f"• Cần nâng cấp → Official: {len(upgrade_list)}"
+             + (f" — ch. {core.compact_chapters(upgrade_list)}" if upgrade_list else ""),
+             f"• Cần tải mới/tải tiếp: {len(need_list)}"
+             + (f" — ch. {core.compact_chapters(need_list)}" if need_list else "")]
+    lines.append("→ Bắt đầu tải..." if (upgrade_list or need_list)
+                 else "→ Không có gì cần tải (đã đủ).")
+    _notify_telegram("\n".join(lines))
+
+
 # --- File DẤU cấp truyện (Cách 1: nhìn thấy được trong Explorer) ------------------
 # Đánh dấu folder do comix quản (có / đang lên bản Official) để user phân biệt với
 # folder scan tải từ site khác mà TỰ TAY xoá folder scan trùng. Tên file mang sẵn số
@@ -869,6 +907,15 @@ def run(args):
                           file=sys.stderr)
                     core.gate.abort = False   # gỡ cầu dao nếu cover vừa kéo, để tải chương
             print(f"Sẽ xử lý {len(nums)} chương vào: {out_root.resolve()}\n")
+
+            # BÁO CÁO SỚM (Option 1, user chốt 14/08): đã có danh sách chương + trạng thái
+            # đĩa -> nhắn Telegram X/Y + cần nâng cấp/tải NGAY, TRƯỚC khi tải ảnh. comix không
+            # có peek rẻ nên báo cáo này phải chờ Chromium mở xong (không tức thì như site
+            # thường). Chỉ ĐỌC ĐĨA (không thêm request). Lỗi ở đây KHÔNG được cản việc tải.
+            try:
+                _report_comix_plan(title, nums, by_num, out_root, args)
+            except Exception as e:
+                print(f"  (bỏ qua báo cáo sớm: {e})", file=sys.stderr, flush=True)
 
             total = len(nums)
             active = 0
