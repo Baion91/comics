@@ -58,6 +58,12 @@ Một tool cho MỌI site, tự nhận site theo link (hiện hỗ trợ **Asura
 > không bao giờ tải lại). Nếu bot nhắn "bị Cloudflare chặn" → ra màn hình server tick
 > "Verify you are human" trong cửa sổ Chromium là tool tự chạy tiếp.
 >
+> ⚠️ **Cửa sổ Chromium đứng im ở trang trắng (about:blank)?** Trước đây nếu còn 1 cửa sổ
+> Chromium comix **mồ côi** (từ lần chạy trước) thì lần mở sau bị treo. **Đã sửa (14/08)**:
+> mỗi lần chạy comix tool **tự giết Chromium comix cũ + xoá khoá profile** trước khi mở, và có
+> "watchdog" — mở quá 90s không xong thì tự thoát báo lỗi thay vì treo. Nên **không cần** tự tay
+> tắt Chromium nữa. (Lỡ vẫn kẹt: tắt hết `chrome.exe` trên server rồi chạy lại.)
+>
 > **Thay bản đã tải từ site khác:** nếu trước đó bạn tải một bộ từ Raven/Asura/... rồi chạy lại
 > bằng link comix của đúng bộ đó, các chương cũ (bản scan) sẽ **tự được thay bằng Official** khi
 > comix có (khớp theo số chương). Nếu tên hai bên **khác nhau** thì sẽ thành **2 folder** — comix

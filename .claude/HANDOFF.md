@@ -1,9 +1,22 @@
-# Handoff — cập nhật lần cuối: 2026-08-14 (Auto-check chương mới hằng ngày qua watchlist)
+# Handoff — cập nhật lần cuối: 2026-08-14 (Sửa comix treo ở about:blank do profile mồ côi)
 
 > Kiến trúc ổn định (reader, provider, comix, supervisor, mạng…) nằm ở `.claude/ARCHITECTURE.md`.
 > File này chỉ ghi TRẠNG THÁI hiện tại + việc đang dở.
 
 ## Đang làm / dở dang
+- **[14/08] Sửa comix TREO ở about:blank (Chromium mồ côi giữ profile) — ĐÃ code + push,
+  CHƯA nghiệm thu LIVE qua bot.** Triệu chứng: tải comix qua bot đứng im ~5' ở "Sẽ mở cửa sổ
+  Chromium", cửa sổ blank; chạy TAY (`python comic_downloader.py <url>`) sau khi kill hết chrome
+  thì CHẠY TỐT (lấy được 300 bản upload). Gốc rễ: 1 Chromium mồ côi (từ lần treo trước) còn ôm
+  `comix-profile` → `launch_persistent_context` mở con MỚI, con mới thấy "đã có instance" →
+  chuyển URL cho con cũ rồi TỰ THOÁT → Playwright mất kết nối → treo vô hạn. Bộ dọn stray chỉ
+  chạy lúc supervisor KHỞI ĐỘNG (không per-job) nên mồ côi giữa phiên làm kẹt mọi job comix sau.
+  Fix (chỉ `comix_site.py`): (1) `_kill_profile_chrome()` giết chrome dùng comix-profile + xoá
+  `Singleton*` TRƯỚC mỗi lần chạy; (2) `_StartupWatchdog` bọc khâu launch — quá 90s = kill + thoát
+  !=0 để supervisor báo lỗi + chạy job kế thay vì treo câm; (3) không để mồ côi (watchdog kill +
+  lần sau tự dọn). **Deploy = `/update` là ĐỦ** (comix_site.py nạp lại mỗi lần chạy downloader
+  con; KHÔNG cần cap-nhat.bat, KHÔNG cần restart supervisor). Nghiệm thu: kill hết chrome →
+  `/tai <comix url>` qua bot từ trạng thái sạch → phải chạy được (trước đây treo).
 - **[14/08] Auto-check chương mới hằng ngày — ĐÃ code + push, CHƯA nghiệm thu LIVE trên server.**
   Watchlist `.reader-meta/watchlist.json` (1 nơi quản lý, gitignore) + script mới `check_updates.py`
   (subprocess, cô lập requests/providers khỏi supervisor stdlib): peek `list_chapters` (chỉ metadata,
@@ -46,6 +59,12 @@
 - **[10/08] Tool LÀM NÉT Real-ESRGAN — ĐÃ push. Tích hợp tự động vào `/tai` CHƯA làm.**
 
 ## Quyết định gần đây (mới nhất trước)
+- **14/08: Comix tự dọn profile TRƯỚC mỗi lần chạy + watchdog khâu launch** — profile Chromium bền
+  (`comix-profile`) mà còn con mồ côi ôm nó thì con mới "chuyển URL cho con cũ rồi tự thoát" →
+  Playwright treo about:blank. Không chỉ dựa bộ dọn-lúc-khởi-động của supervisor (không per-job);
+  `comix_site.run()` tự `_kill_profile_chrome()` (kill chrome match 'comix-profile' + xoá `Singleton*`)
+  ở đầu mỗi lần. Watchdog 90s bọc riêng khâu launch (không bọc goto/chờ-Cloudflare vì đó chờ NGƯỜI
+  tick hợp lệ) → treo thì kill + `os._exit(2)` (fail fast) thay vì đứng im. An toàn vì comix 1 worker.
 - **14/08: Dò chương mới = so `list_chapters` với ĐĨA, KHÔNG lưu `last_max` làm chuẩn** — vì chương
   khoá premium được site LIỆT KÊ nhưng chưa tải được: nếu chuẩn là `last_max` thì max không tăng →
   kẹt, không bao giờ thử lại. So với đĩa thì chương chưa có ảnh luôn "thiếu" → tự thử lại tới khi mở

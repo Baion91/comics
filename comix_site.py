@@ -59,7 +59,9 @@ import os
 import random
 import re
 import shutil
+import subprocess
 import sys
+import threading
 import time
 import urllib.parse
 import urllib.request
@@ -90,6 +92,8 @@ CHALLENGE_WAIT = 300          # giây chờ người xác minh Cloudflare trư�
 MAX_RELAUNCH = 3              # số lần TỰ dựng lại Chromium cho MỖI đợt sự cố (reset khi tải được thêm)
 RELAUNCH_BACKOFF = 5.0        # giây nghỉ trước khi mở Chromium mới
 FAIL_STREAK_LIMIT = 6         # số chương LIÊN TIẾP không lấy được ảnh (browser còn sống) -> dừng phiên
+LAUNCH_WATCHDOG = 90          # giây tối đa cho MỘT lần mở Chromium; quá = nghi treo -> kill + thoát
+_NO_WINDOW = 0x08000000 if os.name == "nt" else 0   # đừng bật cửa sổ console con (powershell dọn)
 
 # JSON.parse hook — add_init_script nên chạy lại MỖI navigation (window.__cap tự reset,
 # không phình RAM). Chỉ giữ object dạng {status, result} (API comix), bỏ qua thứ khác.
@@ -147,6 +151,75 @@ def _notify_telegram(text):
             pass
 
 
+# --- Dọn Chromium lạc + khoá profile (chống treo do "chuyển cho instance cũ") ------
+
+def _kill_profile_chrome():
+    """Giết mọi chrome.exe đang dùng `comix-profile` + xoá các file khoá singleton cũ.
+
+    VÌ SAO: Chromium dùng profile BỀN (persistent). Nếu còn 1 Chromium mồ côi (từ lần
+    trước treo/bị kill) đang ôm profile này, thì `launch_persistent_context` mở chrome.exe
+    MỚI sẽ phát hiện "đã có instance" -> chuyển URL cho con cũ rồi TỰ THOÁT -> Playwright
+    vừa mở con đó mất kết nối -> TREO vô hạn ở about:blank (đúng sự cố 14/08). Dọn sạch
+    TRƯỚC khi mở là diệt gốc. An toàn: hàng đợi comix chỉ 1 worker tuần tự (không có 2 job
+    comix song song), và match theo 'comix-profile' nên KHÔNG đụng Chrome thường của user.
+
+    Xoá cả file khoá (`SingletonLock/Socket/Cookie`, `lockfile`): chrome bị Force-kill để
+    lại các file này trên đĩa -> lần mở sau đôi khi cũng kẹt. Best-effort, không raise."""
+    if os.name == "nt":
+        try:
+            subprocess.run(
+                ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command",
+                 "Get-CimInstance Win32_Process -Filter \"Name='chrome.exe'\" | "
+                 "Where-Object { $_.CommandLine -match 'comix-profile' } | "
+                 "ForEach-Object { Stop-Process -Id $_.ProcessId -Force "
+                 "-ErrorAction SilentlyContinue }"],
+                creationflags=_NO_WINDOW, timeout=30,
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except Exception:
+            pass
+    for name in ("SingletonLock", "SingletonSocket", "SingletonCookie", "lockfile"):
+        try:
+            (PROFILE_DIR / name).unlink()
+        except OSError:
+            pass
+
+
+class _StartupWatchdog:
+    """Lưới an toàn: nếu MỘT lần mở Chromium (launch_persistent_context) quá
+    `LAUNCH_WATCHDOG` giây thì gần như chắc chắn đang TREO (browser bật lên nhưng
+    Playwright không lái được). Watchdog sẽ kill Chromium (để không mồ côi) rồi
+    `os._exit` HARD -> tiến trình downloader thoát != 0 -> supervisor báo '❌ Lỗi tải'
+    và CHẠY JOB KẾ, thay vì treo câm 5+ phút làm kẹt cả hàng đợi.
+
+    CHỈ bọc khâu LAUNCH (không có timeout nội bộ đáng tin): các bước sau (goto có
+    timeout 45s, chờ Cloudflare có người tick tối đa 5') KHÔNG bọc để khỏi giết nhầm
+    lúc đang chờ người xác minh."""
+
+    def __init__(self, timeout, label):
+        self._timeout = timeout
+        self._label = label
+        self._done = threading.Event()
+        self._thread = threading.Thread(target=self._run, daemon=True)
+
+    def __enter__(self):
+        self._thread.start()
+        return self
+
+    def __exit__(self, *exc):
+        self._done.set()
+        return False
+
+    def _run(self):
+        if self._done.wait(self._timeout):
+            return   # xong đúng hạn -> yên
+        print(f"\n  !! Watchdog: {self._label} quá {self._timeout}s — nghi Chromium treo "
+              "(profile bị khoá / mất điều khiển). Kill Chromium rồi thoát để supervisor "
+              "báo lỗi + chạy job kế.", file=sys.stderr, flush=True)
+        _kill_profile_chrome()
+        time.sleep(1)
+        os._exit(2)
+
+
 # --- Phiên trình duyệt -----------------------------------------------------------
 
 class ComixSession:
@@ -165,16 +238,19 @@ class ComixSession:
 
     def _launch(self):
         """Mở Chromium + gắn hook/route/popup. Tách riêng để relaunch() gọi lại được
-        khi cửa sổ bị đóng giữa chừng (cùng profile bền -> khỏi verify Cloudflare lại)."""
-        from playwright.sync_api import sync_playwright
-        self._pw = sync_playwright().start()
-        PROFILE_DIR.mkdir(parents=True, exist_ok=True)
-        # 2 cờ chống-lộ-automation là BẮT BUỘC: site check navigator.webdriver,
-        # true là JS site KHÔNG boot (SSR có title nhưng body rỗng, không gọi API).
-        self.ctx = self._pw.chromium.launch_persistent_context(
-            str(PROFILE_DIR), headless=False, viewport={"width": 1280, "height": 900},
-            args=["--disable-blink-features=AutomationControlled"],
-            ignore_default_args=["--enable-automation"])
+        khi cửa sổ bị đóng giữa chừng (cùng profile bền -> khỏi verify Cloudflare lại).
+        Bọc _StartupWatchdog: treo ở khâu launch (không timeout nội bộ đáng tin) -> kill
+        + thoát thay vì đứng im vô hạn."""
+        with _StartupWatchdog(LAUNCH_WATCHDOG, "mở Chromium (launch_persistent_context)"):
+            from playwright.sync_api import sync_playwright
+            self._pw = sync_playwright().start()
+            PROFILE_DIR.mkdir(parents=True, exist_ok=True)
+            # 2 cờ chống-lộ-automation là BẮT BUỘC: site check navigator.webdriver,
+            # true là JS site KHÔNG boot (SSR có title nhưng body rỗng, không gọi API).
+            self.ctx = self._pw.chromium.launch_persistent_context(
+                str(PROFILE_DIR), headless=False, viewport={"width": 1280, "height": 900},
+                args=["--disable-blink-features=AutomationControlled"],
+                ignore_default_args=["--enable-automation"])
         self.ctx.add_init_script(HOOK_JS)
         # Chặn MỌI request ra domain lạ (quảng cáo). Trình duyệt CHỈ cần comix.to (JSON
         # metadata) + cloudflare.com (challenge); ảnh do requests tải riêng, không cần
@@ -738,6 +814,11 @@ def run(args):
 
     slug = series_slug(args.series)
     print(f"Site: comix  |  Truyện: {slug}")
+    # Dọn Chromium mồ côi + khoá profile cũ TRƯỚC khi mở, kẻo con mới chuyển URL cho
+    # con cũ rồi tự thoát -> Playwright treo ở about:blank (sự cố 14/08). An toàn vì 1
+    # worker tuần tự. Nghỉ 1s cho OS nhả handle trước khi launch_persistent_context.
+    _kill_profile_chrome()
+    time.sleep(1)
     print("(Sẽ mở 1 cửa sổ Chromium để lấy metadata — ĐỪNG đóng nó, tool tự đóng khi xong.)")
 
     try:

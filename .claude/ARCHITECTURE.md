@@ -84,6 +84,17 @@ cách chạy thật + decode thử ảnh.
     `MAX_RELAUNCH=3`/đợt hoặc `FAIL_STREAK_LIMIT=6` chương hụt LIÊN TIẾP (browser sống, nghi
     chặn IP mềm) → thoát ≠0 (supervisor báo "❌ Lỗi tải") thay vì nuốt lỗi thành "để sau" cả
     bộ rồi thoát 0 = "✅ Tải xong" giả. Streak reset khi tải được 1 chương.
+    **Treo about:blank do PROFILE MỒ CÔI → tự dọn + watchdog (14/08/2026)**: profile bền
+    `comix-profile` mà còn 1 Chromium mồ côi (từ lần treo/bị-kill trước) đang ôm → `launch_
+    persistent_context` mở con MỚI, con mới thấy "đã có instance" → chuyển URL cho con cũ rồi
+    TỰ THOÁT → Playwright mất kết nối → TREO vô hạn ở about:blank (chạy tay sau khi kill sạch
+    chrome thì OK, chứng tỏ không phải lỗi site). Bộ dọn stray của supervisor chỉ chạy lúc KHỞI
+    ĐỘNG (không per-job) nên mồ côi giữa phiên kẹt mọi job comix sau. Fix: `_kill_profile_chrome()`
+    (kill chrome.exe match 'comix-profile' + xoá `Singleton*`/`lockfile`) chạy ở ĐẦU mỗi
+    `run()` — an toàn vì comix 1 worker tuần tự, match theo profile nên không đụng Chrome
+    thường. `_StartupWatchdog(90s)` bọc RIÊNG khâu launch (KHÔNG bọc goto có timeout 45s /
+    chờ Cloudflare tối đa 5' vì đó là chờ NGƯỜI tick hợp lệ): quá giờ = kill Chromium +
+    `os._exit(2)` (fail fast) → supervisor báo lỗi + chạy job kế thay vì treo câm 5+ phút.
   - `asura_downloader.py` — **giờ chỉ là shim** gọi `comic_downloader.main(default=asura)`
     → lệnh/shortcut cũ + gõ slug trần vẫn chạy như Asura như trước.
   - `Tai truyen.bat` — shortcut trong folder (không ra Desktop): **vòng lặp** hỏi link
