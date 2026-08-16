@@ -177,7 +177,8 @@ HELP_TEXT = (
     "/whoami — xem chat_id của bạn\n"
     "/help — danh sách lệnh\n\n"
     "Admin:\n"
-    "/tai <link> — tải truyện (nhiều link cách nhau dấu cách)\n"
+    "/tai <link> [chương] — tải truyện; thêm dải chương để chỉ tải phần đó\n"
+    "     vd: /tai <link> 1-20  hoặc  /tai <link> 5,7,20-25  (bỏ trống = cả truyện)\n"
     "/trangthai — xem truyện đang tải + hàng chờ\n"
     "/stop — dừng truyện đang tải + xoá hàng chờ (của bạn)\n"
     "/killnow — chỉ dừng truyện đang tải (của bạn)\n"
@@ -377,7 +378,7 @@ class Supervisor:
         cmds = [
             {"command": "link", "description": "Lấy link đọc hiện tại"},
             {"command": "whoami", "description": "Xem chat_id của bạn"},
-            {"command": "tai", "description": "Tải truyện: /tai <link> (admin)"},
+            {"command": "tai", "description": "Tải truyện: /tai <link> [chương vd 1-20] (admin)"},
             {"command": "trangthai", "description": "Xem tải đang chạy + hàng chờ (admin)"},
             {"command": "stop", "description": "Dừng tải + xoá hàng chờ của bạn (admin)"},
             {"command": "killnow", "description": "Chỉ dừng truyện đang tải của bạn (admin)"},
@@ -668,7 +669,8 @@ class Supervisor:
                 if isinstance(j, dict) and j.get("url"):
                     out.append({"url": str(j["url"]), "cid": j.get("cid"),
                                 "state": "pending",
-                                "resumed": j.get("state") == "running"})
+                                "resumed": j.get("state") == "running",
+                                "chapters": j.get("chapters")})
         return out
 
     def _kill_stray_downloaders(self):
@@ -708,18 +710,23 @@ class Supervisor:
             log(f"Nạp lại {len(loaded)} truyện trong hàng đợi từ phiên trước -> tải tiếp.")
 
     def _enqueue_jobs(self, pairs):
-        """Thêm [(url, cid), ...] vào hàng đợi tải. Chống trùng: URL đã có (pending HOẶC
-        đang chạy) thì bỏ. Trả (added, dup). Dùng chung cho /tai và auto-check chương mới."""
+        """Thêm [(url, cid[, chapters]), ...] vào hàng đợi tải. chapters = None -> tải cả
+        truyện; hoặc chuỗi chọn chương '5,7,20-25' (như --chapters). Chống trùng theo CẢ
+        (url, chapters) nên tải cùng truyện khác dải chương KHÔNG bị coi là trùng. Trả
+        (added, dup). Dùng chung cho /tai và auto-check chương mới."""
         added, dup = [], 0
         with self._dlq_lock:
-            have = {j["url"] for j in self._jobs}
-            for url, cid in pairs:
-                if url in have:
+            have = {(j["url"], j.get("chapters")) for j in self._jobs}
+            for pair in pairs:
+                url, cid = pair[0], pair[1]
+                chapters = pair[2] if len(pair) > 2 else None
+                key = (url, chapters)
+                if key in have:
                     dup += 1
                 else:
                     self._jobs.append({"url": url, "cid": cid, "state": "pending",
-                                       "resumed": False})
-                    have.add(url)
+                                       "resumed": False, "chapters": chapters})
+                    have.add(key)
                     added.append(url)
             if added:
                 self._save_jobs_locked()
@@ -731,17 +738,33 @@ class Supervisor:
         if not self._is_admin(cid):
             tg_api(token, "sendMessage", {"chat_id": cid, "text": "⛔ Bạn không phải admin."})
             return
-        urls = [w for w in raw.split()[1:] if w.startswith("http")]
+        words = raw.split()[1:]
+        urls = [w for w in words if w.startswith("http")]
+        # Phần còn lại (không phải link) = chọn chương, vd "1-20" hoặc "5,7,20-25".
+        # Gộp mọi mẩu rồi bỏ khoảng trắng + gộp dấu phẩy thừa -> chịu được cả
+        # "5,7,20-25", "5, 7, 20-25" lẫn "5 7 20-25".
+        spec_raw = ",".join(w for w in words if not w.startswith("http"))
+        chapters = re.sub(r",+", ",", spec_raw.replace(" ", "")).strip(",") or None
         if not urls:
             tg_api(token, "sendMessage", {"chat_id": cid,
-                "text": "Gửi: /tai <link truyện> [link2 ...]"})
+                "text": "Gửi: /tai <link truyện> [chương] [link2 ...]\n"
+                        "Ví dụ:\n"
+                        "  /tai https://... — tải cả truyện\n"
+                        "  /tai https://... 1-20 — chỉ chương 1→20\n"
+                        "  /tai https://... 5,7,20-25 — chương lẻ + dải"})
             return
-        added, dup = self._enqueue_jobs([(u, cid) for u in urls])
+        if chapters and not re.fullmatch(r"[0-9.,\-]+", chapters):
+            tg_api(token, "sendMessage", {"chat_id": cid,
+                "text": f"⚠ Chọn chương không hợp lệ: “{chapters}”.\n"
+                        "Chỉ dùng số, dấu phẩy, gạch nối — vd 1-20 hoặc 5,7,20-25."})
+            return
+        added, dup = self._enqueue_jobs([(u, cid, chapters) for u in urls])
         parts = []
+        scope = f"chương {chapters}" if chapters else "cả truyện"
         if added:
-            parts.append(f"📥 Đã thêm {len(added)} truyện vào hàng đợi.")
+            parts.append(f"📥 Đã thêm {len(added)} truyện vào hàng đợi ({scope}).")
         if dup:
-            parts.append(f"⏭ {dup} truyện đã có trong hàng đợi (bỏ qua).")
+            parts.append(f"⏭ {dup} truyện đã có trong hàng đợi cùng dải chương (bỏ qua).")
         parts.append("Gõ /trangthai để xem đang tải gì và còn chờ mấy truyện.")
         tg_api(token, "sendMessage", {"chat_id": cid, "text": "\n".join(parts),
             "disable_web_page_preview": "true"})
@@ -751,6 +774,12 @@ class Supervisor:
         """Rút tên gọn từ URL để hiển thị (bỏ đuôi '/', lấy cụm cuối có ý nghĩa)."""
         s = url.rstrip("/").split("/")
         return s[-1] if s and s[-1] else (s[-2] if len(s) > 1 else url)
+
+    @classmethod
+    def _job_label(cls, job):
+        """Tên gọn + dải chương (nếu có) để hiển thị trong /trangthai và tin báo."""
+        lbl = cls._slug(job["url"])
+        return f"{lbl} (ch {job['chapters']})" if job.get("chapters") else lbl
 
     def handle_status(self, token, cid):
         """/trangthai — ảnh chụp hàng đợi: truyện đang tải (kèm tiến độ đọc từ log)
@@ -766,7 +795,7 @@ class Supervisor:
         if cur:
             prog = self._read_log_tail(logpos, maxchars=120)
             head = "🔄 Đang tiếp tục" if cur.get("resumed") else "▶️ Đang tải"
-            lines.append(f"{head}: {self._slug(cur['url'])}")
+            lines.append(f"{head}: {self._job_label(cur)}")
             if prog:
                 lines.append(f"   {prog}")
         else:
@@ -774,7 +803,7 @@ class Supervisor:
         if pending:
             lines.append(f"⏳ Đang chờ ({len(pending)}):")
             for i, j in enumerate(pending[:15], 1):
-                lines.append(f"   {i}. {self._slug(j['url'])}")
+                lines.append(f"   {i}. {self._job_label(j)}")
             if len(pending) > 15:
                 lines.append(f"   … và {len(pending) - 15} truyện nữa")
         else:
@@ -904,9 +933,10 @@ class Supervisor:
             # Chỉ báo 'bắt đầu' ở lần chạy ĐẦU của job; lần thử lại do lỗi mạng (net_retries>0)
             # thì im để khỏi lặp tin mỗi vòng.
             if token and cid is not None and job.get("net_retries", 0) == 0:
+                scope = f"\n(chỉ chương {job['chapters']})" if job.get("chapters") else ""
                 tg_api(token, "sendMessage", {"chat_id": cid,
-                    "text": (f"🔄 Đang tiếp tục truyện bị gián đoạn:\n{url}"
-                             if job.get("resumed") else f"⏳ Bắt đầu tải:\n{url}"),
+                    "text": (f"🔄 Đang tiếp tục truyện bị gián đoạn:\n{url}{scope}"
+                             if job.get("resumed") else f"⏳ Bắt đầu tải:\n{url}{scope}"),
                     "disable_web_page_preview": "true"})
             start_pos = 0
             keep = False        # True = lỗi MẠNG tạm -> giữ job trong hàng đợi, thử lại (không xoá)
@@ -928,10 +958,12 @@ class Supervisor:
                     self._dl_logpos = start_pos
                 logf = open(DL_LOG_FILE, "ab")            # con ghi thẳng vào file (nối tiếp)
                 try:
+                    cmd = [sys.executable, "-u",
+                           os.path.join(BASE_DIR, "comic_downloader.py"), url]
+                    if job.get("chapters"):               # chọn chương cụ thể (như tai-truyen.bat)
+                        cmd += ["--chapters", job["chapters"]]
                     proc = subprocess.Popen(              # -u: không buffer -> tail real-time
-                        [sys.executable, "-u",
-                         os.path.join(BASE_DIR, "comic_downloader.py"), url],
-                        cwd=BASE_DIR, creationflags=NO_WINDOW,
+                        cmd, cwd=BASE_DIR, creationflags=NO_WINDOW,
                         stdout=logf, stderr=subprocess.STDOUT)
                     with self._dlq_lock:
                         self._dl_proc = proc
