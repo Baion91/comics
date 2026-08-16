@@ -1,9 +1,20 @@
-# Handoff — cập nhật lần cuối: 2026-08-14 (Sửa comix treo ở about:blank do profile mồ côi)
+# Handoff — cập nhật lần cuối: 2026-08-16 (/tai hỗ trợ chọn chương như tai-truyen.bat)
 
 > Kiến trúc ổn định (reader, provider, comix, supervisor, mạng…) nằm ở `.claude/ARCHITECTURE.md`.
 > File này chỉ ghi TRẠNG THÁI hiện tại + việc đang dở.
 
 ## Đang làm / dở dang
+- **[16/08] `/tai` chọn chương (như `Tai truyen.bat`) — ĐÃ code + commit `c1545a3`, CHƯA
+  nghiệm thu LIVE trên server.** Trước `/tai` chỉ tải CẢ truyện; giờ `/tai <link> [chương]`
+  nhận dải chương (`1-20`, `5,7,20-25`) → truyền `--chapters` cho `comic_downloader.py`; bỏ
+  trống = cả truyện (như cũ). Chỉ sửa `supervisor.py`: `handle_tai` tách link/spec + validate
+  `[0-9.,\-]+`, chuẩn hoá "5, 7 20-25"→"5,7,20-25"; job mang field `chapters` (bền hoá qua
+  restart, `_load_jobs` giữ lại); `_enqueue_jobs` dedup theo `(url, chapters)` nên cùng truyện
+  khác dải KHÔNG bị coi trùng; worker thêm `--chapters` vào lệnh; `/trangthai` + tin "Bắt đầu
+  tải" + `/help` + setMyCommands hiện dải chương. **Đã test parse (dev) OK** (6 ca kể cả có
+  khoảng trắng, đa link). **Deploy = `cap-nhat.bat` + chạy lại `server-BAT-tudong.bat`** (đụng
+  `supervisor.py`, `/update` KHÔNG nạp lại supervisor). Nghiệm thu: `/tai <link> 1-3` → chỉ tải
+  3 chương đó; `/tai <link>` (không spec) vẫn tải cả bộ.
 - **[14/08] Sửa comix TREO ở about:blank (Chromium mồ côi giữ profile) — ĐÃ code + push,
   CHƯA nghiệm thu LIVE qua bot.** Triệu chứng: tải comix qua bot đứng im ~5' ở "Sẽ mở cửa sổ
   Chromium", cửa sổ blank; chạy TAY (`python comic_downloader.py <url>`) sau khi kill hết chrome
@@ -59,6 +70,11 @@
 - **[10/08] Tool LÀM NÉT Real-ESRGAN — ĐÃ push. Tích hợp tự động vào `/tai` CHƯA làm.**
 
 ## Quyết định gần đây (mới nhất trước)
+- **16/08: `/tai` chọn chương — 1 spec/lệnh, áp cho MỌI link trong lệnh đó; dedup theo
+  `(url, chapters)`** — spec là phần token không-http (gộp lại, bỏ khoảng trắng, gộp phẩy thừa
+  nên "5, 7 20-25"→"5,7,20-25"). Dedup gồm cả `chapters` để `/tai url 1-20` rồi `/tai url 30-40`
+  (hoặc cả bộ) là 2 job khác nhau, không bị nuốt; downloader tự bỏ qua `.done`. Auto-check vẫn
+  enqueue `chapters=None` (tải cả bộ) — `_enqueue_jobs` chịu cả tuple 2 lẫn 3 phần tử.
 - **14/08: Báo cáo check chi tiết X/Y + chương thiếu (A: site thường; B: comix báo từ lượt tải)** —
   trước chỉ in tên truyện, giờ mỗi truyện in `X/Y chương (thiếu K: ch. …)`. Site thường: `check_updates.py`
   xuất thêm `listed_count`+`missing_str` (dùng `core.compact_chapters` gộp dải `21-334`, cắt bớt khi
@@ -117,10 +133,10 @@
   `MAX_RELAUNCH=3`/`FAIL_STREAK_LIMIT=6` → thoát ≠0 báo lỗi thật thay vì "xong" giả.
 - 09/08: **Comix = loop riêng `comix_site.py`** (Playwright headful + hook JSON.parse) — API mã hoá
   + token per-request; chọn official trước, scan id lớn nhất; skip official vĩnh viễn; upgrade cross-site.
-- 09/08: **TruyenQQProvider** + **MangaDexProvider** (bản en, newest-wins, đòi Referer).
-- 09/08: **Chống crash tầng C downloader** (`faulthandler`+breadcrumb+chặn bom) + `.bat` báo trung thực.
 
 ## Việc tiếp theo
+- **[/tai chọn chương nghiệm thu LIVE]** `cap-nhat.bat` → chạy lại `server-BAT-tudong.bat` →
+  `/tai <link> 1-3` (chỉ 3 chương) rồi `/tai <link>` (cả bộ); soi `/trangthai` hiện "(ch 1-3)".
 - **[Auto-check nghiệm thu LIVE]** Server: `cap-nhat.bat` → **chạy lại `server-BAT-tudong.bat`**
   (đổi supervisor phải restart, `/update` không nạp lại supervisor) → `/watch <link>` vài bộ đang
   theo dõi → `/watchlist` xác nhận có tên + provider + "mới nhất ch.N" → `/checknow` xem tóm tắt +
