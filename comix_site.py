@@ -92,7 +92,8 @@ CHALLENGE_WAIT = 300          # giây chờ người xác minh Cloudflare trư�
 MAX_RELAUNCH = 3              # số lần TỰ dựng lại Chromium cho MỖI đợt sự cố (reset khi tải được thêm)
 RELAUNCH_BACKOFF = 5.0        # giây nghỉ trước khi mở Chromium mới
 FAIL_STREAK_LIMIT = 6         # số chương LIÊN TIẾP không lấy được ảnh (browser còn sống) -> dừng phiên
-LAUNCH_WATCHDOG = 90          # giây tối đa cho MỘT lần mở Chromium; quá = nghi treo -> kill + thoát
+LAUNCH_WATCHDOG = 90          # giây tối đa cho CẢ khâu mở+setup Chromium; quá = nghi treo -> kill
+LAUNCH_KILL_GRACE = 8         # giây chờ main-thread bật lỗi sau khi watchdog kill Chromium, trước khi os._exit
 _NO_WINDOW = 0x08000000 if os.name == "nt" else 0   # đừng bật cửa sổ console con (powershell dọn)
 
 # JSON.parse hook — add_init_script nên chạy lại MỖI navigation (window.__cap tự reset,
@@ -185,18 +186,24 @@ def _kill_profile_chrome():
 
 
 class _StartupWatchdog:
-    """Lưới an toàn: nếu MỘT lần mở Chromium (launch_persistent_context) quá
-    `LAUNCH_WATCHDOG` giây thì gần như chắc chắn đang TREO (browser bật lên nhưng
-    Playwright không lái được). Watchdog sẽ kill Chromium (để không mồ côi) rồi
-    `os._exit` HARD -> tiến trình downloader thoát != 0 -> supervisor báo '❌ Lỗi tải'
-    và CHẠY JOB KẾ, thay vì treo câm 5+ phút làm kẹt cả hàng đợi.
+    """Lưới an toàn: nếu khâu MỞ + KHỞI TẠO Chromium quá `LAUNCH_WATCHDOG` giây thì gần
+    như chắc chắn đang TREO (browser bật lên nhưng Playwright không lái được — vd cửa sổ
+    kẹt ở about:blank, sự cố 14/08 + 17/08). Watchdog kill Chromium: đường ống CDP đứt sẽ
+    khiến lệnh Playwright đang kẹt ở MAIN THREAD bật lỗi -> `_launch` bắt được -> ném
+    BrowserGone -> `_open_resilient`/`relaunch` tự dựng lại TRONG PHIÊN (Cách B). Kill này
+    còn dọn luôn orphan/lock — nghi phạm gốc — nên lần dựng lại thường thành công.
 
-    CHỈ bọc khâu LAUNCH (không có timeout nội bộ đáng tin): các bước sau (goto có
-    timeout 45s, chờ Cloudflare có người tick tối đa 5') KHÔNG bọc để khỏi giết nhầm
-    lúc đang chờ người xác minh."""
+    Nếu sau ÂN HẠN `LAUNCH_KILL_GRACE` giây mà main-thread VẪN kẹt (lệnh không thèm bật
+    lỗi cả khi chrome đã chết) -> `os._exit` HARD làm chốt chặn cuối: downloader thoát != 0
+    -> supervisor báo lỗi + chạy job kế, thay vì treo câm.
 
-    def __init__(self, timeout, label):
+    BỌC cả khâu mở lẫn setup (add_init_script/route/pages/probe) — vùng này KHÔNG có
+    timeout nội bộ đáng tin, đúng chỗ 17/08 treo. KHÔNG bọc các bước sau đó (goto có
+    timeout 45s; chờ Cloudflare có người tick tối đa 5') để khỏi giết nhầm lúc chờ xác minh."""
+
+    def __init__(self, timeout, label, grace=LAUNCH_KILL_GRACE):
         self._timeout = timeout
+        self._grace = grace
         self._label = label
         self._done = threading.Event()
         self._thread = threading.Thread(target=self._run, daemon=True)
@@ -212,11 +219,14 @@ class _StartupWatchdog:
     def _run(self):
         if self._done.wait(self._timeout):
             return   # xong đúng hạn -> yên
-        print(f"\n  !! Watchdog: {self._label} quá {self._timeout}s — nghi Chromium treo "
-              "(profile bị khoá / mất điều khiển). Kill Chromium rồi thoát để supervisor "
-              "báo lỗi + chạy job kế.", file=sys.stderr, flush=True)
+        print(f"\n  !! Watchdog: {self._label} quá {self._timeout}s — nghi Chromium treo. "
+              "Kill Chromium để phiên tự dựng lại...", file=sys.stderr, flush=True)
         _kill_profile_chrome()
-        time.sleep(1)
+        # Ân hạn cho main-thread bật lỗi + thoát khối watchdog -> phiên tự relaunch (khỏi os._exit).
+        if self._done.wait(self._grace):
+            return
+        print(f"  !! Watchdog: vẫn kẹt sau {self._grace}s dù đã kill Chromium — thoát cứng "
+              "(supervisor sẽ báo lỗi + chạy job kế).", file=sys.stderr, flush=True)
         os._exit(2)
 
 
@@ -233,35 +243,67 @@ class ComixSession:
         self._relaunch_streak = 0     # số lần dựng lại Chromium trong ĐỢT sự cố hiện tại
 
     def __enter__(self):
-        self._launch()
+        self._open_resilient()
         return self
 
+    def _open_resilient(self):
+        """Mở phiên LẦN ĐẦU; nếu wedge (BrowserGone) -> dọn orphan/lock rồi thử lại tối đa
+        MAX_RELAUNCH lần (Cách B). Nhờ vậy ca 'about:blank treo lúc mở' (17/08) tự khỏi
+        trong phiên thay vì hỏng cả lượt tải. Quá ngân sách -> ném ra ngoài = fatal."""
+        attempt = 0
+        while True:
+            try:
+                self._launch()
+                return
+            except BrowserGone as e:
+                attempt += 1
+                if attempt > MAX_RELAUNCH:
+                    raise BrowserGone(
+                        f"Không mở nổi Chromium sau {MAX_RELAUNCH} lần thử: {e}") from e
+                print(f"  ! Mở Chromium hụt/treo — dọn rồi thử lại "
+                      f"(lần {attempt}/{MAX_RELAUNCH})...", file=sys.stderr, flush=True)
+                self._close_playwright()
+                _kill_profile_chrome()          # diệt orphan/lock trước khi thử lại
+                time.sleep(RELAUNCH_BACKOFF)
+
     def _launch(self):
-        """Mở Chromium + gắn hook/route/popup. Tách riêng để relaunch() gọi lại được
-        khi cửa sổ bị đóng giữa chừng (cùng profile bền -> khỏi verify Cloudflare lại).
-        Bọc _StartupWatchdog: treo ở khâu launch (không timeout nội bộ đáng tin) -> kill
-        + thoát thay vì đứng im vô hạn."""
-        with _StartupWatchdog(LAUNCH_WATCHDOG, "mở Chromium (launch_persistent_context)"):
-            from playwright.sync_api import sync_playwright
-            self._pw = sync_playwright().start()
-            PROFILE_DIR.mkdir(parents=True, exist_ok=True)
-            # 2 cờ chống-lộ-automation là BẮT BUỘC: site check navigator.webdriver,
-            # true là JS site KHÔNG boot (SSR có title nhưng body rỗng, không gọi API).
-            self.ctx = self._pw.chromium.launch_persistent_context(
-                str(PROFILE_DIR), headless=False, viewport={"width": 1280, "height": 900},
-                args=["--disable-blink-features=AutomationControlled"],
-                ignore_default_args=["--enable-automation"])
-        self.ctx.add_init_script(HOOK_JS)
-        # Chặn MỌI request ra domain lạ (quảng cáo). Trình duyệt CHỈ cần comix.to (JSON
-        # metadata) + cloudflare.com (challenge); ảnh do requests tải riêng, không cần
-        # render trong browser. Đây là gốc rễ sự cố "chưa bắt được ảnh chương": script
-        # quảng cáo (vd masterlythehague.com) đẩy trang rời comix.to giữa lúc load ->
-        # hook JSON.parse không thấy payload -> tưởng lỗi. Chặn hẳn là hết.
-        self.ctx.route("**/*", self._route_filter)
-        self.page = self.ctx.pages[0] if self.ctx.pages else self.ctx.new_page()
-        self.page.set_default_timeout(45_000)
-        # Popup quảng cáo (window.open/target=_blank) -> đóng ngay, giữ đúng 1 trang.
-        self.ctx.on("page", self._on_popup)
+        """Mở Chromium + gắn hook/route/popup + PROBE. Tách riêng để relaunch() gọi lại
+        được khi cửa sổ bị đóng giữa chừng (cùng profile bền -> khỏi verify Cloudflare lại).
+
+        BỌC _StartupWatchdog QUANH CẢ mở lẫn setup: các bước sau launch (add_init_script/
+        route/pages/probe) KHÔNG có timeout nội bộ đáng tin — đúng vùng treo câm 17/08.
+        PROBE `evaluate('() => 1')` xác nhận renderer thật sự trả lời trước khi giao việc:
+        trang tốt trả 1 tức thì, trang wedge (about:blank kẹt) làm probe treo -> watchdog nổ.
+        Bất kỳ lỗi nào (kể cả khi watchdog kill Chromium giữa chừng) -> ném BrowserGone để
+        _open_resilient/_resilient tự dựng lại."""
+        try:
+            with _StartupWatchdog(LAUNCH_WATCHDOG, "mở + khởi tạo Chromium"):
+                from playwright.sync_api import sync_playwright
+                self._pw = sync_playwright().start()
+                PROFILE_DIR.mkdir(parents=True, exist_ok=True)
+                # 2 cờ chống-lộ-automation là BẮT BUỘC: site check navigator.webdriver,
+                # true là JS site KHÔNG boot (SSR có title nhưng body rỗng, không gọi API).
+                self.ctx = self._pw.chromium.launch_persistent_context(
+                    str(PROFILE_DIR), headless=False, viewport={"width": 1280, "height": 900},
+                    args=["--disable-blink-features=AutomationControlled"],
+                    ignore_default_args=["--enable-automation"])
+                self.ctx.add_init_script(HOOK_JS)
+                # Chặn MỌI request ra domain lạ (quảng cáo). Trình duyệt CHỈ cần comix.to
+                # (JSON metadata) + cloudflare.com (challenge); ảnh do requests tải riêng,
+                # không cần render trong browser. Đây là gốc rễ sự cố "chưa bắt được ảnh
+                # chương": script quảng cáo (vd masterlythehague.com) đẩy trang rời comix.to
+                # giữa lúc load -> hook JSON.parse không thấy payload -> tưởng lỗi. Chặn hẳn là hết.
+                self.ctx.route("**/*", self._route_filter)
+                self.page = self.ctx.pages[0] if self.ctx.pages else self.ctx.new_page()
+                self.page.set_default_timeout(45_000)
+                # Popup quảng cáo (window.open/target=_blank) -> đóng ngay, giữ đúng 1 trang.
+                self.ctx.on("page", self._on_popup)
+                # PROBE: renderer phải trả lời được — bắt đúng ca wedge (about:blank treo).
+                self.page.evaluate("() => 1")
+        except Exception as e:
+            # Lỗi mở thật, hoặc watchdog vừa kill Chromium làm lệnh Playwright kẹt bật lỗi.
+            self._close_playwright()
+            raise BrowserGone(f"Mở/khởi tạo Chromium thất bại: {e}") from e
 
     def alive(self) -> bool:
         """Browser còn sống không? Để phân biệt 'Chromium đã đóng' (fatal, phải dựng
@@ -298,6 +340,7 @@ class ComixSession:
             "🔄 Comix: cửa sổ Chromium bị đóng giữa chừng — tool TỰ mở lại "
             f"(lần {self._relaunch_streak}/{MAX_RELAUNCH}) và tải tiếp. Không cần làm gì.")
         self._close_playwright()
+        _kill_profile_chrome()          # diệt orphan/lock trước khi mở lại (nghi phạm gốc wedge)
         time.sleep(RELAUNCH_BACKOFF)
         try:
             self._launch()
@@ -546,7 +589,12 @@ class ComixImageClient:
         self._impl = None
         self.backend = None
         self._build()
-        self.refresh_identity()
+        # Lần đọc danh tính ĐẦU chạm browser (page.evaluate + ctx.cookies) — nửa sau của
+        # "cửa sổ im lặng" trong sự cố 17/08. Probe ở _launch đã xác nhận trang lái được,
+        # nhưng bọc watchdog cho kín: treo ở đây thì watchdog kill Chromium -> lần chạm
+        # browser kế (fetch_series) bật lỗi -> _resilient tự dựng lại.
+        with _StartupWatchdog(LAUNCH_WATCHDOG, "đọc danh tính từ browser (refresh_identity)"):
+            self.refresh_identity()
         print(f"  (client tải ảnh: {self.backend})", flush=True)
 
     def _build(self):

@@ -95,6 +95,20 @@ cách chạy thật + decode thử ảnh.
     thường. `_StartupWatchdog(90s)` bọc RIÊNG khâu launch (KHÔNG bọc goto có timeout 45s /
     chờ Cloudflare tối đa 5' vì đó là chờ NGƯỜI tick hợp lệ): quá giờ = kill Chromium +
     `os._exit(2)` (fail fast) → supervisor báo lỗi + chạy job kế thay vì treo câm 5+ phút.
+    **Treo LẠI 17/08/2026 → chống-treo mở rộng (Cách B, 18/08/2026)**: bản 14/08 CHỈ bọc
+    `launch_persistent_context`, còn treo 17/08 rơi vào các lệnh SAU launch (add_init_script/
+    route/pages) + lần `ComixImageClient.refresh_identity` đầu — đều ngoài watchdog, không
+    timeout đáng tin (triệu chứng: tab blank about:blank, kẹt ~5 tiếng, in tới "(Sẽ mở cửa sổ
+    Chromium…)" rồi im). Sửa: (1) `_launch` bọc `_StartupWatchdog` QUANH CẢ mở + setup + thêm
+    **PROBE `page.evaluate('()=>1')`** (renderer phải trả lời → bắt đúng ca wedge trong ≤90s);
+    (2) bọc watchdog quanh `refresh_identity` đầu ở `ComixImageClient.__init__`; (3) watchdog
+    đổi sang **Cách B**: nổ → `_kill_profile_chrome()` rồi CHỜ ÂN HẠN `LAUNCH_KILL_GRACE=8s`
+    cho lệnh Playwright đang kẹt bật lỗi (chrome chết → CDP đứt → raise) → `_launch` bắt →
+    ném `BrowserGone` → `_open_resilient` (mới) TỰ DỰNG LẠI trong phiên tối đa `MAX_RELAUNCH`
+    lần (kill này dọn luôn orphan/lock nên lần dựng lại thường được); vẫn kẹt sau ân hạn →
+    `os._exit(2)` (chốt chặn cứng). `_launch` giờ NÉM `BrowserGone` khi lỗi (thay vì lỗi thô);
+    `relaunch()` mid-session cũng gọi `_kill_profile_chrome()` trước khi mở lại. Lưới bao chót
+    cho MỌI kiểu treo khác = stall-watchdog ở supervisor (xem `supervisor.py`).
   - `asura_downloader.py` — **giờ chỉ là shim** gọi `comic_downloader.main(default=asura)`
     → lệnh/shortcut cũ + gõ slug trần vẫn chạy như Asura như trước.
   - `Tai truyen.bat` — shortcut trong folder (không ra Desktop): **vòng lặp** hỏi link
@@ -180,7 +194,8 @@ cách chạy thật + decode thử ảnh.
   pending|running,resumed}]}; supervisor ghi nguyên tử mỗi lần đổi, đọc lại lúc khởi động để
   **tải tiếp qua restart**; job xong/lỗi/huỷ-lệnh bị xoá, job bị restart-giết ở lại → resume),
   `tai-run.log` (output tiến trình `comic_downloader.py` do bot chạy — ghi thẳng ra file thay
-  PIPE để supervisor chết không vỡ pipe + tail xem real-time; tự cắt khi >2MB),
+  PIPE để supervisor chết không vỡ pipe + tail xem real-time; tự cắt khi >2MB; **stall-watchdog đọc
+  SIZE file này mỗi 30s làm tín hiệu tiến-triển** — đứng im quá lâu = nghi treo, xem `supervisor.py`),
   `watchlist.json` (**danh sách truyện auto-check chương mới**, 1 nơi quản lý qua Telegram:
   `{last_run:"YYYY-MM-DD", series:[{url,title,provider,added_by,added_at,last_check,last_max,paused}]}`;
   supervisor ghi độc quyền, `check_updates.py` chỉ đọc),
@@ -218,6 +233,18 @@ cách chạy thật + decode thử ảnh.
   (chết thật → `run_tunnel` bắt + tạo link mới); reader chết → `run_reader` bật lại. Đánh đổi:
   reader TREO-mà-chưa-chết không tự phục hồi (ca hiếm, restart tay). Job lỗi kiểu-mạng
   (`NET_ERR_MARKERS` hoặc offline) → giữ `pending` thử lại, KHÔNG xoá (tránh mất hàng đợi khi mạng chập).
+  **Stall-watchdog (18/08/2026, lưới bao chót chống treo câm)**: `download_loop` chờ downloader bằng
+  `_wait_or_stall(proc, start_pos)` thay `proc.wait()` vô-timeout (cũ) — poll `os.path.getsize(tai-run.log)`
+  mỗi `DL_STALL_POLL=30s`; log ĐỨNG IM > `dl_stall_limit` (config, mặc định `DL_STALL_LIMIT=1200s`) → nghi
+  treo câm → `_kill(proc)` + `_kill_comix_chrome()` (terminate python KHÔNG giết chrome CON của Playwright →
+  phải diệt riêng qua match 'comix-profile', kẻo mồ côi ôm profile) → nhánh `stalled`: GIỮ job `pending` thử
+  lại (`stall_retries++`, backoff `DL_STALL_BACKOFF=120s`), quá `DL_STALL_RETRY_MAX=1` → bỏ + báo lỗi (daily
+  tự enqueue lại). Vì sao đọc SIZE (không đọc nội dung): `getsize`=1 stat O(1), rẻ bất kể log to/nhỏ (log
+  đã tự cắt ~2MB đầu mỗi job); size tăng đơn điệu trong 1 job = tín hiệu "còn sống". Vòng poll CHỈ tồn tại
+  trong vòng đời 1 job (rảnh thì worker ngủ trên condition, không poll). Ngưỡng 1200s cố ý > cữ backoff 429
+  tệ nhất của `comics_core` (1 lần sleep tới 900s) để KHÔNG giết nhầm job nghỉ-lịch-sự; `stop` set giữa
+  chừng → kill sạch rồi thoát êm (job giữ 'running' cho resume). ① này bổ trợ ② (watchdog nội bộ comix):
+  ② bắt nhanh ca mở-Chromium-wedge ~90s, ① phủ MỌI kiểu treo khác (≤20').
   **Heartbeat** (`heartbeat_loop`): mỗi 5' ping `heartbeat_url` (healthchecks.io) RA ngoài →
   dịch vụ ngoài báo khi server sập (kênh độc lập, sống cả khi bot câm); trống = tắt.
   **Auto-check chương mới** (`watch_loop`, 14/08/2026): mỗi ngày 1 lần lúc `check_hour:check_min`

@@ -1,9 +1,26 @@
-# Handoff — cập nhật lần cuối: 2026-08-16 (/tai hỗ trợ chọn chương như tai-truyen.bat)
+# Handoff — cập nhật lần cuối: 2026-08-18 (comix treo LẠI 17/08 → chống-treo 2 lớp ①+②)
 
 > Kiến trúc ổn định (reader, provider, comix, supervisor, mạng…) nằm ở `.claude/ARCHITECTURE.md`.
 > File này chỉ ghi TRẠNG THÁI hiện tại + việc đang dở.
 
 ## Đang làm / dở dang
+- **[18/08] Chống-treo 2 lớp ①+② cho comix (fix 17/08 treo LẠI ~5 tiếng) — ĐÃ code + test dev,
+  CHƯA nghiệm thu LIVE trên server.** Sự cố 17/08: auto-check 3h sáng enqueue comix `eqr1e-overgeared`
+  → downloader mở Chromium rồi **treo câm ~5 tiếng** (tab blank about:blank), kẹt cả hàng đợi tới khi
+  user `/stop` tay. Fix 14/08 (`_kill_profile_chrome` + `_StartupWatchdog`) CHỈ bọc đúng
+  `launch_persistent_context`, còn treo rơi vào các lệnh SAU launch (add_init_script/route/pages +
+  `ComixImageClient.refresh_identity`) — ngoài watchdog, và `supervisor.proc.wait()` KHÔNG timeout →
+  không lưới nào bắt. **② (`comix_site.py`)**: mở rộng `_StartupWatchdog` bọc CẢ setup + thêm PROBE
+  `page.evaluate('()=>1')` (bắt đúng ca about:blank wedge trong ≤90s); bọc luôn `refresh_identity` đầu;
+  watchdog nổ → kill Chromium + ân hạn 8s cho lệnh Playwright bật lỗi → ném `BrowserGone` → `_open_resilient`
+  **tự dựng lại trong phiên** (Cách B, tối đa MAX_RELAUNCH); vẫn kẹt sau ân hạn → `os._exit(2)`.
+  **① (`supervisor.py`, lưới bao chót)**: thay `proc.wait()` bằng `_wait_or_stall` — poll `os.path.getsize(tai-run.log)`
+  mỗi 30s; log đứng im > `dl_stall_limit` (mặc định 1200s) → kill downloader + Chromium comix → giữ job
+  thử lại (backoff 120s), quá `DL_STALL_RETRY_MAX=1` → bỏ (daily tự enqueue lại). Ngưỡng 1200s > cữ
+  backoff 429 tệ nhất (900s) nên KHÔNG giết nhầm job đang nghỉ-lịch-sự. **Đã test dev 12/12** (phát hiện
+  treo + kill; job in tiến độ đều KHÔNG bị giết; stop sạch; relaunch trong phiên; quá ngân sách → fatal).
+  **Deploy = `cap-nhat.bat` + chạy lại `server-BAT-tudong.bat`** (đụng `supervisor.py`). Nghiệm thu: xem mục
+  "Việc tiếp theo".
 - **[16/08] `/tai` chọn chương (như `Tai truyen.bat`) — ĐÃ code + commit `c1545a3`, CHƯA
   nghiệm thu LIVE trên server.** Trước `/tai` chỉ tải CẢ truyện; giờ `/tai <link> [chương]`
   nhận dải chương (`1-20`, `5,7,20-25`) → truyền `--chapters` cho `comic_downloader.py`; bỏ
@@ -15,19 +32,11 @@
   khoảng trắng, đa link). **Deploy = `cap-nhat.bat` + chạy lại `server-BAT-tudong.bat`** (đụng
   `supervisor.py`, `/update` KHÔNG nạp lại supervisor). Nghiệm thu: `/tai <link> 1-3` → chỉ tải
   3 chương đó; `/tai <link>` (không spec) vẫn tải cả bộ.
-- **[14/08] Sửa comix TREO ở about:blank (Chromium mồ côi giữ profile) — ĐÃ code + push,
-  CHƯA nghiệm thu LIVE qua bot.** Triệu chứng: tải comix qua bot đứng im ~5' ở "Sẽ mở cửa sổ
-  Chromium", cửa sổ blank; chạy TAY (`python comic_downloader.py <url>`) sau khi kill hết chrome
-  thì CHẠY TỐT (lấy được 300 bản upload). Gốc rễ: 1 Chromium mồ côi (từ lần treo trước) còn ôm
-  `comix-profile` → `launch_persistent_context` mở con MỚI, con mới thấy "đã có instance" →
-  chuyển URL cho con cũ rồi TỰ THOÁT → Playwright mất kết nối → treo vô hạn. Bộ dọn stray chỉ
-  chạy lúc supervisor KHỞI ĐỘNG (không per-job) nên mồ côi giữa phiên làm kẹt mọi job comix sau.
-  Fix (chỉ `comix_site.py`): (1) `_kill_profile_chrome()` giết chrome dùng comix-profile + xoá
-  `Singleton*` TRƯỚC mỗi lần chạy; (2) `_StartupWatchdog` bọc khâu launch — quá 90s = kill + thoát
-  !=0 để supervisor báo lỗi + chạy job kế thay vì treo câm; (3) không để mồ côi (watchdog kill +
-  lần sau tự dọn). **Deploy = `/update` là ĐỦ** (comix_site.py nạp lại mỗi lần chạy downloader
-  con; KHÔNG cần cap-nhat.bat, KHÔNG cần restart supervisor). Nghiệm thu: kill hết chrome →
-  `/tai <comix url>` qua bot từ trạng thái sạch → phải chạy được (trước đây treo).
+- **[14/08] Sửa comix TREO about:blank (bản đầu) — ĐÃ TREO LẠI 17/08 → thay bằng fix 18/08 ①+②
+  ở trên.** Bản 14/08 (`_kill_profile_chrome` + `_StartupWatchdog` chỉ bọc `launch_persistent_context`)
+  KHÔNG đủ: treo lần 17/08 rơi vào các lệnh SAU launch (ngoài watchdog) + supervisor `proc.wait()`
+  không timeout. Chi tiết + fix mở rộng xem mục [18/08] đầu file. (Giữ dòng này để biết vì sao lần
+  đầu chưa trọn.)
 - **[14/08] Auto-check chương mới hằng ngày — ĐÃ code + push, CHƯA nghiệm thu LIVE trên server.**
   Watchlist `.reader-meta/watchlist.json` (1 nơi quản lý, gitignore) + script mới `check_updates.py`
   (subprocess, cô lập requests/providers khỏi supervisor stdlib): peek `list_chapters` (chỉ metadata,
@@ -70,6 +79,13 @@
 - **[10/08] Tool LÀM NÉT Real-ESRGAN — ĐÃ push. Tích hợp tự động vào `/tai` CHƯA làm.**
 
 ## Quyết định gần đây (mới nhất trước)
+- **18/08: Chống-treo comix = 2 lớp bổ trợ, KHÔNG đụng engine chung `comics_core`** — ② watchdog nội
+  bộ (bọc cả setup + probe evaluate, Cách B tự relaunch trong phiên) bắt ca mở-Chromium-wedge ~90s;
+  ① supervisor stall-watchdog (poll `getsize(tai-run.log)` mỗi 30s, ngưỡng 1200s) là lưới bao chót cho
+  MỌI kiểu treo khác. Ngưỡng ① phải >900s (cữ backoff 429 tệ nhất của `comics_core` là 1 lần sleep tới
+  900s) để không giết nhầm job nghỉ-lịch-sự hợp lệ; poll bằng `getsize` (stat O(1), không đọc nội dung)
+  + chỉ chạy khi ĐANG có job (rảnh worker ngủ) → không tốn tài nguyên. User chốt: không thêm heartbeat
+  vào `comics_core` (giữ engine chung an toàn), chấp nhận hồi phục ① chậm hơn (≤20').
 - **16/08: `/tai` chọn chương — 1 spec/lệnh, áp cho MỌI link trong lệnh đó; dedup theo
   `(url, chapters)`** — spec là phần token không-http (gộp lại, bỏ khoảng trắng, gộp phẩy thừa
   nên "5, 7 20-25"→"5,7,20-25"). Dedup gồm cả `chapters` để `/tai url 1-20` rồi `/tai url 30-40`
@@ -129,12 +145,15 @@
   cloudflared 3→300s, giữ hàng đợi khi lỗi-mạng, heartbeat ping healthchecks.io. **Bỏ health_loop**
   vì GET link công khai từ server sai ~2/3 (không hairpin) → giết nhầm tunnel tốt; báo link khi
   **reader nội bộ 127.0.0.1** sẵn sàng, tin cloudflared tự lo kết nối.
-- 10/08: **Comix tự dựng lại Chromium** — `alive()` phân biệt browser-chết vs điều-hướng-hụt;
-  `MAX_RELAUNCH=3`/`FAIL_STREAK_LIMIT=6` → thoát ≠0 báo lỗi thật thay vì "xong" giả.
-- 09/08: **Comix = loop riêng `comix_site.py`** (Playwright headful + hook JSON.parse) — API mã hoá
-  + token per-request; chọn official trước, scan id lớn nhất; skip official vĩnh viễn; upgrade cross-site.
+  (Các quyết định cũ hơn 09-10/08 về comix loop/relaunch đã ghi đầy đủ ở ARCHITECTURE.)
 
 ## Việc tiếp theo
+- **[Chống-treo ①+② nghiệm thu LIVE]** `cap-nhat.bat` → chạy lại `server-BAT-tudong.bat` (đụng
+  `supervisor.py`). (a) Bình thường: `/tai <comix url>` → tải chạy trơn, KHÔNG bị kill oan (log tăng đều).
+  (b) Giả treo mở-Chromium: trước khi `/tai`, mở tay 1 chrome ôm `comix-profile` để gây wedge → xác nhận
+  tool tự "dọn rồi thử lại (lần k/3)" và cuối cùng tải được (② Cách B). (c) Giả treo câm: tạm hạ
+  `dl_stall_limit` trong `notify-config.json` xuống ~120 rồi bắt job kẹt → xác nhận supervisor báo
+  "⚠️ Tải bị treo… sẽ thử lại" + tự kill, KHÔNG kẹt cả hàng đợi; xong trả `dl_stall_limit` về 1200.
 - **[/tai chọn chương nghiệm thu LIVE]** `cap-nhat.bat` → chạy lại `server-BAT-tudong.bat` →
   `/tai <link> 1-3` (chỉ 3 chương) rồi `/tai <link>` (cả bộ); soi `/trangthai` hiện "(ch 1-3)".
 - **[Auto-check nghiệm thu LIVE]** Server: `cap-nhat.bat` → **chạy lại `server-BAT-tudong.bat`**
@@ -159,6 +178,13 @@
 - (Tùy chọn, gốc rễ) **Named tunnel + domain** để URL cố định — nếu mua domain rẻ.
 
 ## Lưu ý / rủi ro đang mở
+- **Stall-watchdog ① ngưỡng 1200s (`dl_stall_limit`)**: cố tình > cữ backoff 429 tệ nhất của
+  `comics_core` (1 lần `sleep` tới 900s). Nếu SAU NÀY sửa `comics_core` (thêm cữ nghỉ dài hơn 900s,
+  hoặc site trả `Retry-After` rất lớn) thì phải NÂNG `dl_stall_limit` tương ứng kẻo giết nhầm job đang
+  nghỉ hợp lệ (giết nhầm không mất ảnh — resume bỏ qua `.done` — nhưng reset nhịp lịch sự IP). Chờ
+  Cloudflare tick người (300s) + nhịp nghỉ mỗi-10-chương (≤90s) đều < 1200s nên an toàn.
+- **② watchdog nổ mà Playwright KHÔNG bật lỗi sau khi kill chrome** → sau ân hạn 8s sẽ `os._exit(2)`
+  (downloader thoát, supervisor báo lỗi + chạy job kế; ① là lưới cuối nếu cả cái này hụt).
 - **Phương án A (autologon) — desktop tự mở khoá sau reboot** (ai chạm console/RDP thấy phiên đã đăng
   nhập). Supervisor gắn phiên interactive Administrator → **Sign out = giết server**, đổi tài khoản
   phải **Switch user**. Cửa sổ log giờ là `python.exe` — đóng nhầm/Ctrl-C = tắt server (tắt sạch:

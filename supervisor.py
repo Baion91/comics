@@ -67,6 +67,17 @@ DL_NET_RETRY_MAX = 4       # mạng đã OK mà job vẫn fail kiểu-mạng qu�
 NET_ERR_MARKERS = ("getaddrinfo", "nameresolution", "failed to resolve", "max retries",
                    "mạng chập chờn", "connection aborted", "connectionreset",
                    "connection reset", "timed out", "temporarily unavailable")
+# Stall-watchdog (lưới bao chót): job đang chạy mà LOG ĐỨNG IM (không thêm byte) quá
+# DL_STALL_LIMIT giây = nghi treo câm (vd Chromium comix wedge lọt qua watchdog nội bộ) ->
+# kill tiến trình + Chromium comix rồi giữ job thử lại. Phát hiện bằng os.path.getsize (1
+# lệnh stat, O(1) — KHÔNG đọc nội dung nên không phụ thuộc log to/nhỏ). Vòng poll CHỈ chạy
+# khi ĐANG có 1 job (thay proc.wait); lúc rảnh worker ngủ trên condition, không poll gì.
+# Ngưỡng phải > cữ backoff 429 tệ nhất của comics_core (một lần sleep tới 900s) + biên, để
+# KHÔNG giết nhầm job đang nghỉ-lịch-sự hợp lệ. Đọc đè được từ notify-config.json.
+DL_STALL_LIMIT = 1200      # giây log đứng im -> coi là treo (đè bằng cfg "dl_stall_limit")
+DL_STALL_POLL = 30         # giây giữa 2 lần kiểm size log
+DL_STALL_BACKOFF = 120     # giây nghỉ trước khi thử lại job vừa bị kill vì treo
+DL_STALL_RETRY_MAX = 1     # số lần GIỮ+thử lại 1 job treo; quá -> bỏ (daily tự enqueue lại)
 HEARTBEAT_EVERY = 300      # giây giữa 2 nhịp heartbeat (5') ping RA dịch vụ giám sát ngoài
 HEARTBEAT_TIMEOUT = 10     # giây chờ mỗi cú ping
 # Chờ READER NỘI BỘ (127.0.0.1) sẵn sàng trước khi báo link (để user mở link không dính 502).
@@ -108,6 +119,7 @@ def load_config():
     cfg.setdefault("heartbeat_url", "")   # URL ping healthchecks.io (trống = tắt heartbeat)
     cfg.setdefault("check_hour", 3)       # giờ (0-23) chạy auto-check chương mới hằng ngày
     cfg.setdefault("check_min", 0)        # phút (0-59)
+    cfg.setdefault("dl_stall_limit", DL_STALL_LIMIT)  # giây log tải đứng im -> coi là treo
     # chat_ids: DANH SÁCH người nhận (cả 2 anh em). Tự gom khi ai nhắn bot.
     ids = cfg.get("chat_ids")
     if not isinstance(ids, list):
@@ -522,6 +534,26 @@ class Supervisor:
             except Exception:
                 pass
 
+    @staticmethod
+    def _kill_comix_chrome():
+        """Giết Chromium (Playwright, tải comix) nhận diện qua profile 'comix-profile' trong
+        command line — KHÔNG đụng Chrome thường của user. Dùng khi kill job treo: terminate
+        tiến trình python downloader KHÔNG giết được chrome CON (Playwright mở) -> nó thành
+        mồ côi ôm profile -> đúng thứ gây wedge lần sau. Best-effort, Windows-only."""
+        if os.name != "nt":
+            return
+        try:
+            subprocess.run(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
+                "-Command",
+                "Get-CimInstance Win32_Process -Filter \"Name='chrome.exe'\" | "
+                "Where-Object { $_.CommandLine -match 'comix-profile' } | "
+                "ForEach-Object { Stop-Process -Id $_.ProcessId -Force "
+                "-ErrorAction SilentlyContinue }"],
+                creationflags=NO_WINDOW, timeout=30,
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except Exception as e:
+            log(f"! Không kill được Chromium comix treo: {e}")
+
     # --- Lệnh /update: kéo code mới từ git rồi restart reader --------------
     @staticmethod
     def _run_bg(fn, *a):
@@ -902,6 +934,51 @@ class Supervisor:
             return ""
         return text[-maxchars:]
 
+    def _wait_or_stall(self, proc, start_pos):
+        """Chờ downloader xong; nếu LOG ĐỨNG IM quá lâu (nghi treo câm) -> kill downloader
+        + Chromium comix, trả (rc, stalled=True). Bình thường job xong/chết -> (rc, False).
+
+        Chỉ đọc SIZE log (os.path.getsize = 1 stat, O(1) — không đọc nội dung, không phụ
+        thuộc log to/nhỏ). Nhịp do proc.wait(timeout=POLL) giữ (chờ ở tầng OS, không busy-
+        loop); hàm này CHỈ tồn tại trong vòng đời 1 job (rảnh thì worker ngủ ở download_loop,
+        không gọi tới đây). Log chỉ tăng đơn điệu trong 1 job (cắt-nhỏ chỉ xảy ra ĐẦU job)."""
+        limit = int(self.cfg.get("dl_stall_limit", DL_STALL_LIMIT) or DL_STALL_LIMIT)
+        try:
+            last_size = os.path.getsize(DL_LOG_FILE)
+        except OSError:
+            last_size = start_pos
+        last_grow = time.monotonic()
+        while True:
+            try:
+                rc = proc.wait(timeout=DL_STALL_POLL)
+                return rc, False                 # tải xong / tự thoát (kể cả bị /stop kill)
+            except subprocess.TimeoutExpired:
+                pass
+            if self.stop.is_set():               # supervisor tắt -> kill để khỏi mồ côi rồi thoát
+                self._kill(proc)
+                self._kill_comix_chrome()
+                try:
+                    proc.wait(timeout=15)
+                except Exception:
+                    pass
+                return None, False
+            try:
+                size = os.path.getsize(DL_LOG_FILE)
+            except OSError:
+                size = last_size
+            now = time.monotonic()
+            if size > last_size:
+                last_size, last_grow = size, now
+            elif now - last_grow > limit:
+                log(f"! Tải ĐỨNG IM > {limit}s (nghi treo câm) — kill downloader + Chromium comix.")
+                self._kill(proc)
+                self._kill_comix_chrome()        # terminate python KHÔNG giết chrome con -> diệt riêng
+                try:
+                    proc.wait(timeout=15)
+                except Exception:
+                    pass
+                return proc.returncode, True
+
     def download_loop(self):
         """Worker: tải tuần tự từng job trong _jobs (bền hoá ra đĩa), 1 lượt/lúc.
         Output downloader ghi ra FILE (không PIPE) -> supervisor chết không làm vỡ pipe
@@ -940,6 +1017,7 @@ class Supervisor:
                     "disable_web_page_preview": "true"})
             start_pos = 0
             keep = False        # True = lỗi MẠNG tạm -> giữ job trong hàng đợi, thử lại (không xoá)
+            stalled = False     # True = job treo câm (log đứng im) -> bị kill bởi stall-watchdog
             try:
                 try:      # cắt log nếu phình to
                     if os.path.getsize(DL_LOG_FILE) > DL_LOG_MAX:
@@ -967,14 +1045,31 @@ class Supervisor:
                         stdout=logf, stderr=subprocess.STDOUT)
                     with self._dlq_lock:
                         self._dl_proc = proc
-                    proc.wait()                           # chờ tải xong (không timeout)
-                    rc = proc.returncode
+                    # Chờ tải xong, KÈM stall-watchdog: log đứng im quá lâu -> kill + báo treo.
+                    rc, stalled = self._wait_or_stall(proc, start_pos)
                 finally:
                     logf.close()
+                if rc is None and self.stop.is_set():
+                    return   # supervisor đang tắt (đã kill proc) -> thoát êm; job 'running' để resume
                 if self._dl_cancelled:
                     msg = (f"⏹ Đã huỷ tải:\n{url}\n"
                            "(Tải lại bằng /tai sẽ tự bỏ qua chương đã xong, "
                            "tiếp tục từ chỗ dở.)")
+                elif stalled:
+                    # Treo câm (log đứng im quá ngưỡng) -> đã kill. GIỮ job thử lại (resume bỏ
+                    # qua chương .done -> không mất ảnh); quá DL_STALL_RETRY_MAX -> bỏ (daily tự
+                    # enqueue lại). Báo lần treo ĐẦU + lần BỎ; im ở các lần thử lại giữa.
+                    job["stall_retries"] = job.get("stall_retries", 0) + 1
+                    n = job["stall_retries"]
+                    if n > DL_STALL_RETRY_MAX:
+                        log(f"! Job treo câm quá {DL_STALL_RETRY_MAX} lần — bỏ: {url}")
+                        msg = (f"❌ Tải bị treo lặp lại (đã tự kill {n} lần) — bỏ qua:\n{url}\n"
+                               "(Chạy /tai lại để thử tiếp; chương đã xong tự bỏ qua.)")
+                    else:
+                        keep = True
+                        log(f"! Job treo câm — giữ lại thử lại (lần {n}): {url}")
+                        msg = (f"⚠️ Tải bị treo (đứng im quá lâu) — đã tự kill Chromium và sẽ "
+                               f"thử lại:\n{url}") if n == 1 else None
                 elif rc == 0:
                     summary = self._read_summary(start_pos)   # số liệu chương + ảnh
                     msg = f"✅ Tải xong:\n{url}" + (("\n\n" + summary) if summary else "")
@@ -1014,7 +1109,8 @@ class Supervisor:
                     except ValueError:
                         pass
                 self._save_jobs_locked()
-            if keep and self.stop.wait(NET_RECHECK):   # backoff trước khi thử lại job này
+            # backoff trước khi thử lại job này (treo câm nghỉ lâu hơn lỗi mạng thoáng qua)
+            if keep and self.stop.wait(DL_STALL_BACKOFF if stalled else NET_RECHECK):
                 return
 
     # --- Watchlist + auto-check chương mới ---------------------------------
