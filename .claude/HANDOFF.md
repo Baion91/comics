@@ -1,9 +1,28 @@
-# Handoff — cập nhật lần cuối: 2026-08-18 (comix treo LẠI 17/08 → chống-treo 2 lớp ①+②)
+# Handoff — cập nhật lần cuối: 2026-08-19 (reader: sửa TTFB màn-trắng — cache thư viện SWR + cache nguồn bìa)
 
 > Kiến trúc ổn định (reader, provider, comix, supervisor, mạng…) nằm ở `.claude/ARCHITECTURE.md`.
 > File này chỉ ghi TRẠNG THÁI hiện tại + việc đang dở.
 
 ## Đang làm / dở dang
+- **[19/08] Reader màn-trắng khi mở web (TTFB cao) — ĐÃ code + test dev, CHƯA nghiệm thu LIVE trên
+  server.** Chẩn đoán bằng DevTools (2 lần đo, cùng quick-tunnel `trycloudflare.com`): laptop 9 bộ
+  TTFB **124ms**, server ~40 bộ TTFB **4.27s**; ba dòng DNS+Connect+SSL GẦN BẰNG NHAU ở cả hai (~160-190ms)
+  → **mạng/tunnel VÔ CAN**, toàn bộ màn trắng là "Waiting for server response" = server-side compute.
+  Gốc: `get_library()` khi cache 60s hết hạn **quét đồng bộ** toàn bộ (`build_series`→`dir_has_image`
+  scandir mỗi thư mục chương; máy này 9 bộ = 1.483 thư mục con / 29.435 file), chặn ngay trên đường trả
+  response → "nhiều lúc" trắng = request rơi trúng sau mốc hết-hạn-60s (cache stampede). Server chậm ×34
+  dù chỉ nhiều hơn ×4.4 số bộ do khuếch đại: đĩa server chậm hơn (nghi HDD) + OS filesystem cache nguội +
+  tranh chấp I/O với downloader đang cày. **KẾT LUẬN QUAN TRỌNG: splash-in-HTML VÔ ÍCH** — suốt 4.27s
+  trình duyệt không nhận được byte nào (HTML chỉ 14.4kB, Content Download 4.6ms). **Fix (2 phần, bổ trợ):**
+  ① **SWR (stale-while-revalidate) cho `get_library`**: tách phần quét ra `_scan_library()`; cache hết
+  hạn nhưng còn bản cũ → trả STALE ngay + quét lại ở daemon thread (`_refresh_library`, cờ `_lib_refreshing`
+  chống spawn trùng); chỉ build lạnh (cache None lúc khởi động / vừa bust) mới quét đồng bộ, tuần tự hoá
+  bằng `_lib_build_lock`. ② **cache nguồn bìa vào series lúc build**: `build_series` tính sẵn `cover_src`
+  + `cover_mt` (tốn scandir/getsize 1 lần/bộ mỗi lượt scan) → `cover_ver` chỉ đọc `series["cover_mt"]`
+  (bỏ `cover_source`+`os.stat` ×2/bộ mỗi lần render), `cover_jpeg` dùng `series["cover_src"]`. **Test dev**:
+  cold build 8 bộ 0.35s; warm ~0s; **`html_home` render 0.6ms** (trước phải scandir mỗi bộ); SWR trả stale
+  0.6ms + thread nền làm mới cache OK. **Deploy = `/update` qua bot** (chỉ đụng `reader_server.py`, KHÔNG
+  đụng supervisor). Nghiệm thu LIVE: xem mục "Việc tiếp theo".
 - **[18/08] Chống-treo 2 lớp ①+② cho comix (fix 17/08 treo LẠI ~5 tiếng) — ĐÃ code + test dev,
   CHƯA nghiệm thu LIVE trên server.** Sự cố 17/08: auto-check 3h sáng enqueue comix `eqr1e-overgeared`
   → downloader mở Chromium rồi **treo câm ~5 tiếng** (tab blank about:blank), kẹt cả hàng đợi tới khi
@@ -79,6 +98,13 @@
 - **[10/08] Tool LÀM NÉT Real-ESRGAN — ĐÃ push. Tích hợp tự động vào `/tai` CHƯA làm.**
 
 ## Quyết định gần đây (mới nhất trước)
+- **19/08: Trị màn-trắng reader = giảm TTFB phía server, KHÔNG dùng splash** — đo DevTools chứng minh
+  màn trắng 100% là "Waiting for server response" (mạng vô can: DNS+Connect+SSL bằng nhau giữa máy nhanh
+  124ms và máy chậm 4.27s). App là SSR nên splash nhét trong HTML vô nghĩa (trình duyệt không có gì để
+  vẽ suốt lúc chờ). Chốt fix ở gốc: (1) SWR — không request nào phải chờ scandir, cache hết hạn trả bản
+  cũ + làm mới nền; (2) cache `cover_src`/`cover_mt` vào series để render home ~0 I/O đĩa. Không phụ thuộc
+  đĩa server nhanh/chậm. Muốn "phản hồi khi bấm chuyển trang" (khác vấn đề này) thì dùng thanh progress ở
+  đỉnh — để dành, chưa làm. Splash cấp-OS cho PWA (icon home-screen) cũng để dành, chỉ ích khi mở từ icon.
 - **18/08: Chống-treo comix = 2 lớp bổ trợ, KHÔNG đụng engine chung `comics_core`** — ② watchdog nội
   bộ (bọc cả setup + probe evaluate, Cách B tự relaunch trong phiên) bắt ca mở-Chromium-wedge ~90s;
   ① supervisor stall-watchdog (poll `getsize(tai-run.log)` mỗi 30s, ngưỡng 1200s) là lưới bao chót cho
@@ -148,6 +174,11 @@
   (Các quyết định cũ hơn 09-10/08 về comix loop/relaunch đã ghi đầy đủ ở ARCHITECTURE.)
 
 ## Việc tiếp theo
+- **[Reader TTFB nghiệm thu LIVE]** `/update` qua bot (chỉ đụng `reader_server.py`). Trên server mở
+  DevTools → Network → tab Timing của request document trang chủ: xác nhận "Waiting for server response"
+  tụt từ ~4s xuống dưới ~vài trăm ms. Phép thử "nhiều lúc": để trang > 60s (cache hết hạn) rồi F5 —
+  KHÔNG còn cú trắng 4s (giờ trả stale ngay, quét lại ở nền). Chỉ lần MỞ SERVER đầu tiên (cache lạnh)
+  mới chịu 1 lượt quét đồng bộ. Đổi bìa qua admin vẫn hiện đúng bản mới (bust cache → build lại `cover_mt`).
 - **[Chống-treo ①+② nghiệm thu LIVE]** `cap-nhat.bat` → chạy lại `server-BAT-tudong.bat` (đụng
   `supervisor.py`). (a) Bình thường: `/tai <comix url>` → tải chạy trơn, KHÔNG bị kill oan (log tăng đều).
   (b) Giả treo mở-Chromium: trước khi `/tai`, mở tay 1 chrome ôm `comix-profile` để gây wedge → xác nhận
@@ -178,6 +209,13 @@
 - (Tùy chọn, gốc rễ) **Named tunnel + domain** để URL cố định — nếu mua domain rẻ.
 
 ## Lưu ý / rủi ro đang mở
+- **Reader SWR: cache thư viện + bìa có thể cũ tối đa ~60s (CACHE_TTL)** — `cover_ver`/`cover_src` giờ
+  đọc từ series cache thay vì stat đĩa mỗi render, nên thay file `cover.*` TAY (không qua admin) có thể
+  chậm hiện ≤60s tới khi thread nền quét lại. Đổi bìa qua ADMIN thì tức thì (đã `bust_library_cache`).
+  Chương mới xuất hiện trong list cũng trễ ≤60s (như trước). Nếu sau này cần "thấy ngay", giảm CACHE_TTL
+  hoặc bust sau khi tải xong.
+- **Reader: KHÔNG thêm splash-in-HTML để trị màn trắng** — đã chứng minh vô ích (SSR, TTFB thuần server).
+  Nếu ai đề xuất lại, chỉ đường tới quyết định 19/08. Muốn feedback khi bấm = thanh progress đỉnh trang.
 - **Stall-watchdog ① ngưỡng 1200s (`dl_stall_limit`)**: cố tình > cữ backoff 429 tệ nhất của
   `comics_core` (1 lần `sleep` tới 900s). Nếu SAU NÀY sửa `comics_core` (thêm cữ nghỉ dài hơn 900s,
   hoặc site trả `Retry-After` rất lớn) thì phải NÂNG `dl_stall_limit` tương ứng kẻo giết nhầm job đang

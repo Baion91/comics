@@ -165,41 +165,88 @@ def build_series(path, name):
         a["chapters"] = rels
 
     title = re.sub(r"_webp$", "", name)
-    return {"id": name, "title": title, "path": path, "arcs": arcs,
-            "order": order, "byrel": byrel, "total": len(order)}
+    s = {"id": name, "title": title, "path": path, "arcs": arcs,
+         "order": order, "byrel": byrel, "total": len(order)}
+    # Xác định nguồn bìa + mtime NGAY lúc build (tốn scandir/getsize) rồi cache vào
+    # series, để mỗi lần render trang chủ khỏi phải chạm đĩa lại (xem cover_ver/cover_jpeg).
+    src = cover_source(s)
+    s["cover_src"] = src
+    try:
+        s["cover_mt"] = str(os.stat(src).st_mtime_ns) if src else "0"
+    except OSError:
+        s["cover_mt"] = "0"
+    return s
 
 
-_lib_lock = threading.Lock()
-_lib_cache = None  # (timestamp, dict sid -> series)
+_lib_lock = threading.Lock()        # bảo vệ _lib_cache / _lib_refreshing
+_lib_build_lock = threading.Lock()  # tuần tự hoá lần quét ĐỒNG BỘ (lúc chưa có cache)
+_lib_cache = None       # (timestamp, dict sid -> series)
+_lib_refreshing = False # đang có thread nền quét lại?
+
+
+def _scan_library():
+    """Quét toàn bộ thư viện từ ổ đĩa -> dict sid -> series. Tốn I/O (scandir mọi
+    thư mục chương), nên chỉ gọi ở lần build lạnh hoặc thread nền, KHÔNG trên
+    đường trả response khi đã có cache (xem get_library)."""
+    series = {}
+    for root in SCAN_ROOTS:
+        if not os.path.isdir(root):
+            continue
+        for e in os.scandir(root):
+            if not e.is_dir() or e.name in EXCLUDE_DIRS or e.name.startswith("."):
+                continue
+            s = build_series(e.path, e.name)
+            if s:
+                series[s["id"]] = s
+    # có bản "<tên>_webp" thì bỏ bản gốc "<tên>" (tránh 2 card trùng tên)
+    for sid in list(series):
+        if sid + "_webp" in series:
+            series.pop(sid, None)
+    # tên hiển thị do admin đặt (nếu có) -> đè lên tên suy từ folder, TRƯỚC khi sort
+    for sid, s in series.items():
+        ov = series_title_override(sid)
+        if ov:
+            s["title"] = ov
+    series = dict(sorted(series.items(), key=lambda kv: natkey(kv[1]["title"])))
+    sync_series_meta(series)  # tự thêm truyện mới + đánh số order vào series-meta.json
+    return series
+
+
+def _refresh_library():
+    """Quét lại ở nền rồi thay cache. Chạy trong daemon thread (stale-while-revalidate)."""
+    global _lib_cache, _lib_refreshing
+    try:
+        series = _scan_library()
+        with _lib_lock:
+            _lib_cache = (time.time(), series)
+    finally:
+        with _lib_lock:
+            _lib_refreshing = False
 
 
 def get_library():
-    global _lib_cache
+    """Trả thư viện. Cache còn hạn -> trả ngay. Cache hết hạn nhưng đã có bản cũ ->
+    trả bản cũ NGAY và quét lại ở nền (không ai phải chờ scandir). Chưa có cache nào
+    (khởi động / vừa bust) -> buộc phải quét đồng bộ một lần."""
+    global _lib_cache, _lib_refreshing
     with _lib_lock:
-        if _lib_cache and time.time() - _lib_cache[0] < CACHE_TTL:
-            return _lib_cache[1]
-        series = {}
-        for root in SCAN_ROOTS:
-            if not os.path.isdir(root):
-                continue
-            for e in os.scandir(root):
-                if not e.is_dir() or e.name in EXCLUDE_DIRS or e.name.startswith("."):
-                    continue
-                s = build_series(e.path, e.name)
-                if s:
-                    series[s["id"]] = s
-        # có bản "<tên>_webp" thì bỏ bản gốc "<tên>" (tránh 2 card trùng tên)
-        for sid in list(series):
-            if sid + "_webp" in series:
-                series.pop(sid, None)
-        # tên hiển thị do admin đặt (nếu có) -> đè lên tên suy từ folder, TRƯỚC khi sort
-        for sid, s in series.items():
-            ov = series_title_override(sid)
-            if ov:
-                s["title"] = ov
-        series = dict(sorted(series.items(), key=lambda kv: natkey(kv[1]["title"])))
-        sync_series_meta(series)  # tự thêm truyện mới + đánh số order vào series-meta.json
-        _lib_cache = (time.time(), series)
+        cache = _lib_cache
+        if cache and time.time() - cache[0] < CACHE_TTL:
+            return cache[1]
+        if cache:
+            # hết hạn nhưng còn bản cũ: phục vụ stale, làm mới ở nền
+            if not _lib_refreshing:
+                _lib_refreshing = True
+                threading.Thread(target=_refresh_library, daemon=True).start()
+            return cache[1]
+    # build lạnh: tuần tự hoá để nhiều request đồng thời không cùng quét
+    with _lib_build_lock:
+        with _lib_lock:
+            if _lib_cache:  # request khác vừa build xong trong lúc ta chờ lock
+                return _lib_cache[1]
+        series = _scan_library()
+        with _lib_lock:
+            _lib_cache = (time.time(), series)
         return series
 
 
@@ -807,7 +854,7 @@ def cover_source(series):
 
 def cover_jpeg(series):
     """Ảnh bìa thu nhỏ để trang chủ tải nhanh."""
-    src = cover_source(series)
+    src = series.get("cover_src") if "cover_src" in series else cover_source(series)
     if not src:
         return None
     try:
@@ -1216,8 +1263,13 @@ def u(*segs):
 def cover_ver(series):
     """mtime của bìa để gắn vào ?v=. Route /cover cache 7 ngày với URL cố định,
     nên thay cover.* mà URL không đổi thì trình duyệt kẹt ảnh cũ; đổi mtime ->
-    đổi URL -> tự tải bản mới (ảnh trang không cần vì mỗi file 1 URL riêng)."""
-    src = cover_source(series)
+    đổi URL -> tự tải bản mới (ảnh trang không cần vì mỗi file 1 URL riêng).
+    Ưu tiên giá trị đã cache lúc build_series (khỏi chạm đĩa mỗi lần render);
+    đổi bìa qua admin sẽ bust cache -> build lại -> mtime mới."""
+    mt = series.get("cover_mt")
+    if mt is not None:
+        return mt
+    src = cover_source(series)  # fallback: series không qua build cache
     if not src:
         return "0"
     try:

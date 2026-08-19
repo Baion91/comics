@@ -479,6 +479,18 @@ cách chạy thật + decode thử ảnh.
   cho thứ tự Home; danh sách chương trang truyện chuyển sang **toggle Newest/Oldest** client
   thay vì cố định — dropdown `chsel` trong reader vẫn mới-nhất-trên-cùng; `order`/`byrel`
   điều hướng đọc luôn giữ tăng dần.)
+- **Cache thư viện = stale-while-revalidate + cache nguồn bìa** (19/08, trị TTFB màn-trắng): quét
+  thư viện tốn I/O (`build_series`→`dir_has_image` scandir MỌI thư mục chương; ví dụ 9 bộ = ~1.483
+  thư mục con / 29.4k file), nên KHÔNG chặn request. `get_library()` (`reader_server.py`): cache còn
+  hạn (`CACHE_TTL=60s`) trả ngay; hết hạn nhưng còn bản cũ → trả **STALE** ngay + quét lại ở daemon
+  thread (`_refresh_library`, cờ `_lib_refreshing` chống trùng); chỉ build LẠNH (cache `None` lúc khởi
+  động / vừa `bust_library_cache`) mới quét đồng bộ, tuần tự hoá bằng `_lib_build_lock` (phần quét tách
+  ra `_scan_library`). Nguồn bìa cache sẵn vào series lúc build: `build_series` tính `cover_src`+`cover_mt`
+  (scandir/getsize 1 lần/bộ mỗi lượt scan) → `cover_ver` chỉ đọc `series["cover_mt"]`, `cover_jpeg` dùng
+  `series["cover_src"]` → **render home ~0 I/O đĩa** (đo dev: `html_home` 0.6ms). Hệ quả: đổi `cover.*`
+  tay có thể trễ hiện ≤60s (đổi qua admin thì bust cache → tức thì). **Chẩn đoán gốc**: DevTools cho thấy
+  màn trắng 100% là "Waiting for server response" (TTFB server-side), mạng/tunnel vô can (DNS+Connect+SSL
+  bằng nhau giữa máy 124ms và máy 4.27s) → app SSR nên splash-in-HTML vô ích.
 - **Hồ sơ đọc = 1 JSON CHUNG server-side, không login/cookie/device-id** (05/08): trước đây
   vị trí đọc/chương-đã-đọc để localStorage → **chết theo origin**; user chia sẻ bằng
   cloudflared quick tunnel (`Chia se link doc thu.bat`) đổi URL ngẫu nhiên mỗi lần bật →
