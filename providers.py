@@ -535,9 +535,99 @@ class ACGNProvider:
         return u if u.startswith("http") else self.BASE + u
 
 
+class NetTruyenProvider:
+    """nettruyen.id - trang React/Next.js SSR, HTML render SẴN (KHÔNG cần JS/API).
+
+    Khác TruyenQQ ở CHỖ chương là SUB-PATH: trang series `/truyen-tranh/{slug}` liệt kê
+    link chương `/truyen-tranh/{slug}/chuong-N` (số chương ở đoạn cuối path, KHÔNG dính
+    slug). Danh sách chương nhúng đủ trong 1 trang (không phân trang/AJAX). HTML mỗi
+    chương nhúng SẴN đủ URL ảnh trong `<img class="lozad" data-src="https://images.
+    truyenonline.cc/.../chapter_N/page_M.jpg">` theo đúng thứ tự trang.
+
+    ⚠️ Trang là Next.js: link chương xuất hiện cả trong HTML render SẴN LẪN trong blob
+    JSON `__NEXT_DATA__` (quote bị escape: `chuong-255\\"`). Regex số chương dùng lớp
+    ký tự SỐ thuần `[0-9]` (không nuốt dấu `\\`) nên cả hai chỗ đều ra đúng số.
+
+    CDN ảnh `images.truyenonline.cc`: đã kiểm KHÔNG chống hotlink (có/không Referer đều
+    trả 200) → referer=None. Bó vùng lấy ảnh về khối `reading-detail` + lọc đuôi ảnh
+    (host-agnostic: bộ nào đổi CDN vẫn chạy, không dính thumbnail/ads lỡ có sau này).
+
+    Tên hiển thị = tên CÓ DẤU từ `<h1 class="title-detail">` (slug là ASCII không dấu).
+    Cloudflare có mặt (Server: cloudflare) nhưng hiện KHÔNG challenge GET thường → dùng
+    `core.session` trần như Raven/TruyenQQ; siết thì thêm curl_cffi sau như comix.
+    Site họ nettruyen hay đổi domain — chỉ nhận `nettruyen.id` (clone khác backend/CDN
+    KHÁC nhau, phải kiểm riêng trước khi thêm vào `domains`).
+    """
+
+    name = "nettruyen"
+    BASE = "https://nettruyen.id"
+    domains = ["nettruyen.id"]
+    referer = None   # đã kiểm: CDN images.truyenonline.cc KHÔNG đòi Referer
+
+    def __init__(self):
+        self._html_cache = {}  # đỡ tải lại trang series (list_chapters + title + cover)
+
+    def _series_html(self, slug: str) -> str:
+        if slug not in self._html_cache:
+            self._html_cache[slug] = get_text(f"{self.BASE}/truyen-tranh/{slug}") or ""
+        return self._html_cache[slug]
+
+    def series_slug(self, text: str) -> str:
+        text = re.split(r"[?#]", text.strip())[0].rstrip("/")  # bỏ query/fragment
+        m = re.search(r"/truyen-tranh/([^/]+)", text)
+        return m.group(1) if m else text.rsplit("/", 1)[-1]
+
+    def title_from_slug(self, slug: str) -> str:
+        html = self._series_html(slug)
+        m = re.search(r'<h1[^>]*class="title-detail"[^>]*>([^<]+)</h1>', html, re.I)
+        if m:
+            return m.group(1).strip()
+        # dự phòng: bỏ đuôi id số nếu có rồi làm tên hiển thị từ slug
+        name = re.sub(r"-\d+$", "", slug)
+        return name.replace("-", " ").replace("_", " ").title()
+
+    def list_chapters(self, slug: str):
+        html = self._series_html(slug)
+        # /truyen-tranh/{slug}/chuong-N ; số chương ở path (lẻ .5 dạng chuong-6-5)
+        pat = re.compile(
+            r"/truyen-tranh/" + re.escape(slug) + r"/chuong-([0-9]+(?:[.\-][0-9]+)?)")
+        seen = {}  # number -> url (mỗi chương xuất hiện nhiều lần trong trang, dedup)
+        for tail in pat.findall(html):
+            try:
+                num = float(tail.replace("-", "."))  # "6-5" -> 6.5
+            except ValueError:
+                continue
+            seen[num] = f"{self.BASE}/truyen-tranh/{slug}/chuong-{tail}"
+        return [Chapter(num, "", seen[num]) for num in sorted(seen)]
+
+    def chapter_images(self, chapter):
+        html = get_text(chapter.ref)
+        if not html:
+            return []
+        i = html.find("reading-detail")   # bó về khối ảnh, tránh thumbnail/ads ngoài
+        area = html[i:] if i != -1 else html
+        seen, out = set(), []   # giữ nguyên thứ tự xuất hiện, bỏ trùng
+        for u in re.findall(r'data-src="(https?://[^"]+)"', area):
+            low = u.split("?", 1)[0].lower()
+            if not low.endswith((".jpg", ".jpeg", ".png", ".webp")):
+                continue          # bỏ avatar/icon lỡ có data-src
+            if u not in seen:
+                seen.add(u)
+                out.append(u)
+        return out
+
+    def cover_url(self, slug: str):
+        html = self._series_html(slug)
+        m = re.search(r'<meta property="og:image" content="([^"]+)"', html)
+        if not m:
+            return None
+        u = m.group(1)
+        return u if u.startswith("http") else self.BASE + u
+
+
 # --- Đăng ký: thêm site mới = thêm 1 dòng vào đây -------------------------------
 PROVIDERS = [AsuraProvider(), RavenProvider(), DilibProvider(), MangaDexProvider(),
-             TruyenQQProvider(), ACGNProvider()]
+             TruyenQQProvider(), ACGNProvider(), NetTruyenProvider()]
 
 by_name = {p.name: p for p in PROVIDERS}                 # tra theo cờ --site
 REGISTRY = {d: p for p in PROVIDERS for d in p.domains}  # tra theo domain của URL

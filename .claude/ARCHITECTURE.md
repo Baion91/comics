@@ -35,7 +35,12 @@ cách chạy thật + decode thử ảnh.
     **TruyenQQProvider** (parse HTML, `truyenqqko.com`), **ACGNProvider** (parse HTML tĩnh,
     `comic.acgn.cc`, truyện tiếng Trung — ảnh nhúng `_src` trong trang `view-{id}.htm`,
     danh sách tập ở `manhua-{slug}.htm`; số chương từ text `VOL`/`第N話`; referer=None;
-    CDN `img.acgn.cc` lọc theo vùng → 522 ngoài VN).
+    CDN `img.acgn.cc` lọc theo vùng → 522 ngoài VN),
+    **NetTruyenProvider** (parse HTML tĩnh, `nettruyen.id`, React/Next.js SSR — chương là
+    SUB-PATH `/truyen-tranh/{slug}/chuong-N`, ảnh nhúng `<img class="lozad" data-src="…">`
+    CDN `images.truyenonline.cc` KHÔNG đòi Referer → referer=None; tên có dấu từ
+    `<h1 class="title-detail">`; regex số chương dùng `[0-9]` thuần để không nuốt dấu `\`
+    của blob `__NEXT_DATA__`; chỉ nhận `nettruyen.id`, clone họ nettruyen backend/CDN KHÁC).
   - `comic_downloader.py` — CLI mỏng: `resolve_provider()` tự nhận site theo domain
     của URL (hoặc cờ `--site`), rồi gọi qua `dispatch()`: provider thường → `core.run`;
     provider có `custom_run` (hiện chỉ comix) → loop riêng. Cờ giữ y hệt bản cũ
