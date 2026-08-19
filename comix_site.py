@@ -13,11 +13,13 @@ Vì sao không theo hợp đồng provider thường (providers.py):
   chạy lại có thể THAY bản scan cũ bằng bản Official mới xuất hiện. Logic này không
   có chỗ trong run() generic nên viết loop riêng, 5 site cũ không bị đụng.
 
-Luật chọn bản per số chương (user chốt 09/08/2026):
+Luật chọn bản per số chương (user chốt 09/08, cập nhật 19/08/2026):
   1. Lọc language == "en". Có bản isOfficial=true (tick "v") -> lấy official
      (nhiều official -> id lớn nhất).
-  2. Không có official -> lấy bản scan có `id` (chapterId) LỚN NHẤT = upload mới
-     nhất (id tăng đơn điệu theo thời gian; user bỏ yêu cầu tiebreak theo nhóm).
+  2. Không có official -> ưu tiên bản scan CÓ tên nhóm, id LỚN NHẤT trước (mới nhất);
+     HẾT bản có nhóm mới tới bản KHÔNG có tên nhóm, id lớn nhất trước. Lý do: bản
+     "no group" hay là raw/batch đè lên bản nhóm scan cũ hơn nhưng chỉn chu hơn
+     (vd Dai ch.345-349). Cả số chương chỉ có bản không nhóm -> vẫn tải (không bỏ).
   3. Bản được chọn mà 0 trang (khóa/hỏng) -> thử ứng viên kế tiếp.
 
 Upgrade -> official (sidecar `.source.json` trong folder chương):
@@ -683,13 +685,25 @@ def group_versions(items):
 
 
 def candidates_for(versions):
-    """Thứ tự ưu tiên tải: official (id mới nhất trước) rồi scan (id mới nhất trước).
-    Bản đầu 0 trang thì caller tự rơi xuống bản kế."""
+    """Thứ tự ưu tiên tải:
+      1. official (id mới nhất trước).
+      2. scan CÓ tên nhóm (id mới nhất trước).
+      3. scan KHÔNG có tên nhóm (id mới nhất trước) — chỉ dùng khi hết bản có nhóm.
+    Bản đầu 0 trang thì caller tự rơi xuống bản kế.
+
+    Vì sao ưu tiên NHÓM hơn ĐỘ MỚI (user chốt 19/08): các bản "no group" thường là
+    raw/batch đè lên bản nhóm scan cũ hơn nhưng chỉn chu hơn (vd Dai ch.345-349: bản
+    'no group' 6 tháng đè lên bản Square Ocean 10 tháng). Ưu tiên bản có nhóm cho chất
+    lượng ổn định; bản không nhóm chỉ để DỰ PHÒNG (nếu cả số chương chỉ có bản không
+    nhóm thì vẫn tải, KHÔNG bỏ chương — user chốt phương án 1)."""
     off = sorted((v for v in versions if v.get("isOfficial")),
                  key=lambda v: v["id"], reverse=True)
-    scan = sorted((v for v in versions if not v.get("isOfficial")),
-                  key=lambda v: v["id"], reverse=True)
-    return off + scan
+    scan = [v for v in versions if not v.get("isOfficial")]
+    grouped = sorted((v for v in scan if _group_name(v) != "?"),
+                     key=lambda v: v["id"], reverse=True)
+    ungrouped = sorted((v for v in scan if _group_name(v) == "?"),
+                       key=lambda v: v["id"], reverse=True)
+    return off + grouped + ungrouped
 
 
 def _group_name(ver):

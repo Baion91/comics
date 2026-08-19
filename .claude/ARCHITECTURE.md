@@ -53,8 +53,12 @@ cách chạy thật + decode thử ảnh.
     cf_clearance/UA thật từ browser đang sống; refresh vé ở MAIN THREAD (đầu mỗi
     chương + khi 403); 403 chỉ gắn cookie cho host `*.comix.to`, wowpic không cần.
     URL ảnh `*.wowpicN.store` KHÔNG có đuôi file → tải xong sniff magic bytes đổi đuôi.
-    Luật chọn per chương: `isOfficial` trước → scan `id` (chapterId) lớn nhất
-    (id tăng đơn điệu = độ mới; API không có timestamp thô, chỉ "2mos ago").
+    Luật chọn per chương: `isOfficial` trước → scan CÓ tên nhóm (`id`/chapterId lớn
+    nhất = mới nhất trước) → hết bản có nhóm mới tới scan KHÔNG nhóm (id lớn nhất
+    trước). id tăng đơn điệu = độ mới (API không có timestamp thô, chỉ "2mos ago").
+    Ưu tiên NHÓM hơn độ mới vì bản "no group" hay là raw/batch đè lên bản nhóm scan
+    cũ hơn nhưng chỉn chu hơn (vd Dai ch.345-349); cả số chương chỉ có bản không nhóm
+    thì vẫn tải, không bỏ (user chốt 19/08). Xem `candidates_for()`.
     Upgrade→Official: điều kiện `has_content AND not on_disk_official AND
     best.isOfficial` — "chưa phải official" GỒM cả chương tải từ SITE KHÁC (folder có
     ảnh + `.done` nhưng KHÔNG có sidecar `.source.json`; sidecar chỉ do comix tạo),

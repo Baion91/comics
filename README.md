@@ -53,7 +53,8 @@ Một tool cho MỌI site, tự nhận site theo link (hiện hỗ trợ **Asura
 > tool phải **mở 1 cửa sổ Chromium** để lấy danh sách chương/ảnh — **đừng đóng cửa sổ đó**,
 > xong tool tự đóng (cần cài 1 lần: `pip install -r requirements.txt` rồi
 > `python -m playwright install chromium` — `cap-nhat.bat` trên server tự làm). Mỗi chương tự
-> chọn **bản Official (tick ✓)** nếu có, không thì lấy **bản scan mới nhất**; chương đã tải bằng
+> chọn **bản Official (tick ✓)** nếu có, không thì lấy **bản scan mới nhất CÓ tên nhóm** (chỉ khi
+> không còn bản nào có nhóm mới lấy bản không nhóm); chương đã tải bằng
 > bản scan mà sau này có bản Official thì **chạy lại lệnh là tự thay** (bản Official đã tải thì
 > không bao giờ tải lại). Nếu bot nhắn "bị Cloudflare chặn" → ra màn hình server tick
 > "Verify you are human" trong cửa sổ Chromium là tool tự chạy tiếp.
