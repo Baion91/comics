@@ -139,6 +139,9 @@ def main(default_provider=None):
     ap.add_argument("--cbz", action="store_true", help="Đóng gói mỗi chương thành .cbz")
     ap.add_argument("--retry-broken", action="store_true",
                     help="Thử lại cả ảnh đã ghi nhận hỏng-tại-nguồn (mặc định bỏ qua)")
+    ap.add_argument("--comix-q", dest="comix_q", type=int, default=85,
+                    help="comix.to: re-nén ảnh tải về mức chất lượng WebP này (mặc định "
+                         "85 — nhẹ đi ~nửa mà không mất nét nhìn thấy; 0 = TẮT, giữ byte gốc)")
     args = ap.parse_args()
     core.RETRY_BROKEN = args.retry_broken
 

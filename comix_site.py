@@ -90,6 +90,13 @@ PROFILE_DIR = core.META_DIR / "comix-profile"   # giữ cf_clearance qua các l�
 NOTIFY_CONFIG = core.META_DIR / "notify-config.json"
 TMP_DIRNAME = ".comix-tmp"    # dưới thư mục --out; đầu-dấu-chấm -> reader/check bỏ qua
 SIDECAR = ".source.json"      # bản nào đang nằm trong folder chương (id/nhóm/official)
+RECOMPRESS_MIN_SAVE = 10      # % — chỉ THAY bản gốc bằng bản nén khi tiết kiệm >= mức này
+                              # (đồng bộ --min-save của convert_webp.py; chống suy hao vô ích).
+RECOMPRESS_Q = 85             # Re-nén ảnh comix tải về xuống mức WebP q này. Comix encode
+                              # nhẹ tay (~q92) -> file to gấp ~1.6 lần Asura cho CÙNG pixel;
+                              # hạ q85 nhẹ đi ~nửa (đối chứng ch335: 24.5MB->12MB) mà mắt
+                              # thường không thấy khác bản Asura scan. Đổi bằng cờ --comix-q;
+                              # --comix-q 0 = TẮT (giữ nguyên byte gốc từ site).
 CHALLENGE_WAIT = 300          # giây chờ người xác minh Cloudflare trước khi bỏ cuộc
 MAX_RELAUNCH = 3              # số lần TỰ dựng lại Chromium cho MỖI đợt sự cố (reset khi tải được thêm)
 RELAUNCH_BACKOFF = 5.0        # giây nghỉ trước khi mở Chromium mới
@@ -760,6 +767,39 @@ def _fix_ext(path: Path) -> Path:
         return path
 
 
+def _recompress_webp(path: Path, q: int):
+    """Nén lại 1 ảnh WEBP vừa tải về mức chất lượng q (comix nén nhẹ tay -> file to gấp
+    ~1.6 lần Asura cho cùng pixel; hạ q85 nhẹ đi ~nửa mà không mất nét nhìn thấy).
+
+    CHỈ đụng .webp TĨNH; gif/avif/webp-động bỏ qua (đừng phá khung ảnh động). An toàn:
+    nén ra file .tmp, chỉ THAY bản gốc khi mở lại được VÀ tiết kiệm >= MIN_SAVE% (ảnh vốn
+    đã nén chặt thì giữ nguyên, khỏi suy hao vô ích). Ngưỡng đồng bộ với convert_webp.py
+    để hành vi nhất quán; ở đây ảnh luôn là bản thô comix (~q92) nên thường vượt xa ngưỡng.
+    Mọi lỗi -> giữ nguyên byte gốc (không bao giờ để lại ảnh hỏng: download_image đã xác
+    thực bản gốc rồi)."""
+    if q <= 0 or path.suffix.lower() != ".webp":
+        return
+    tmp = path.with_suffix(".webp.tmp")
+    try:
+        from PIL import Image
+        with Image.open(path) as im:
+            if getattr(im, "is_animated", False):
+                return                       # webp động (hiếm) -> đừng đụng
+            rgb = im.convert("RGB")
+        rgb.save(tmp, "WEBP", quality=q, method=4)
+        if tmp.stat().st_size <= path.stat().st_size * (1 - RECOMPRESS_MIN_SAVE / 100):
+            with Image.open(tmp) as chk:      # chắc chắn bản nén mở được trước khi thay
+                chk.verify()
+            os.replace(tmp, path)
+        else:
+            tmp.unlink()
+    except Exception:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+
+
 def _clear_images(folder: Path):
     """Đổi sang bản upload khác -> dọn ảnh (và .done) của bản cũ kẻo trộn ảnh 2 nhóm."""
     if not folder.is_dir():
@@ -1132,11 +1172,14 @@ def run(args):
                             print(f"\n{prefix} — 403 (vé Cloudflare?), đã làm mới vé từ "
                                   "browser, thử lại phần còn thiếu...", flush=True)
                             time.sleep(2.0)
-                    # URL không có đuôi -> sửa đuôi theo định dạng thật sau khi tải
+                    # URL không có đuôi -> sửa đuôi theo định dạng thật, rồi RE-NÉN webp
+                    # về q85 (comix nén nhẹ tay; xem RECOMPRESS_Q). Chỉ chạm ảnh MỚI tải
+                    # (trong jobs) -> chương đã có sẵn không bị đụng lại khi chạy tiếp.
                     for i, _ in jobs:
                         p = dest / f"{i:03d}.webp"
                         if p.exists() and p.stat().st_size > 0:
-                            _fix_ext(p)
+                            p = _fix_ext(p)
+                            _recompress_webp(p, getattr(args, "comix_q", RECOMPRESS_Q))
                 # ok/done chuẩn theo ĐĨA (retry có thể làm lệch bộ đếm cộng dồn)
                 ok = len([i for i, _ in pages if _page_file(dest, i) is not None])
 

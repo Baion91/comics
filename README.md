@@ -9,7 +9,7 @@ Các script trong thư mục này, mỗi cái một việc:
 | `check_library.py` | **Kiểm tra ảnh đã tải** — bắt ảnh hỏng/cụt/thiếu trang/đen |
 | `Kiem tra truyen.bat` | Bấm để kiểm tra: chọn thư mục (chạy check_library) |
 | `asura_downloader.py` | (cũ, vẫn chạy) lối tắt chỉ-Asura của comic_downloader |
-| `convert_webp.py` | Chuyển folder ảnh PNG sang WebP để giảm dung lượng |
+| `convert_webp.py` | Chuyển PNG→WebP **và** re-nén WebP nặng (comix.to) về q85 — có chế độ nén tại chỗ |
 | `realesrgan-.../lam-net.bat` | **Làm nét ảnh scan** bằng Real-ESRGAN (AI upscale 2x) |
 | `reader_server.py` | Web đọc truyện kiểu Asura, đọc từ PC lẫn điện thoại |
 
@@ -76,6 +76,15 @@ Một tool cho MỌI site, tự nhận site theo link (hiện hỗ trợ **Asura
 > chèn) sẽ được ghi "chưa lấy được" và **bỏ qua đi tiếp**, cuối vẫn báo "Tải xong" kèm danh sách
 > chương còn thiếu; **chạy lại lệnh là tự bù**. (Quảng cáo của site đã được chặn sẵn trong trình
 > duyệt tải nên hiếm khi dính.)
+>
+> **Tự nén nhẹ ảnh comix về q85 (mặc định bật):** comix trả WebP **nén nhẹ tay** nên file to gấp
+> ~1.6 lần bản Asura scan cho **cùng số pixel** (đối chứng Overgeared ch335: 24.5MB → ~12MB) — độ
+> phân giải **y hệt Asura**, chỉ là comix ít nén hơn. Nên khi tải, tool **re-nén mỗi ảnh về WebP
+> q85** ngay sau khi tải (nhẹ đi ~nửa mà **mắt thường không thấy khác** bản Asura). Chỉ đụng ảnh
+> **mới tải** (chương đã có sẵn trên đĩa không bị nén lại). Muốn đổi mức: `--comix-q 82` (nhẹ hơn)
+> / `--comix-q 90` (giữ nhiều dữ liệu hơn) / **`--comix-q 0` để TẮT** (giữ nguyên byte gốc từ
+> site). Ảnh comix **đã tải trước khi có tính năng này** thì nén tay bằng `convert_webp.py --webp-too`
+> (mục 3).
 
 Cách nhanh nhất: **double-click `Tai truyen.bat`** → dán link → chọn chương → xong
 hỏi tải tiếp. Hoặc chạy lệnh:
@@ -178,21 +187,42 @@ nhiều luồng (mặc định = số nhân CPU, tối đa 8) và ghi nhớ ản
 mất tiến độ, chạy lại là tiếp. Cần Pillow (máy này có sẵn); thiếu Pillow thì chỉ
 kiểm được chữ ký file, bỏ phần giải mã & dò một-màu.
 
-## 3. Chuyển PNG sang WebP — `convert_webp.py`
+## 3. Chuyển / nén WebP — `convert_webp.py` (hoặc bấm `convert_webp.bat`)
 
 ```bat
-:: Cơ bản: PNG -> WebP q85, JPG và file khác copy nguyên trạng
+:: Cơ bản: PNG -> WebP q85, JPG và WebP copy nguyên trạng, xuất ra <tên>_webp
 python convert_webp.py "downloads\Ten-folder-truyen"
 
 :: Tùy chọn thêm
 python convert_webp.py "..." --quality 90    :: nét hơn, to hơn chút
 python convert_webp.py "..." --jpg-too       :: nén cả JPG (lưu ý: lossy chồng lossy)
+python convert_webp.py "..." --webp-too      :: RE-NÉN cả WebP về q85 (cho ảnh comix.to nặng)
+python convert_webp.py "..." --in-place      :: NÉN WebP TẠI CHỖ (sửa thẳng folder gốc)
 ```
 
-- Kết quả xuất ra thư mục mới `<tên>_webp` **bên cạnh** thư mục gốc —
+- (Mặc định) Kết quả xuất ra thư mục mới `<tên>_webp` **bên cạnh** thư mục gốc —
   **không sửa/xóa gì ở thư mục gốc**. Ưng kết quả rồi mới tự tay xóa gốc.
-- Với truyện scan, q85 giảm ~50–80% dung lượng mà mắt thường không phân biệt
-  được.
+- Với truyện scan, q85 giảm ~50–80% dung lượng mà mắt thường không phân biệt được.
+- **Chốt chống nén-chồng (`--min-save`, mặc định 10%)**: khi RE-NÉN một WebP, chỉ thay
+  bằng bản nén nếu **tiết kiệm ≥ 10%**; ảnh **đã tối ưu** (vd đã q85) nén lại chỉ nhỏ ~1%
+  → **giữ nguyên**, không chồng suy hao. Nhờ vậy lỡ **bấm nhầm / chạy lại** trên folder đã
+  nén cũng **an toàn** (mỗi ảnh chỉ nén-có-ích 1 lần).
+- **`--webp-too` cho ảnh comix cũ**: WebP mặc định **copy nguyên** (đã là WebP). Ảnh
+  **comix.to tải trước khi có tính năng auto-q85** vẫn nén nhẹ tay (to gấp ~1.6 lần) —
+  thêm `--webp-too` để **re-nén chúng về q85** (giảm ~nửa, không mất nét nhìn thấy). Ảnh
+  comix tải MỚI đã tự q85 nên **không cần** làm lại (chốt trên tự bỏ qua chúng).
+- **`--in-place` — cách gọn cho comix cũ (khuyên dùng khi cần nén NHIỀU bộ):** re-nén WebP
+  **ngay trong folder gốc**, **không** tạo `<tên>_webp`. Nhờ đó **khỏi phải xóa gốc + đổi tên**,
+  và **downloader vẫn tải tiếp chương mới vào đúng folder đó** (giữ nguyên `.done`/`.source.json`,
+  bookmark reader không mất). Chỉ đụng `.webp` (PNG/JPG bỏ qua); ghi đè có **temp + verify + chốt
+  tiết kiệm** nên **không mất data**, chạy lại **idempotent** (ảnh đã tối ưu bị bỏ qua).
+  > ⚠️ **ĐỪNG giữ đuôi `_webp` rồi xóa folder gốc.** Downloader tính folder đích theo **tên
+  > truyện, KHÔNG có `_webp`** — nếu chỉ còn `<tên>_webp` thì nó coi như **chưa tải** và **tải
+  > lại cả bộ từ đầu**. Muốn dùng cây `_webp`: sau khi ưng, **xóa gốc rồi đổi tên `<tên>_webp` →
+  > `<tên>`** (convert đã copy sẵn `.done`/`.source.json` nên tải tiếp vẫn bỏ qua chương cũ). Hoặc
+  > đơn giản hơn: dùng thẳng **`--in-place`** để khỏi phải làm bước này.
+- **Chạy tay trên server**: bấm **`convert_webp.bat`** → để mức **85** → trả lời **`y`** ở dòng
+  *"Nen TAI CHO (…comix cu)?"* để nén tại chỗ (hoặc `N` rồi chọn *"Re-nen ca WebP?"* nếu muốn ra cây `_webp`).
 
 ## Làm nét ảnh scan — Real-ESRGAN (`realesrgan-ncnn-vulkan-v0.2.0-windows\lam-net.bat`)
 

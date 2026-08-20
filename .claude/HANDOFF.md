@@ -1,9 +1,44 @@
-# Handoff — cập nhật lần cuối: 2026-08-19 (reader: sửa TTFB màn-trắng — cache thư viện SWR + cache nguồn bìa)
+# Handoff — cập nhật lần cuối: 2026-08-21 (comix q85: thêm chốt-tiết-kiệm + convert_webp --in-place)
 
 > Kiến trúc ổn định (reader, provider, comix, supervisor, mạng…) nằm ở `.claude/ARCHITECTURE.md`.
 > File này chỉ ghi TRẠNG THÁI hiện tại + việc đang dở.
 
 ## Đang làm / dở dang
+- **[21/08] convert_webp: chốt-tiết-kiệm + chế độ nén TẠI CHỖ (`--in-place`) — ĐÃ code + test dev,
+  CHƯA nghiệm thu LIVE.** Nối tiếp mục [20/08]. Vấn đề: (a) `convert_webp.py --webp-too` KHÔNG có chốt
+  nên nén webp đã-q85 lần nữa = suy hao vô ích (~99% cỡ gốc); (b) user cần nén **nhiều bộ comix cũ** —
+  quy trình "convert → xóa gốc → đổi tên `_webp`→gốc" dễ sai (quên đổi tên → downloader coi như chưa
+  tải, tải LẠI cả bộ, vì `out_root` tính theo tên truyện KHÔNG có `_webp`). Fix (5 phần): **B1** chốt
+  `--min-save` (mặc định 10%) — chỉ thay bản webp khi tiết kiệm ≥10%, ảnh đã tối ưu (~1% nhỏ hơn) thì
+  GIỮ NGUYÊN → chống nén-chồng, bấm nhầm/chạy lại đều an toàn (mỗi ảnh nén-có-ích 1 lần); **B2**
+  `--in-place` re-nén webp NGAY trong folder gốc (không tạo `_webp`, chỉ đụng `.webp`, temp+verify+os.replace,
+  giữ nguyên `.done`/`.source.json` → downloader tải tiếp chương mới bình thường, reader giữ bookmark);
+  **B3** `convert_webp.bat` thêm nhánh "Nen TAI CHO?" (viết bằng goto tránh bẫy delayed-expansion trong
+  khối `()`); **B4** README mục 3 + bảng đầu; **B5** đồng bộ ngưỡng: `_recompress_webp` (comix_site) đổi
+  từ "nhỏ hơn là thay" sang "tiết kiệm ≥ `RECOMPRESS_MIN_SAVE`=10%". Tách helper chung `reencode_webp_bytes`
+  (nén RAM + verify) cho cả tree lẫn in-place. **Test dev**: in-place trên folder trộn (1 raw q92 + 1 đã
+  q85 + marker) → raw 469KB→276KB, q85 giữ nguyên, marker không đụng, không sót `.tmp`; **chạy lần 2 =
+  idempotent** (giữ cả 2, không suy hao); tree `--webp-too` cùng data → nén raw, giữ q85, cây gốc nguyên;
+  syntax + import OK. **Deploy = push + `/update`** (chỉ đụng `convert_webp.py`/`comix_site.py`; convert_webp
+  chạy TAY nên chỉ cần code có trên đĩa server). Nghiệm thu: xem "Việc tiếp theo".
+- **[20/08] Comix tự re-nén ảnh tải về q85 — ĐÃ code + test dev, CHƯA nghiệm thu LIVE trên server.**
+  Đối chứng thực đo (Overgeared, cùng bản scan "Asura Scans" trên cả 2 site): comix trả WebP **giống
+  hệt Asura từng pixel** (ch335: cả hai rộng 900px, tổng 169.5 MP, strip ghép trùng khít) — KHÔNG hề
+  phân giải cao hơn; chỉ **nén nhẹ tay** nên nặng gấp ~1.56× (24.5MB vs 15.7MB, 0.151 vs 0.097 B/px).
+  Re-nén về **q85** → ~12MB (còn nhẹ hơn cả Asura) mà crop zoom 100% **không phân biệt được**. Fix
+  (3 chỗ): ① `comix_site.py` thêm `RECOMPRESS_Q=85` + `_recompress_webp(path,q)` (mở PIL, save WEBP
+  q method=4, chỉ THAY khi bản nén nhỏ hơn + `verify()` mở lại được; webp-động/gif/avif bỏ qua; mọi
+  lỗi giữ nguyên byte gốc), hook ngay sau `_fix_ext` trong vòng tải — CHỈ đụng ảnh MỚI tải (trong
+  `jobs`) nên chương đã có sẵn không bị nén lại; ② `comic_downloader.py` thêm cờ `--comix-q` (mặc định
+  85, `0`=tắt), comix đọc qua `getattr(args,"comix_q",RECOMPRESS_Q)`; ③ `convert_webp.py` thêm cờ
+  `--webp-too` (re-nén WebP thay vì copy — cho ảnh comix tải TRƯỚC khi có tính năng này) + `convert_webp.bat`
+  thêm dòng hỏi "Re-nen ca WebP?". **Test dev**: `_recompress_webp` trên tile thật 469KB→276KB (58%),
+  ảnh mở lại OK đúng 900×1778; `--help` có `--comix-q`; `convert_webp.py --webp-too` trên 10 tile
+  2.47MB→1.31MB (53%); syntax cả 3 file OK. **Deploy = push (`day-len.bat`) rồi `/update` là ĐỦ**:
+  chỉ đụng `comix_site.py`/`comic_downloader.py`/`convert_webp.py`, KHÔNG đụng `supervisor.py`; `/update`
+  `git reset --hard origin/main` kéo code về đĩa, và bot tải bằng cách **spawn subprocess
+  `comic_downloader.py`** (đọc code mới từ đĩa mỗi lần) nên lượt `/tai` kế đã dùng bản mới (không cần
+  `cap-nhat.bat` / restart supervisor). Nghiệm thu: xem "Việc tiếp theo".
 - **[19/08] Reader màn-trắng khi mở web (TTFB cao) — ĐÃ code + test dev, CHƯA nghiệm thu LIVE trên
   server.** Chẩn đoán bằng DevTools (2 lần đo, cùng quick-tunnel `trycloudflare.com`): laptop 9 bộ
   TTFB **124ms**, server ~40 bộ TTFB **4.27s**; ba dòng DNS+Connect+SSL GẦN BẰNG NHAU ở cả hai (~160-190ms)
@@ -98,6 +133,23 @@
 - **[10/08] Tool LÀM NÉT Real-ESRGAN — ĐÃ push. Tích hợp tự động vào `/tai` CHƯA làm.**
 
 ## Quyết định gần đây (mới nhất trước)
+- **21/08: Chống nén-chồng bằng CHỐT-TIẾT-KIỆM (stateless), KHÔNG cố đọc q gốc** — không thể đọc
+  được quality của một webp có sẵn, nên thay vì "phát hiện đã q85 rồi skip", dùng heuristic "chỉ thay
+  khi bản nén tiết kiệm ≥10%". Nó tự phân loại: q92→q85 (~60%) thì nén, q85→q85 (~99%) thì giữ nguyên;
+  và tự biến việc nén thành gần-idempotent (sau lần nén-có-ích đầu, các lần sau đều ~0% tiết kiệm → bị
+  từ chối) → bấm nhầm/chạy lại vô hại. Ngưỡng 10% đặt ở 2 nơi (`convert_webp.MIN_SAVE_DEFAULT`,
+  `comix_site.RECOMPRESS_MIN_SAVE`) cho nhất quán. **Và chọn `--in-place` làm cách chính cho comix cũ**
+  (thay quy trình xóa+đổi-tên dễ sai): downloader tính `out_root` theo TÊN TRUYỆN không có `_webp`, nên
+  giữ đuôi `_webp` = mất dấu = tải lại cả bộ; nén tại chỗ giữ nguyên tên/marker nên tải tiếp trơn.
+- **20/08: Comix nặng hơn Asura là do NÉN NHẸ TAY, KHÔNG phải phân giải cao hơn → tự re-nén q85 lúc
+  tải** — đo thực (cùng bản "Asura Scans" ch335): 2 site giống hệt pixel (900px, strip trùng khít),
+  comix chỉ để B/px cao hơn (0.151 vs 0.097). Nên hạ về q85 ngay khi tải là "nhẹ ~nửa, chất lượng
+  nhìn thấy y nguyên" (đối chứng crop 100%). Chọn q85 (không phải thấp hơn): dư biên độ, kết quả vẫn
+  nhẹ hơn cả Asura; hạ nữa (q82) nhẹ thêm chút nhưng để mặc định an toàn. Re-nén **inline trong vòng
+  tải** (không phải hậu xử lý riêng) để chương tải xong là đã tối ưu, và CHỈ đụng ảnh mới tải (idempotent
+  theo `.done`/file-đã-có). Là transcode lossy→lossy nên **chạy đúng 1 lần**; ảnh comix cũ dùng
+  `convert_webp.py --webp-too` (cũng chỉ nên 1 lần). Không đụng engine chung `comics_core` (giữ an toàn
+  cho 6 site kia) — logic nằm gọn trong `comix_site.py`.
 - **19/08: Trị màn-trắng reader = giảm TTFB phía server, KHÔNG dùng splash** — đo DevTools chứng minh
   màn trắng 100% là "Waiting for server response" (mạng vô can: DNS+Connect+SSL bằng nhau giữa máy nhanh
   124ms và máy chậm 4.27s). App là SSR nên splash nhét trong HTML vô nghĩa (trình duyệt không có gì để
@@ -174,6 +226,17 @@
   (Các quyết định cũ hơn 09-10/08 về comix loop/relaunch đã ghi đầy đủ ở ARCHITECTURE.)
 
 ## Việc tiếp theo
+- **[convert_webp in-place nghiệm thu LIVE]** Push (`day-len.bat`) → code có trên server (convert_webp
+  chạy TAY nên không cần `/update`, chỉ cần file trên đĩa). Nén 1 bộ comix CŨ: `convert_webp.bat` →
+  chọn "Nen TAI CHO? y" (mức 85) HOẶC `python convert_webp.py "downloads\<bộ>" --in-place`. Xác nhận:
+  ảnh nhẹ ~nửa, `.done`/`.source.json` còn nguyên, **chạy lại lần 2 báo "giữ-nguyên" hết** (idempotent);
+  rồi `/tai <link bộ đó>` → chỉ tải chương mới (bỏ qua chương cũ), KHÔNG tải lại từ đầu.
+- **[Comix q85 nghiệm thu LIVE]** Push (`day-len.bat`) → `/update` qua bot (đủ, không cần restart
+  supervisor). `/tai <comix url>` 1 chương chưa có → xác nhận log downloader chạy trơn; soi dung lượng
+  ảnh trong `downloads\<bộ>\Chapter N\` ~nửa so với comix gốc (mỗi trang vài trăm KB thay vì ~nửa MB),
+  và mở reader thấy vẫn nét. Muốn tắt/đổi: `--comix-q 0` (giữ gốc) / `--comix-q 82`. Ảnh comix **đã tải
+  từ trước**: chạy tay `convert_webp.bat` (mức 85, trả lời `y` ở "Re-nen ca WebP?") hoặc
+  `python convert_webp.py "downloads\<bộ>" --webp-too` → kiểm folder `<bộ>_webp` rồi mới thay.
 - **[Reader TTFB nghiệm thu LIVE]** `/update` qua bot (chỉ đụng `reader_server.py`). Trên server mở
   DevTools → Network → tab Timing của request document trang chủ: xác nhận "Waiting for server response"
   tụt từ ~4s xuống dưới ~vài trăm ms. Phép thử "nhiều lúc": để trang > 60s (cache hết hạn) rồi F5 —
@@ -209,6 +272,17 @@
 - (Tùy chọn, gốc rễ) **Named tunnel + domain** để URL cố định — nếu mua domain rẻ.
 
 ## Lưu ý / rủi ro đang mở
+- **Comix re-nén q85 là transcode LOSSY→LOSSY — nhưng chốt-tiết-kiệm 10% đã chặn nén-chồng**: cả
+  `_recompress_webp` (inline lúc tải, chỉ ảnh mới trong `jobs`) lẫn `convert_webp.py` (tree/in-place) nay
+  chỉ THAY bản gốc khi bản nén **tiết kiệm ≥10%** + `verify()` mở được; ảnh đã tối ưu (~1% nhỏ hơn) →
+  GIỮ NGUYÊN. Nhờ vậy chạy lại/bấm nhầm KHÔNG suy hao thêm (idempotent trên thực tế). webp-động/gif/avif
+  bỏ qua. Muốn giữ nguyên byte gốc từ site khi tải: `--comix-q 0`. Nếu SAU NÀY hạ ngưỡng xuống rất thấp
+  (vd 1%) thì mất tính chống-chồng — giữ ~10%.
+- **`--in-place` GHI ĐÈ ảnh gốc**: an toàn nhờ temp+verify+os.replace + chốt-tiết-kiệm (không mất data,
+  không phình), nhưng KHÁC tree-mode ở chỗ không còn bản gốc để đối chiếu. Ai muốn chắc ăn thì chạy
+  tree-mode (`--webp-too`) xem `_webp` ưng rồi mới đổi tên. `--in-place` chỉ đụng `.webp` (PNG/JPG kệ).
+- **ĐỪNG giữ folder `<tên>_webp` rồi xóa gốc `<tên>`**: downloader ghi vào `downloads/<Title>` (KHÔNG có
+  `_webp`) nên sẽ tải LẠI cả bộ. Dùng `_webp` thì phải đổi tên về `<tên>`; hoặc dùng `--in-place`.
 - **Reader SWR: cache thư viện + bìa có thể cũ tối đa ~60s (CACHE_TTL)** — `cover_ver`/`cover_src` giờ
   đọc từ series cache thay vì stat đĩa mỗi render, nên thay file `cover.*` TAY (không qua admin) có thể
   chậm hiện ≤60s tới khi thread nền quét lại. Đổi bìa qua ADMIN thì tức thì (đã `bust_library_cache`).
