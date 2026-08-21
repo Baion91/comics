@@ -1,9 +1,31 @@
-# Handoff — cập nhật lần cuối: 2026-08-21 (comix q85: thêm chốt-tiết-kiệm + convert_webp --in-place)
+# Handoff — cập nhật lần cuối: 2026-08-21 (reader: Service Worker + tách CSS/JS + ETag bìa)
 
 > Kiến trúc ổn định (reader, provider, comix, supervisor, mạng…) nằm ở `.claude/ARCHITECTURE.md`.
 > File này chỉ ghi TRẠNG THÁI hiện tại + việc đang dở.
 
 ## Đang làm / dở dang
+- **[21/08] Reader: hết màn-trắng khi mở NGUỘI + hết bìa nháy đen khi login/logout — ĐÃ code + test
+  dev (đo + HTTP live localhost), CHƯA nghiệm thu LIVE qua tunnel.** Nối tiếp [19/08] (SWR đã trị màn
+  trắng do scandir; còn 2 triệu chứng client/mạng). Chẩn đoán mới (user đo trên link cloudflared SERVER):
+  login-vs-guest KHÔNG chênh (đã đo `html_home` guest/login/nhiều-bm = 0.46–0.58ms, server VÔ CAN);
+  triệu chứng thật: (1) login/logout → bìa nháy đen ~1s (DevTools: `/cover/*` trả **200** = tải lại
+  thật, vì route `/cover` THIẾU ETag → reload không 304 được); (2) mở nguội (lần đầu / sau >1' idle)
+  trắng 2-3s, mở lại ngay <1s (TTFB document `/` cold = 1-2s = cost kết nối nguội + document `no-store`
+  nhúng inline toàn bộ CSS/JS nên không cache được gì; "1 phút" = trình duyệt hủy tab nền + đóng
+  keep-alive). **Fix 4 phần (chỉ `reader_server.py`):** ① **ETag cho `/cover`** (`"{cover_ver}-{len}"`,
+  hỗ trợ If-None-Match→304); ② **tách CSS + JS ra file tĩnh versioned** `/static/<name>?v=<sha1[:10]>`
+  (registry `STATIC_ASSETS`, `Cache-Control: immutable`, ETag) — home doc **35.9KB→11.5KB** (−68%);
+  page/home/series/reader giờ nạp qua `static_tag()` (script data ĐỘNG vẫn inline trước); ③ **Service
+  Worker** `/sw.js` (no-cache + `Service-Worker-Allowed:/`): precache shell, **cache-first** cho
+  `/cover` `/img` `/static` + icon (bìa lấy cache → hết nháy đen), **stale-while-revalidate** cho
+  điều hướng HTML (first paint từ cache tức thì kể cả kết nối nguội → hết màn trắng); ④ **login/logout
+  `purgeAndReload()`**: postMessage SW xoá `PAGE_CACHE` (ack qua MessageChannel, fallback 300ms) rồi
+  reload → trang tải lại đúng trạng thái đăng nhập (SW khoá theo URL không phân biệt cookie), bìa/CSS/JS
+  vẫn từ cache nên reload nhanh + không nháy. **Test dev**: compile OK; HTTP live localhost — `/static/*`
+  200+immutable+ETag & 304; `/sw.js` đúng header; `/cover` 200→304 khi revalidate; 3 trang render đúng,
+  không còn `<style>`/`<script>{...}` inline sót; SW placeholders (`__VER__`/`__PRECACHE__`) đã thay.
+  **Deploy = `/update` qua bot** (chỉ đụng `reader_server.py`, KHÔNG đụng supervisor). Nghiệm thu LIVE:
+  xem "Việc tiếp theo".
 - **[21/08] convert_webp: chốt-tiết-kiệm + chế độ nén TẠI CHỖ (`--in-place`) — ĐÃ code + test dev,
   CHƯA nghiệm thu LIVE.** Nối tiếp mục [20/08]. Vấn đề: (a) `convert_webp.py --webp-too` KHÔNG có chốt
   nên nén webp đã-q85 lần nữa = suy hao vô ích (~99% cỡ gốc); (b) user cần nén **nhiều bộ comix cũ** —
@@ -133,6 +155,12 @@
 - **[10/08] Tool LÀM NÉT Real-ESRGAN — ĐÃ push. Tích hợp tự động vào `/tai` CHƯA làm.**
 
 ## Quyết định gần đây (mới nhất trước)
+- **21/08: Trị màn-trắng cold + bìa-nháy bằng SERVICE WORKER, không phải tối ưu server thêm** — đã
+  chứng minh server render 0.5ms (vô can); nút thắt còn lại là client không có gì hiện ngay khi kết nối
+  nguội + document `no-store` không cache được. SW (SWR shell + cache-first ảnh) cắt mạng khỏi đường
+  tới-hạn của first paint. Đồng thời tách CSS/JS ra file versioned immutable (cache được + document co
+  68%) và gắn ETag `/cover` (reload 304 thay vì tải lại). login/logout phải purge `PAGE_CACHE` của SW
+  vì SW khoá theo URL không phân biệt cookie → nếu không sẽ hiện nhầm trạng thái đăng nhập cũ.
 - **21/08: Chống nén-chồng bằng CHỐT-TIẾT-KIỆM (stateless), KHÔNG cố đọc q gốc** — không thể đọc
   được quality của một webp có sẵn, nên thay vì "phát hiện đã q85 rồi skip", dùng heuristic "chỉ thay
   khi bản nén tiết kiệm ≥10%". Nó tự phân loại: q92→q85 (~60%) thì nén, q85→q85 (~99%) thì giữ nguyên;
@@ -242,6 +270,14 @@
   tụt từ ~4s xuống dưới ~vài trăm ms. Phép thử "nhiều lúc": để trang > 60s (cache hết hạn) rồi F5 —
   KHÔNG còn cú trắng 4s (giờ trả stale ngay, quét lại ở nền). Chỉ lần MỞ SERVER đầu tiên (cache lạnh)
   mới chịu 1 lượt quét đồng bộ. Đổi bìa qua admin vẫn hiện đúng bản mới (bust cache → build lại `cover_mt`).
+- **[Reader SW + tách CSS/JS + ETag bìa nghiệm thu LIVE]** `/update` qua bot (chỉ `reader_server.py`).
+  Mở link tunnel, DevTools → Application → Service Workers: xác nhận `sw.js` "activated". (a) **Bìa nháy**:
+  login rồi logout → bìa KHÔNG còn nháy đen; Network `/cover/*` là `(ServiceWorker)`/`304`, không còn 200
+  full. (b) **Màn trắng cold**: đóng web app, chờ >1' rồi mở lại → nội dung hiện gần như tức thì (shell từ
+  cache SW), không còn trắng 2-3s. (c) **Đúng trạng thái**: sau login/logout, header + hàng Bookmarked
+  phản ánh đúng tài khoản (nhờ purge `PAGE_CACHE`). (d) **Cập nhật nội dung**: thêm/sửa truyện → lần mở kế
+  hiện bản cũ (SWR) rồi lần mở sau nữa là mới — chấp nhận được; nếu cần thấy ngay thì F5 lần 2. Lưu ý iOS
+  Safari: SW có thể bị evict sau ~7 ngày không dùng → lần mở đầu sau đó chịu cold 1 lượt rồi ấm lại.
 - **[Chống-treo ①+② nghiệm thu LIVE]** `cap-nhat.bat` → chạy lại `server-BAT-tudong.bat` (đụng
   `supervisor.py`). (a) Bình thường: `/tai <comix url>` → tải chạy trơn, KHÔNG bị kill oan (log tăng đều).
   (b) Giả treo mở-Chromium: trước khi `/tai`, mở tay 1 chrome ôm `comix-profile` để gây wedge → xác nhận

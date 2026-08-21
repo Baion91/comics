@@ -14,6 +14,7 @@ Chạy:  python reader_server.py  (tùy chọn: --port 8080)
 import argparse
 import base64
 import binascii
+import hashlib
 import html
 import io
 import json
@@ -1251,9 +1252,9 @@ def page(title, body, body_class=""):
             "<link rel=\"icon\" href=\"/logo\">"
             # iOS chỉ nhận icon home-screen qua apple-touch-icon dạng PNG
             "<link rel=\"apple-touch-icon\" href=\"/icon-180.png\">"
-            f"<title>{html.escape(title)}</title><style>{CSS}</style></head>"
+            f"<title>{html.escape(title)}</title>{static_tag('app.css')}</head>"
             f"<body class=\"{body_class}\">{body}"
-            f"<script>{PRESS_JS}</script><script>{TOTOP_JS}</script></body></html>")
+            f"{static_tag('base.js')}{SW_REGISTER}</body></html>")
 
 
 def u(*segs):
@@ -1432,8 +1433,8 @@ def html_home(lib, user=None):
     body = ('<div class="wrap">' + account_header(user) + slider + grid + '</div>' + TOTOP_HTML
             + f'<script>const FOLLOWDATA={js(followdata)};let BM={js(bmorder)};'
             f'const LOGGEDIN={js(bool(user))};const ADMIN={js(admin)};</script>'
-            f'<script>{LS_JS}</script><script>{ACCT_JS}</script><script>{HOME_JS}</script>'
-            + (f'<script>{ADMIN_JS}</script>' if admin else ''))
+            + static_tag('ls.js') + static_tag('acct.js') + static_tag('home.js')
+            + (static_tag('admin.js') if admin else ''))
     return page("TOONY READER", body)
 
 
@@ -1505,7 +1506,7 @@ def html_series(s, user=None):
             + '<div class="nores" id="chnores">Không tìm thấy chương nào.</div></div></div>'
             + TOTOP_HTML
             + f'<script>const SDATA={js(sdata)};const LOGGEDIN={js(bool(user))};</script>'
-            f'<script>{LS_JS}</script><script>{ACCT_JS}</script><script>{SERIES_JS}</script>')
+            + static_tag('ls.js') + static_tag('acct.js') + static_tag('series.js'))
     return page(s["title"], body)
 
 
@@ -1642,7 +1643,7 @@ def html_reader(s, rel, user=None):
         + navbtn(next_url, "Next ›", acc=True)
         + "</footer>"
         f"<script>const D={js(data)};const LOGGEDIN={js(bool(user))};</script>"
-        f"<script>{LS_JS}</script><script>{READER_JS}</script>")
+        + static_tag('ls.js') + static_tag('reader.js'))
     return page(f'{info["name"]} - {s["title"]}', body, body_class="reader")
 
 
@@ -1669,6 +1670,22 @@ LS_JS = """
 
 ACCT_JS = """
 (function(){
+  // Login/logout đổi trạng thái theo tài khoản -> phải xoá cache HTML của SW
+  // (khoá theo URL, không phân biệt cookie) rồi mới reload, để trang tải lại
+  // đúng trạng thái mới. Bìa/CSS/JS vẫn nằm trong cache SW -> reload nhanh,
+  // KHÔNG nháy đen bìa. Có ack qua MessageChannel để reload sau khi xoá xong;
+  // fallback 300ms phòng SW không phản hồi.
+  function purgeAndReload(){
+    var sw=navigator.serviceWorker;
+    if(!(sw&&sw.controller)){ location.reload(); return; }
+    var done=false, go=function(){ if(!done){done=true;location.reload();} };
+    try{
+      var ch=new MessageChannel();
+      ch.port1.onmessage=go;
+      sw.controller.postMessage({type:'purge-pages'},[ch.port2]);
+      setTimeout(go,300);
+    }catch(e){ go(); }
+  }
   // đưa con trỏ vào ô đăng nhập (gọi khi guest bấm bookmark)
   window.TOONY_LOGIN=function(){
     var u=document.getElementById('uname');
@@ -1686,14 +1703,14 @@ ACCT_JS = """
       body:JSON.stringify({name:name})})
     .then(function(r){return r.json();}).then(function(res){
       btn.disabled=false;
-      if(res&&res.ok){ location.reload(); }
+      if(res&&res.ok){ purgeAndReload(); }
       else if(err){ err.textContent=(res&&res.error)?res.error:'Login failed'; }
     }).catch(function(){btn.disabled=false; if(err) err.textContent='Connection error';});
   });
   var lo=document.getElementById('logoutbtn');
   if(lo) lo.addEventListener('click',function(){
     lo.disabled=true;
-    fetch('/api/logout',{method:'POST'}).then(function(){location.reload();})
+    fetch('/api/logout',{method:'POST'}).then(function(){purgeAndReload();})
       .catch(function(){lo.disabled=false;});
   });
 })();
@@ -2214,6 +2231,147 @@ READER_JS = """
 
 
 # ---------------------------------------------------------------------------
+# Tài nguyên tĩnh (CSS/JS) phục vụ ở URL versioned + cache vĩnh viễn. Trước đây
+# nhúng inline vào document no-store -> tải lại toàn bộ mỗi lần mở. Tách ra ->
+# trình duyệt VÀ Service Worker cache được, document co lại còn phần động.
+# ---------------------------------------------------------------------------
+
+def _mkasset(text, ctype):
+    data = text.encode("utf-8")
+    return {"data": data, "ctype": ctype,
+            "ver": hashlib.sha1(data).hexdigest()[:10]}
+
+
+_JS_CT = "application/javascript; charset=utf-8"
+STATIC_ASSETS = {
+    "app.css":   _mkasset(CSS, "text/css; charset=utf-8"),
+    "base.js":   _mkasset(PRESS_JS + "\n" + TOTOP_JS, _JS_CT),
+    "ls.js":     _mkasset(LS_JS, _JS_CT),
+    "acct.js":   _mkasset(ACCT_JS, _JS_CT),
+    "home.js":   _mkasset(HOME_JS, _JS_CT),
+    "admin.js":  _mkasset(ADMIN_JS, _JS_CT),
+    "series.js": _mkasset(SERIES_JS, _JS_CT),
+    "reader.js": _mkasset(READER_JS, _JS_CT),
+}
+
+
+def static_url(name):
+    return f"/static/{name}?v={STATIC_ASSETS[name]['ver']}"
+
+
+def static_tag(name):
+    """Thẻ tải tài nguyên tĩnh đã versioned (<link> cho css, <script> cho js)."""
+    if name.endswith(".css"):
+        return f'<link rel="stylesheet" href="{static_url(name)}">'
+    return f'<script src="{static_url(name)}"></script>'
+
+
+# ---------------------------------------------------------------------------
+# Service Worker: cache-first cho tài nguyên tĩnh + ảnh (bìa/trang), stale-
+# while-revalidate cho trang HTML. Trị: (a) màn trắng khi mở nguội - shell trả
+# từ cache tức thì không chờ mạng; (b) bìa nháy đen khi reload - ảnh lấy từ
+# cache, không tải lại qua tunnel.
+# ---------------------------------------------------------------------------
+
+# Danh sách precache lúc cài SW (shell tối thiểu để trang chủ hiện được ngay).
+_SW_PRECACHE = ([static_url(n) for n in STATIC_ASSETS]
+                + ["/manifest.webmanifest", "/logo", "/icon-180.png"])
+
+# Đổi khi logic SW đổi hoặc bất kỳ asset nào đổi -> SW mới, dọn cache cũ.
+SW_VERSION = "v1-" + hashlib.sha1(
+    ("|".join(_SW_PRECACHE)).encode()).hexdigest()[:10]
+
+SW_JS = ("""
+const VER = '__VER__';
+const STATIC_CACHE = 'toony-static-' + VER;
+const PAGE_CACHE   = 'toony-pages-' + VER;
+const IMG_CACHE    = 'toony-img';           // ảnh: URL đã versioned/độc nhất
+const PRECACHE = __PRECACHE__;
+
+self.addEventListener('install', (e) => {
+  self.skipWaiting();
+  e.waitUntil(caches.open(STATIC_CACHE).then((c) => c.addAll(PRECACHE)));
+});
+
+self.addEventListener('activate', (e) => {
+  e.waitUntil((async () => {
+    const keys = await caches.keys();
+    await Promise.all(keys.map((k) => {
+      if (k === STATIC_CACHE || k === PAGE_CACHE || k === IMG_CACHE) return null;
+      return caches.delete(k);   // dọn phiên bản shell/pages cũ
+    }));
+    await self.clients.claim();
+  })());
+});
+
+// Trang tự báo "vừa login/logout" -> xoá cache HTML để lần mở sau không hiện
+// nhầm trạng thái đăng nhập cũ.
+self.addEventListener('message', (e) => {
+  if (e.data && e.data.type === 'purge-pages') {
+    e.waitUntil(caches.delete(PAGE_CACHE).then(() => {
+      if (e.ports && e.ports[0]) e.ports[0].postMessage({ok: true});
+    }));
+  }
+});
+
+function isImg(url) {
+  return url.pathname.startsWith('/cover/') || url.pathname.startsWith('/img/');
+}
+function isStatic(url) {
+  return url.pathname.startsWith('/static/')
+      || url.pathname === '/manifest.webmanifest'
+      || url.pathname === '/logo'
+      || /^\\/(icon|og)-[\\w-]+\\.(png|jpg)$/.test(url.pathname);
+}
+
+self.addEventListener('fetch', (e) => {
+  const req = e.request;
+  if (req.method !== 'GET') return;                 // POST /api/* -> mạng thẳng
+  const url = new URL(req.url);
+  if (url.origin !== self.location.origin) return;
+
+  // Ảnh + tài nguyên tĩnh: cache-first (URL đã đổi khi nội dung đổi).
+  if (isImg(url) || isStatic(url)) {
+    const cacheName = isImg(url) ? IMG_CACHE : STATIC_CACHE;
+    e.respondWith((async () => {
+      const cache = await caches.open(cacheName);
+      const hit = await cache.match(req);
+      if (hit) return hit;
+      const res = await fetch(req);
+      if (res && res.ok) cache.put(req, res.clone());
+      return res;
+    })());
+    return;
+  }
+
+  // Điều hướng HTML: stale-while-revalidate -> first paint từ cache tức thì,
+  // cập nhật ngầm cho lần mở sau. Không có cache -> mạng.
+  if (req.mode === 'navigate') {
+    e.respondWith((async () => {
+      const cache = await caches.open(PAGE_CACHE);
+      const hit = await cache.match(req);
+      const net = fetch(req).then((res) => {
+        if (res && res.ok) cache.put(req, res.clone());
+        return res;
+      }).catch(() => hit);
+      return hit || net;
+    })());
+    return;
+  }
+});
+""".replace("__VER__", SW_VERSION)
+   .replace("__PRECACHE__", json.dumps(_SW_PRECACHE)))
+
+
+# Đăng ký SW (nhúng inline vào mọi trang, rất nhẹ). Chạy sau 'load' để không
+# tranh băng thông với nội dung trang lần đầu.
+SW_REGISTER = ("<script>if('serviceWorker' in navigator){"
+               "addEventListener('load',function(){"
+               "navigator.serviceWorker.register('/sw.js').catch(function(){});"
+               "});}</script>")
+
+
+# ---------------------------------------------------------------------------
 # HTTP server
 # ---------------------------------------------------------------------------
 
@@ -2500,6 +2658,51 @@ class Handler(BaseHTTPRequestHandler):
                 data = f.read()
             return self.send_file_bytes(MIME.get(ext, "application/octet-stream"), data, etag)
 
+        if segs[0] == "static" and len(segs) == 2:
+            a = STATIC_ASSETS.get(segs[1])
+            if not a:
+                return self.send_notfound()
+            etag = f'"{a["ver"]}"'
+            if self.headers.get("If-None-Match") == etag:
+                self.send_response(304)
+                self.send_header("ETag", etag)
+                self.send_header("Cache-Control", "public, max-age=31536000, immutable")
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                return
+            data = a["data"]
+            self.send_response(200)
+            self.send_header("Content-Type", a["ctype"])
+            self.send_header("Content-Length", str(len(data)))
+            self.send_header("Cache-Control", "public, max-age=31536000, immutable")
+            self.send_header("ETag", etag)
+            self.end_headers()
+            if self.command != "HEAD":
+                self.wfile.write(data)
+            return
+
+        if segs == ["sw.js"]:
+            data = SW_JS.encode("utf-8")
+            etag = f'"{SW_VERSION}"'
+            if self.headers.get("If-None-Match") == etag:
+                self.send_response(304)
+                self.send_header("ETag", etag)
+                self.send_header("Cache-Control", "no-cache")
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                return
+            self.send_response(200)
+            self.send_header("Content-Type", "application/javascript; charset=utf-8")
+            self.send_header("Content-Length", str(len(data)))
+            # no-cache: trình duyệt luôn kiểm lại sw.js -> đổi SW là cập nhật ngay
+            self.send_header("Cache-Control", "no-cache")
+            self.send_header("Service-Worker-Allowed", "/")
+            self.send_header("ETag", etag)
+            self.end_headers()
+            if self.command != "HEAD":
+                self.wfile.write(data)
+            return
+
         if segs[0] == "manifest.webmanifest" and len(segs) == 1:
             data = MANIFEST_JSON.encode("utf-8")
             self.send_response(200)
@@ -2552,7 +2755,18 @@ class Handler(BaseHTTPRequestHandler):
             cov = cover_jpeg(s) if s else None
             if not cov:
                 return self.send_notfound()
-            return self.send_file_bytes(cov[0], cov[1])
+            # ETag để reload có thể trả 304 thay vì tải lại nguyên ảnh bìa (trước
+            # đây thiếu -> mỗi lần reload là 200 full -> bìa nháy đen). Khóa theo
+            # mtime nguồn bìa + kích thước JPEG đã encode.
+            etag = f'"{cover_ver(s)}-{len(cov[1])}"'
+            if self.headers.get("If-None-Match") == etag:
+                self.send_response(304)
+                self.send_header("ETag", etag)
+                self.send_header("Cache-Control", "public, max-age=604800")
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                return
+            return self.send_file_bytes(cov[0], cov[1], etag)
 
         return self.send_notfound()
 

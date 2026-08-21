@@ -141,8 +141,9 @@ cách chạy thật + decode thử ảnh.
   (vòng lặp hỏi thư mục/--fix/--black → chạy).
 - `convert_webp.py` — chuyển PNG→WebP hàng loạt, xuất cây mới `<tên>_webp`,
   không đụng cây gốc. Tách riêng khỏi asura_downloader vì Asura đã webp sẵn.
-- `reader_server.py` — web reader kiểu Asura (HTML/CSS/JS inline trong Python
-  stdlib, không dependency ngoài Pillow tùy chọn), port mặc định **8080**, user
+- `reader_server.py` — web reader kiểu Asura (HTML sinh trong Python stdlib; CSS/JS
+  từ 21/08 tách ra file tĩnh versioned `/static/*` + có Service Worker `/sw.js`, xem
+  mục "Tài nguyên tĩnh + Service Worker"; không dependency ngoài Pillow tùy chọn), port mặc định **8080**, user
   bật thủ công bằng shortcut Desktop **"Toony"**. **CHỈ quét thư viện trong
   `downloads/`** (`SCAN_ROOTS`; trước đây quét cả gốc project → các folder công cụ
   như `realesrgan-*`/`cover`/`cover_webp` có sub-folder chứa ảnh bị nhận nhầm thành
@@ -491,6 +492,24 @@ cách chạy thật + decode thử ảnh.
   tay có thể trễ hiện ≤60s (đổi qua admin thì bust cache → tức thì). **Chẩn đoán gốc**: DevTools cho thấy
   màn trắng 100% là "Waiting for server response" (TTFB server-side), mạng/tunnel vô can (DNS+Connect+SSL
   bằng nhau giữa máy 124ms và máy 4.27s) → app SSR nên splash-in-HTML vô ích.
+- **Tài nguyên tĩnh tách file + Service Worker** (21/08, trị màn-trắng khi mở NGUỘI + bìa-nháy khi
+  login/logout). *Vì sao*: SWR ở trên trị TTFB do scandil; còn 2 nút thắt CLIENT: (a) document `no-store`
+  nhúng inline toàn bộ CSS(16KB)+JS → không cache được, mỗi lần mở kéo lại hết; (b) khi kết nối tunnel
+  nguội (mở lần đầu / sau >1' idle → trình duyệt hủy tab nền + đóng keep-alive), TTFB document lên 1-2s
+  → màn trắng vì chưa có gì để vẽ. Bìa nháy đen khi reload vì route `/cover` THIẾU ETag → không 304 được,
+  reload tải lại 200 full. *Cách làm* (đều trong `reader_server.py`): **① registry `STATIC_ASSETS`** (CSS
+  + từng khối JS: base/ls/acct/home/admin/series/reader) phục vụ ở `/static/<name>?v=<sha1[:10]>`,
+  `Cache-Control: immutable` + ETag; `page()`/`html_*` nạp qua `static_tag()`, chỉ còn script DATA động
+  (FOLLOWDATA/BM/LOGGEDIN/SDATA/D) inline TRƯỚC các file — home doc 35.9KB→11.5KB. **② `/cover` gắn ETag**
+  `"{cover_ver}-{len}"` (+ If-None-Match→304). **③ Service Worker** `SW_JS` phục vụ ở `/sw.js`
+  (`Cache-Control: no-cache` để cập nhật ngay, header `Service-Worker-Allowed: /`), `SW_VERSION` = hash
+  của precache-list nên đổi asset ⇒ SW mới ⇒ dọn cache cũ (activate): **cache-first** cho `/cover` `/img`
+  `/static` + icon (URL đã versioned/độc nhất nên an toàn), **stale-while-revalidate** cho điều hướng HTML
+  (first paint từ cache tức thì, cập nhật nền cho lần sau), POST/`api/*` bỏ qua. **④** login/logout gọi
+  `purgeAndReload()` (ACCT_JS): postMessage `{type:'purge-pages'}` cho SW xoá `PAGE_CACHE` (ack qua
+  MessageChannel + fallback 300ms) rồi reload — BẮT BUỘC vì SW khoá theo URL, không phân biệt cookie `uid`,
+  không purge sẽ hiện nhầm trạng thái đăng nhập cũ. *Đánh đổi*: nội dung HTML trễ 1 lần mở (SWR); iOS
+  Safari có thể evict SW sau ~7 ngày không dùng (mở lại chịu cold 1 lượt).
 - **Hồ sơ đọc = 1 JSON CHUNG server-side, không login/cookie/device-id** (05/08): trước đây
   vị trí đọc/chương-đã-đọc để localStorage → **chết theo origin**; user chia sẻ bằng
   cloudflared quick tunnel (`Chia se link doc thu.bat`) đổi URL ngẫu nhiên mỗi lần bật →
