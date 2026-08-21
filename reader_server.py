@@ -1348,7 +1348,7 @@ def account_header(user):
                '<button type="submit" class="accbtn primary">Login</button>'
                '<span class="accerr" id="accerr"></span></form>')
     return (f'<header class="apphead"><a class="brandmini" href="/">'
-            f'<img src="/brand" alt="Toony"></a>{acc}</header>')
+            f'<img src="{brand_src()}" alt="Toony" height="34"></a>{acc}</header>')
 
 
 def admin_card_ctrl(st):
@@ -1813,6 +1813,30 @@ HOME_JS = """
     if(hq && sq){ hq.value=sq; hq.dispatchEvent(new Event('input')); }
     if(sy){ window.scrollTo(0, parseInt(sy,10)||0); }
   }catch(e){}
+
+  // --- Prefetch trang series vào cache SW -> lần bấm ĐẦU cũng vào tức thì
+  // (không còn chờ 2-3s tải HTML). Nạp trước khi (a) chạm/di chuột vào card
+  // [ý định], và (b) card lọt tầm nhìn lúc rảnh [đón đầu], giới hạn trong SW.
+  function pf(urls){
+    var c=navigator.serviceWorker&&navigator.serviceWorker.controller;
+    if(!c||!urls.length) return;
+    try{ c.postMessage({type:'prefetch',urls:urls}); }catch(e){}
+  }
+  document.addEventListener('pointerdown',function(e){
+    var a=e.target.closest&&e.target.closest('.cardlink,.fcard');
+    if(a&&a.href) pf([a.href]);
+  },{passive:true});
+  if('IntersectionObserver' in window){
+    var idle=window.requestIdleCallback||function(f){return setTimeout(f,300);};
+    var io=new IntersectionObserver(function(ents){
+      var urls=[];
+      ents.forEach(function(en){
+        if(en.isIntersecting&&en.target.href){ urls.push(en.target.href); io.unobserve(en.target); }
+      });
+      if(urls.length) idle(function(){ pf(urls); });
+    },{rootMargin:'300px'});
+    [].forEach.call(document.querySelectorAll('.cardlink,.fcard'),function(a){io.observe(a);});
+  }
 })();
 """
 
@@ -2255,6 +2279,31 @@ STATIC_ASSETS = {
 }
 
 
+def _build_brand_asset():
+    """Thu nhỏ brand.png (gốc ~469KB, chỉ hiện ở height 34px) về ~3x cỡ hiển thị
+    -> WebP vài KB. GIỮ nguyên hình, chỉ giảm dung lượng + có alpha. None nếu
+    thiếu PIL/file (khi đó header quay về route /brand phục vụ file gốc)."""
+    if Image is None:
+        return None
+    try:
+        with Image.open(os.path.join(META_DIR, "brand.png")) as im:
+            im = im.convert("RGBA")
+            th = 120                       # 34px hiển thị × ~3.5 cho màn retina
+            if im.height > th:
+                im = im.resize((max(1, round(im.width * th / im.height)), th))
+            buf = io.BytesIO()
+            im.save(buf, "WEBP", quality=88, method=6)
+            return buf.getvalue()
+    except Exception:
+        return None
+
+
+_brand_data = _build_brand_asset()
+if _brand_data:
+    STATIC_ASSETS["brand.webp"] = {"data": _brand_data, "ctype": "image/webp",
+                                   "ver": hashlib.sha1(_brand_data).hexdigest()[:10]}
+
+
 def static_url(name):
     return f"/static/{name}?v={STATIC_ASSETS[name]['ver']}"
 
@@ -2264,6 +2313,11 @@ def static_tag(name):
     if name.endswith(".css"):
         return f'<link rel="stylesheet" href="{static_url(name)}">'
     return f'<script src="{static_url(name)}"></script>'
+
+
+def brand_src():
+    """URL logo header: bản WebP nhẹ đã versioned nếu dựng được, không thì /brand gốc."""
+    return static_url("brand.webp") if "brand.webp" in STATIC_ASSETS else "/brand"
 
 
 # ---------------------------------------------------------------------------
@@ -2304,13 +2358,36 @@ self.addEventListener('activate', (e) => {
   })());
 });
 
-// Trang tự báo "vừa login/logout" -> xoá cache HTML để lần mở sau không hiện
-// nhầm trạng thái đăng nhập cũ.
+// Hàng đợi prefetch trang series (giới hạn luồng để không ngốn băng thông /
+// tranh kết nối với ảnh đang tải). Trang gửi URL qua postMessage.
+let pfQ = [], pfActive = 0;
+const PF_MAX = 2;
+function pumpPrefetch() {
+  while (pfActive < PF_MAX && pfQ.length) {
+    const url = pfQ.shift();
+    pfActive++;
+    caches.open(PAGE_CACHE).then(async (cache) => {
+      if (await cache.match(url)) return;            // đã có -> bỏ qua
+      try {
+        const res = await fetch(url, {credentials: 'same-origin'});
+        if (res && res.ok) await cache.put(url, res.clone());
+      } catch (e) {}
+    }).finally(() => { pfActive--; pumpPrefetch(); });
+  }
+}
+
 self.addEventListener('message', (e) => {
-  if (e.data && e.data.type === 'purge-pages') {
+  const d = e.data || {};
+  // Trang báo "vừa login/logout" -> xoá cache HTML để lần mở sau không hiện
+  // nhầm trạng thái đăng nhập cũ.
+  if (d.type === 'purge-pages') {
+    pfQ = [];                                         // bỏ prefetch cũ (khác user)
     e.waitUntil(caches.delete(PAGE_CACHE).then(() => {
       if (e.ports && e.ports[0]) e.ports[0].postMessage({ok: true});
     }));
+  } else if (d.type === 'prefetch' && Array.isArray(d.urls)) {
+    for (const u of d.urls) if (pfQ.indexOf(u) < 0) pfQ.push(u);
+    pumpPrefetch();
   }
 });
 
@@ -2320,7 +2397,7 @@ function isImg(url) {
 function isStatic(url) {
   return url.pathname.startsWith('/static/')
       || url.pathname === '/manifest.webmanifest'
-      || url.pathname === '/logo'
+      || url.pathname === '/logo' || url.pathname === '/brand'
       || /^\\/(icon|og)-[\\w-]+\\.(png|jpg)$/.test(url.pathname);
 }
 

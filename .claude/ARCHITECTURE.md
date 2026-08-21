@@ -508,8 +508,16 @@ cách chạy thật + decode thử ảnh.
   (first paint từ cache tức thì, cập nhật nền cho lần sau), POST/`api/*` bỏ qua. **④** login/logout gọi
   `purgeAndReload()` (ACCT_JS): postMessage `{type:'purge-pages'}` cho SW xoá `PAGE_CACHE` (ack qua
   MessageChannel + fallback 300ms) rồi reload — BẮT BUỘC vì SW khoá theo URL, không phân biệt cookie `uid`,
-  không purge sẽ hiện nhầm trạng thái đăng nhập cũ. *Đánh đổi*: nội dung HTML trễ 1 lần mở (SWR); iOS
-  Safari có thể evict SW sau ~7 ngày không dùng (mở lại chịu cold 1 lượt).
+  không purge sẽ hiện nhầm trạng thái đăng nhập cũ. **⑤ Logo header nhẹ**: `brand.png` gốc 469KB mà chỉ
+  hiện `height:34px` → `_build_brand_asset()` thu nhỏ (PIL, height 120, GIỮ hình) ra WebP ~18KB, nhét vào
+  `STATIC_ASSETS['brand.webp']` (⇒ tự versioned + precache + cache-first); header dùng `brand_src()`
+  (fallback `/brand` nếu thiếu PIL). **⑥ Prefetch trang series** (trị "bấm series lần đầu 2-3s" = cache-miss
+  SWR): SW có hàng đợi `pfQ`/`pumpPrefetch` (giới hạn `PF_MAX=2`, nhận `{type:'prefetch',urls}`, bỏ cái đã
+  cache, xoá khi purge); HOME_JS nạp trước theo `pointerdown` [ý định] + `IntersectionObserver`+`requestIdleCallback`
+  [card lọt viewport] → lần bấm đầu cũng cache-hit. *Đánh đổi*: nội dung HTML trễ 1 lần mở (SWR); iOS
+  Safari có thể evict SW sau ~7 ngày không dùng (mở lại chịu cold 1 lượt); prefetch tốn thêm băng thông
+  (đã chặn 2 luồng + chỉ nạp cái chưa cache). *Gotcha*: header logo là `/brand` (KHÁC favicon `/logo`); đổi
+  logo gốc thì phải để ý brand.webp cache-first sẽ giữ bản cũ tới khi SW_VERSION đổi.
 - **Hồ sơ đọc = 1 JSON CHUNG server-side, không login/cookie/device-id** (05/08): trước đây
   vị trí đọc/chương-đã-đọc để localStorage → **chết theo origin**; user chia sẻ bằng
   cloudflared quick tunnel (`Chia se link doc thu.bat`) đổi URL ngẫu nhiên mỗi lần bật →

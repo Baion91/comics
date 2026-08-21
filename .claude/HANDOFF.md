@@ -1,4 +1,4 @@
-# Handoff — cập nhật lần cuối: 2026-08-21 (reader: Service Worker + tách CSS/JS + ETag bìa)
+# Handoff — cập nhật lần cuối: 2026-08-21 (reader: SW + tách CSS/JS + ETag bìa + logo nhẹ + prefetch series)
 
 > Kiến trúc ổn định (reader, provider, comix, supervisor, mạng…) nằm ở `.claude/ARCHITECTURE.md`.
 > File này chỉ ghi TRẠNG THÁI hiện tại + việc đang dở.
@@ -25,7 +25,20 @@
   200+immutable+ETag & 304; `/sw.js` đúng header; `/cover` 200→304 khi revalidate; 3 trang render đúng,
   không còn `<style>`/`<script>{...}` inline sót; SW placeholders (`__VER__`/`__PRECACHE__`) đã thay.
   **Deploy = `/update` qua bot** (chỉ đụng `reader_server.py`, KHÔNG đụng supervisor). Nghiệm thu LIVE:
-  xem "Việc tiếp theo".
+  xem "Việc tiếp theo". **[BỔ SUNG sau deploy — 2 sự cố mới do/sau SW, ĐÃ fix + test dev]:**
+  **(5) Logo header tải 5-10s, hiện dần** — gốc: `brand.png` **469KB** mà chỉ hiện ở `height:34px`, LẠI
+  không nằm trong SW cache/precache (SW chỉ có `/logo` favicon, còn header dùng `<img src="/brand">`) →
+  luôn đi mạng, xếp hàng sau bìa qua HTTP/1.1 6-conn. Fix: `_build_brand_asset()` thu nhỏ brand.png (PIL,
+  height 120 giữ hình) → **WebP 18KB (×25)**, đưa vào `STATIC_ASSETS['brand.webp']` (versioned+immutable,
+  **tự được SW precache**), header trỏ `brand_src()` (fallback `/brand` nếu thiếu PIL); thêm `/brand` vào
+  `isStatic` cho chắc. **(6) Bấm series LẦN ĐẦU chậm 2-3s** (lần sau nhanh) — bản chất SWR: URL chưa vào
+  lần nào = cache-miss → tải HTML qua mạng (server render chỉ 1-9ms, VÔ CAN; nhưng bộ nhiều chương doc to,
+  vd Pokemon 732ch = 218KB). Fix: **prefetch trang series vào `PAGE_CACHE`** — SW thêm hàng đợi
+  `pfQ`/`pumpPrefetch` (giới hạn `PF_MAX=2` luồng, bỏ qua cái đã cache, purge khi login/logout); HOME_JS
+  prefetch khi (a) `pointerdown` trên `.cardlink/.fcard` [ý định] + (b) card lọt viewport lúc rảnh
+  (`IntersectionObserver` rootMargin 300px + `requestIdleCallback`). **Test dev (5)+(6)**: brand.webp
+  200 image/webp 18878B immutable+ETag; `brand_src`→`/static/brand.webp`; SW_VERSION đổi (precache có
+  brand.webp → deploy tự cập nhật SW + dọn cache cũ); home header dùng brand.webp; compile OK.
 - **[21/08] convert_webp: chốt-tiết-kiệm + chế độ nén TẠI CHỖ (`--in-place`) — ĐÃ code + test dev,
   CHƯA nghiệm thu LIVE.** Nối tiếp mục [20/08]. Vấn đề: (a) `convert_webp.py --webp-too` KHÔNG có chốt
   nên nén webp đã-q85 lần nữa = suy hao vô ích (~99% cỡ gốc); (b) user cần nén **nhiều bộ comix cũ** —
@@ -278,6 +291,9 @@
   phản ánh đúng tài khoản (nhờ purge `PAGE_CACHE`). (d) **Cập nhật nội dung**: thêm/sửa truyện → lần mở kế
   hiện bản cũ (SWR) rồi lần mở sau nữa là mới — chấp nhận được; nếu cần thấy ngay thì F5 lần 2. Lưu ý iOS
   Safari: SW có thể bị evict sau ~7 ngày không dùng → lần mở đầu sau đó chịu cold 1 lượt rồi ấm lại.
+  (e) **Logo**: hiện gần như tức thì (WebP 18KB, cache-first + precache), không còn 5-10s vẽ dần. (f)
+  **Prefetch series**: mở app, để lướt qua vài card (hoặc chạm giữ) rồi bấm vào → vào trang chương gần
+  như tức thì ngay LẦN ĐẦU (trước 2-3s). Network sẽ thấy request `/series/*` do SW nạp nền trước khi bấm.
 - **[Chống-treo ①+② nghiệm thu LIVE]** `cap-nhat.bat` → chạy lại `server-BAT-tudong.bat` (đụng
   `supervisor.py`). (a) Bình thường: `/tai <comix url>` → tải chạy trơn, KHÔNG bị kill oan (log tăng đều).
   (b) Giả treo mở-Chromium: trước khi `/tai`, mở tay 1 chrome ôm `comix-profile` để gây wedge → xác nhận
