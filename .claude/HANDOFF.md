@@ -1,9 +1,23 @@
-# Handoff — cập nhật lần cuối: 2026-08-21 (reader: pill tap-to-controls + prefetch chương; comix: ưu tiên nhóm official)
+# Handoff — cập nhật lần cuối: 2026-08-21 (reader: pill hint-một-lần + prefetch chương TỪ DANH SÁCH)
 
 > Kiến trúc ổn định (reader, provider, comix, supervisor, mạng…) nằm ở `.claude/ARCHITECTURE.md`.
 > File này chỉ ghi TRẠNG THÁI hiện tại + việc đang dở.
 
 ## Đang làm / dở dang
+- **[21/08] Reader — tinh chỉnh 2 điểm UX, ĐÃ code + syntax OK, CHƯA nghiệm thu LIVE** (`reader_server.py`).
+  **(A) Delay 2-3s khi bấm chương TỪ DANH SÁCH** (Next đã nhanh nhờ prefetch `D.next/D.prev`, nhưng
+  link `a.ch` ở trang truyện là hard-nav render nguội → quét PIL từng ảnh). Fix: thêm block prefetch vào
+  `SERIES_JS` — `pointerdown` + `mouseover` (hover PC) trên `a.ch`/`.cbtn` → `pf([href])` postMessage
+  `{type:'prefetch'}` cho SW (tái dùng `pfQ`/handler + navigation SWR có sẵn); và `requestIdleCallback`
+  prefetch các nút `.chapbtns .cbtn` (First/Latest/reading) lúc rảnh. KHÔNG đón đầu cả list (hàng trăm
+  chương) — chỉ theo ý định + nút chính. Warm cả HTML (PAGE_CACHE) lẫn `_dim_cache` server.
+  **(B) Pill "Tap to show controls" hiện liên tục gây khó chịu** → đổi thành **gợi ý MỘT LẦN**: thêm
+  `cueGone` + `hideCue()` trong READER_JS; tự ẩn sau `setTimeout 3000`, ẩn ngay khi `scroll`, ẩn khi
+  `setBars()` (chạm). Đã ẩn thì KHÔNG hiện lại (bỏ dòng `cue.classList.toggle('off',!h)` cũ khiến pill
+  quay lại mỗi lần bars ẩn). CSS `#tapcue.off` thêm `animation:none` để keyframe không ghi đè `opacity:0`.
+  **CHƯA**: xem live trên trình duyệt + qua tunnel. **Deploy = `/update` qua bot** (chỉ `reader_server.py`).
+  Đây là bản kế thừa/hoàn thiện mục "[21/08] điểm 1+3" bên dưới (điểm 3 pill nay là hint-một-lần; điểm 1
+  prefetch nay phủ thêm cả bấm-từ-danh-sách).
 - **[21/08] Reader (điểm 1+3) + comix (điểm 4) — ĐÃ code + validate, CHƯA nghiệm thu LIVE.**
   3 việc user chốt sau khi "chạy tool trong repo" để đối chiếu thật (dump DOM Asura + fetch danh sách
   bản comix qua ComixSession). **(1) Điểm 3 — thanh công cụ KHÔNG tự bật khi vào chương** (`reader_server.py`):

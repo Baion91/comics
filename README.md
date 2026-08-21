@@ -285,9 +285,15 @@ python reader_server.py --port 8081
   script. Lần đầu chạy nếu Windows Firewall hỏi thì chọn **Allow access**.
 - Giao diện kiểu Asura (**chữ tiếng Anh**): cuộn dọc (vuốt trên điện thoại / con
   lăn chuột trên PC). Vào chương thanh công cụ **ẩn sẵn** cho gọn màn — đáy hiện nhẹ
-  chữ "Tap to show controls" nhấp nháy; **chạm màn hình để hiện** thanh công cụ, cuộn
-  hoặc chạm lại thì ẩn đi. Có nút **Prev/Next** + dropdown chọn chương (nhóm theo arc
-  với Pokemon Special); bấm Next/chọn chương chuyển gần như tức thì (tải trước chương kề).
+  chữ "Tap to show controls" như **gợi ý một lần**: tự ẩn sau **3 giây**, hoặc ẩn ngay
+  khi bắt đầu **cuộn** / **chạm** màn hình, và **không hiện lại** trong phiên đọc. Chạm
+  màn hình để hiện thanh công cụ, cuộn hoặc chạm lại thì ẩn đi. Có nút **Prev/Next** +
+  dropdown chọn chương (nhóm theo arc với Pokemon Special).
+- **Mở chương gần như tức thì**: bấm Next / chọn chương ở dropdown đã tải trước chương
+  kề; và bấm chương **từ danh sách ở trang truyện** cũng nhanh — khi **chạm/di chuột**
+  vào một chương (và với các nút First/Latest/reading lúc rảnh), trang nạp trước HTML
+  chương đó vào cache Service Worker, đồng thời làm nóng cache kích thước ảnh phía server
+  (`_dim_cache`) nên hết cảnh chờ 2–3 giây render nguội quét PIL từng ảnh.
 - **Thứ tự chương**: dropdown chọn chương (lúc đang đọc) xếp **mới nhất trên cùng**;
   còn danh sách ở trang truyện mặc định mới-nhất-trên-cùng, bấm **Newest ⇄ Oldest**
   để đảo (xem mục Trang truyện). Prev/Next và First/Latest Chapter luôn đọc xuôi

@@ -932,7 +932,7 @@ img{border:0}
   background:rgba(0,0,0,.8);color:rgba(255,255,255,.72);font-size:12px;
   padding:6px 12px;border-radius:9999px;pointer-events:none;white-space:nowrap;
   animation:tappulse 2s cubic-bezier(.4,0,.6,1) infinite;transition:opacity .25s ease}
-#tapcue.off{opacity:0}
+#tapcue.off{opacity:0;animation:none;pointer-events:none}
 @keyframes tappulse{50%{opacity:.5}}
 .iconbtn{display:flex;align-items:center;justify-content:center;width:38px;height:38px;
   border-radius:10px;background:#1d1e25;border:1px solid #2b2c34;color:#e8e8ea;
@@ -2094,6 +2094,33 @@ SERIES_JS = """
     });
     if(chnr) chnr.classList.toggle('on', !!term && !anyAll);
   });
+
+  // --- Prefetch trang CHƯƠNG vào cache SW -> bấm chương từ list vào gần như tức
+  // thì (khỏi 2-3s render nguội). Việc render trước cũng WARM _dim_cache phía
+  // server (quét PIL từng ảnh) nên lần mở thật khỏi phải quét lại. Không đón đầu
+  // cả list (có thể hàng trăm chương) -> chỉ nạp theo Ý ĐỊNH (chạm/di chuột) +
+  // các nút hay bấm (First/Latest/reading) lúc rảnh.
+  function pf(urls){
+    var c=navigator.serviceWorker&&navigator.serviceWorker.controller;
+    if(!c||!urls.length) return;
+    try{ c.postMessage({type:'prefetch',urls:urls}); }catch(e){}
+  }
+  document.addEventListener('pointerdown',function(e){
+    var a=e.target.closest&&e.target.closest('a.ch,.cbtn');
+    if(a&&a.href) pf([a.href]);
+  },{passive:true});
+  document.addEventListener('mouseover',function(e){        // hover PC = ý định
+    var a=e.target.closest&&e.target.closest('a.ch,.cbtn');
+    if(a&&a.href) pf([a.href]);
+  },{passive:true});
+  (function(){                                              // đón đầu nút chính
+    var urls=[];
+    document.querySelectorAll('.chapbtns .cbtn').forEach(function(a){
+      if(a.href) urls.push(a.href); });
+    if(!urls.length) return;
+    var idle=window.requestIdleCallback||function(f){return setTimeout(f,800);};
+    idle(function(){ pf(urls); });
+  })();
 })();
 """
 
@@ -2106,11 +2133,16 @@ READER_JS = """
   // hid=true; thay vào đó hiện pill "Tap to show controls" nhấp nháy nhẹ ở đáy.
   // Chạm vùng đọc -> bật bars + ẩn pill; chạm lại / cuộn -> ẩn bars + pill trở lại.
   var hid=true, barT=Date.now();
+  // Pill chỉ là gợi ý MỘT LẦN: tự ẩn sau 3s, hoặc ngay khi cuộn / chạm. Đã ẩn thì
+  // KHÔNG hiện lại trong phiên (người dùng đã biết "chạm để hiện điều khiển").
+  var cueGone=false;
+  function hideCue(){ if(cueGone||!cue) return; cueGone=true; cue.classList.add('off'); }
+  setTimeout(hideCue,3000);
   function setBars(h){
     hid=h; barT=Date.now();
     top.classList.toggle('hide',h);
     bot.classList.toggle('hide',h);
-    if(cue) cue.classList.toggle('off',!h);   // pill mờ hẳn khi bars đang hiện
+    hideCue();                                 // mọi thao tác bar -> gỡ pill hẳn
   }
   // lưu vị trí đọc lên server theo tài khoản (guest thì bỏ qua). Gộp ghi tối đa
   // mỗi 2.5s, và ghi ngay khi rời/ẩn trang để không mất vị trí cuối.
@@ -2178,6 +2210,7 @@ READER_JS = """
   // muốn hiện lại thì chạm vào trang. Chờ 600ms sau cú chạm/lúc mở trang
   // để khỏi ẩn oan vì cuộn khôi phục vị trí hay trớn cuộn trên iOS.
   addEventListener('scroll',function(){
+    hideCue();                                 // bắt đầu cuộn -> ẩn pill ngay
     if(!hid && Date.now()-barT>600) setBars(true);
     savePos(); markRead();
   },{passive:true});
