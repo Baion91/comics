@@ -53,7 +53,9 @@ Một tool cho MỌI site, tự nhận site theo link (hiện hỗ trợ **Asura
 > tool phải **mở 1 cửa sổ Chromium** để lấy danh sách chương/ảnh — **đừng đóng cửa sổ đó**,
 > xong tool tự đóng (cần cài 1 lần: `pip install -r requirements.txt` rồi
 > `python -m playwright install chromium` — `cap-nhat.bat` trên server tự làm). Mỗi chương tự
-> chọn **bản Official (tick ✓)** nếu có, không thì lấy **bản scan mới nhất CÓ tên nhóm** (chỉ khi
+> chọn **bản Official (tick ✓)** nếu có — nhiều bản Official song song thì ưu tiên theo nhóm (mặc định
+> TappyToon cao nhất, Webcomic thấp nhất; sửa bảng `OFFICIAL_GROUP_RANK` trong `comix_site.py`) — không có
+> Official thì lấy **bản scan mới nhất CÓ tên nhóm** (chỉ khi
 > không còn bản nào có nhóm mới lấy bản không nhóm); chương đã tải bằng
 > bản scan mà sau này có bản Official thì **chạy lại lệnh là tự thay** (bản Official đã tải thì
 > không bao giờ tải lại). Nếu bot nhắn "bị Cloudflare chặn" → ra màn hình server tick
@@ -282,8 +284,10 @@ python reader_server.py --port 8081
   `http://<IP-máy-tính>:8080` — IP chính xác được in ra màn hình khi chạy
   script. Lần đầu chạy nếu Windows Firewall hỏi thì chọn **Allow access**.
 - Giao diện kiểu Asura (**chữ tiếng Anh**): cuộn dọc (vuốt trên điện thoại / con
-  lăn chuột trên PC), thanh công cụ tự ẩn khi cuộn xuống — chạm màn hình để hiện
-  lại, nút **Prev/Next** + dropdown chọn chương (nhóm theo arc với Pokemon Special).
+  lăn chuột trên PC). Vào chương thanh công cụ **ẩn sẵn** cho gọn màn — đáy hiện nhẹ
+  chữ "Tap to show controls" nhấp nháy; **chạm màn hình để hiện** thanh công cụ, cuộn
+  hoặc chạm lại thì ẩn đi. Có nút **Prev/Next** + dropdown chọn chương (nhóm theo arc
+  với Pokemon Special); bấm Next/chọn chương chuyển gần như tức thì (tải trước chương kề).
 - **Thứ tự chương**: dropdown chọn chương (lúc đang đọc) xếp **mới nhất trên cùng**;
   còn danh sách ở trang truyện mặc định mới-nhất-trên-cùng, bấm **Newest ⇄ Oldest**
   để đảo (xem mục Trang truyện). Prev/Next và First/Latest Chapter luôn đọc xuôi

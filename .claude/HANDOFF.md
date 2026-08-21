@@ -1,9 +1,26 @@
-# Handoff — cập nhật lần cuối: 2026-08-21 (reader: SW + tách CSS/JS + ETag bìa + logo nhẹ + prefetch series)
+# Handoff — cập nhật lần cuối: 2026-08-21 (reader: pill tap-to-controls + prefetch chương; comix: ưu tiên nhóm official)
 
 > Kiến trúc ổn định (reader, provider, comix, supervisor, mạng…) nằm ở `.claude/ARCHITECTURE.md`.
 > File này chỉ ghi TRẠNG THÁI hiện tại + việc đang dở.
 
 ## Đang làm / dở dang
+- **[21/08] Reader (điểm 1+3) + comix (điểm 4) — ĐÃ code + validate, CHƯA nghiệm thu LIVE.**
+  3 việc user chốt sau khi "chạy tool trong repo" để đối chiếu thật (dump DOM Asura + fetch danh sách
+  bản comix qua ComixSession). **(1) Điểm 3 — thanh công cụ KHÔNG tự bật khi vào chương** (`reader_server.py`):
+  `#topbar`/`#botbar` render sẵn class `hide`, `hid=true`; thêm pill `#tapcue` "Tap to show controls"
+  fixed đáy giữa, `pointer-events:none`, `animation: tappulse 2s cubic-bezier(.4,0,.6,1)` (`@keyframes
+  tappulse{50%{opacity:.5}}`) — **copy đúng spec Asura đã dump** (bg `rgba(0,0,0,.8)`, chữ trắng 72%,
+  `rounded-full`, animate-pulse). `setBars(h)` toggle `.off` cho pill (mờ khi bars hiện). Chạm vùng đọc/
+  chạm pill → bật bars; cuộn/chạm-lại → ẩn + pill trở lại. **(2) Điểm 1 — prefetch chương kế/trước** (trị
+  khựng 1-2s bấm Next/chọn chương): READER_JS lúc `requestIdleCallback` postMessage `{type:'prefetch',
+  urls:[D.next,D.prev]}` cho SW (tái dùng `pfQ`/handler có sẵn) → Next/Prev lấy HTML từ cache; render
+  trước warm luôn `_dim_cache` server (hết mở PIL từng ảnh khi chương nguội). Chỉ nạp HTML, không kéo ảnh.
+  **(3) Điểm 4 — ưu tiên nhóm official** (`comix_site.py`): thêm dict `OFFICIAL_GROUP_RANK` + `_official_rank`,
+  `candidates_for` sort official theo `(hạng nhóm, -id)` thay vì thuần id. **Validate**: cú pháp OK cả 2
+  file; reader.js cân bằng ngoặc + wiring đủ (SW đã có handler `prefetch`); comix test OFFLINE bằng đúng
+  data Solo Leveling đã bắt → ch0 & ch200 nay chọn **TappyToon** (trước là Webcomic). **CHƯA**: xem live
+  trên trình duyệt (pill + bars ẩn), chưa nghiệm thu prefetch qua tunnel. Deploy điểm 1+3 = `/update`
+  (chỉ `reader_server.py`); điểm 4 = push + `cap-nhat.bat` (đụng `comix_site.py`, cần playwright).
 - **[21/08] Reader: hết màn-trắng khi mở NGUỘI + hết bìa nháy đen khi login/logout — ĐÃ code + test
   dev (đo + HTTP live localhost), CHƯA nghiệm thu LIVE qua tunnel.** Nối tiếp [19/08] (SWR đã trị màn
   trắng do scandir; còn 2 triệu chứng client/mạng). Chẩn đoán mới (user đo trên link cloudflared SERVER):
@@ -168,6 +185,15 @@
 - **[10/08] Tool LÀM NÉT Real-ESRGAN — ĐÃ push. Tích hợp tự động vào `/tai` CHƯA làm.**
 
 ## Quyết định gần đây (mới nhất trước)
+- **21/08: comix — giữa nhiều bản official, chọn theo `OFFICIAL_GROUP_RANK` chứ KHÔNG thuần id mới nhất** —
+  vì truyện license có nhiều official song song khác nền tảng/typeset (Solo Leveling ch0 có 7); bản re-up
+  mới nhất (Webcomic) thường kém bản dịch tốt (TappyToon). User chốt: TappyToon cao nhất, Webcomic thấp nhất;
+  dict dễ sửa ở đầu `comix_site.py`. Verify offline: ch0/ch200 nay chọn TappyToon.
+- **21/08: Reader — bars KHÔNG tự bật khi vào chương, thay bằng pill "Tap to show controls" nhấp nháy (kiểu
+  Asura)** — user muốn UX giống Asura; đã lái Chrome thật dump DOM Asura xác nhận spec (div fixed đáy,
+  `pointer-events:none`, `animate-pulse 2s`, `@keyframes pulse{50%{opacity:.5}}`) rồi copy 1:1.
+- **21/08: Reader — prefetch chương kế/trước (`D.next`/`D.prev`) vào `PAGE_CACHE` khi rảnh** — trị khựng
+  1-2s khi bấm Next/chọn chương (hard-nav + render nguội quét PIL); render trước còn warm `_dim_cache` server.
 - **21/08: Trị bookmark "cũ" khi điều hướng (2 gốc khác nhau) — bù cho việc bật bfcache** — sau khi bật
   bfcache lộ 2 lỗi: **②** back về home/series thấy chưa bookmark (bfcache đóng băng DOM, JS hydrate không
   chạy lại); **①** bookmark ở home rồi bấm vào truyện thấy chưa bookmark, vào lại mới đúng (SW prefetch/SWR
@@ -273,17 +299,18 @@
   (refresh-retry 1 lần) tách khỏi breaker 503 mới (`tripped_503`, lùi 15→180s, chịu 5 đợt);
   `gate.recover()` reset sau chương trọn. Vì sao KHÔNG "clear sạch": Cloudflare coi request vô danh
   là ÍT tin nhất, vé nhất quán mới giảm nghi. Client riêng để không rò vé sang `core.session` chung.
-- 11/08: **Reader CHỈ quét `downloads/`** (bỏ quét gốc project) — tránh nhận nhầm folder công cụ
-  (`realesrgan-*`, `cover`) thành truyện. Deploy `/update` + restart reader.
-- 11/08: **ACGNProvider** — HTML tĩnh (ảnh `_src` trong `view-{id}.htm`, list tập `manhua-{slug}.htm`,
-  số chương từ text `VOL`/`第N話`); tên folder GIỮ tiếng Trung (khỏi dep pypinyin → deploy chỉ `/update`).
-- 11/08: **Supervisor chống-chịu mạng + heartbeat + BỎ health_loop** — gate mạng mọi vòng, backoff
-  cloudflared 3→300s, giữ hàng đợi khi lỗi-mạng, heartbeat ping healthchecks.io. **Bỏ health_loop**
-  vì GET link công khai từ server sai ~2/3 (không hairpin) → giết nhầm tunnel tốt; báo link khi
-  **reader nội bộ 127.0.0.1** sẵn sàng, tin cloudflared tự lo kết nối.
-  (Các quyết định cũ hơn 09-10/08 về comix loop/relaunch đã ghi đầy đủ ở ARCHITECTURE.)
+  (Các quyết định 11/08 [reader chỉ quét downloads/, ACGNProvider, supervisor chống-chịu mạng] và cũ hơn
+  09-10/08 về comix loop/relaunch đã ghi đầy đủ ở ARCHITECTURE.)
 
 ## Việc tiếp theo
+- **[Reader pill + prefetch nghiệm thu LIVE]** `/update` qua bot (chỉ `reader_server.py`). Mở 1 chương:
+  xác nhận **KHÔNG** tự hiện thanh công cụ, thay vào đó pill "Tap to show controls" nhấp nháy nhẹ ở đáy;
+  chạm bất kỳ đâu → bật bars + pill tắt; cuộn/chạm-lại → ẩn bars + pill trở lại. Bấm Next / chọn chương:
+  cảm giác chuyển gần như tức thì (không còn khựng 1-2s) sau khi trang đã rảnh 1 nhịp (prefetch xong).
+- **[Comix ưu tiên official nghiệm thu LIVE]** Push (`day-len.bat`) → `cap-nhat.bat` trên server (đụng
+  `comix_site.py`). `/tai <link Solo Leveling>` (hoặc bộ license nhiều official khác) 1 chương chưa có →
+  soi log/sidecar `.source.json` thấy `group` = TappyToon (không phải Webcomic). Muốn đổi thứ tự: sửa dict
+  `OFFICIAL_GROUP_RANK` đầu `comix_site.py`.
 - **[convert_webp in-place nghiệm thu LIVE]** Push (`day-len.bat`) → code có trên server (convert_webp
   chạy TAY nên không cần `/update`, chỉ cần file trên đĩa). Nén 1 bộ comix CŨ: `convert_webp.bat` →
   chọn "Nen TAI CHO? y" (mức 85) HOẶC `python convert_webp.py "downloads\<bộ>" --in-place`. Xác nhận:

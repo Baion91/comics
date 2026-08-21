@@ -13,9 +13,10 @@ Vì sao không theo hợp đồng provider thường (providers.py):
   chạy lại có thể THAY bản scan cũ bằng bản Official mới xuất hiện. Logic này không
   có chỗ trong run() generic nên viết loop riêng, 5 site cũ không bị đụng.
 
-Luật chọn bản per số chương (user chốt 09/08, cập nhật 19/08/2026):
-  1. Lọc language == "en". Có bản isOfficial=true (tick "v") -> lấy official
-     (nhiều official -> id lớn nhất).
+Luật chọn bản per số chương (user chốt 09/08, cập nhật 19/08 & 21/08/2026):
+  1. Lọc language == "en". Có bản isOfficial=true (tick "v") -> lấy official.
+     Nhiều official song song -> theo HẠNG NHÓM (OFFICIAL_GROUP_RANK: TappyToon cao
+     nhất ... Webcomic thấp nhất), cùng hạng thì id lớn nhất (mới nhất) trước.
   2. Không có official -> ưu tiên bản scan CÓ tên nhóm, id LỚN NHẤT trước (mới nhất);
      HẾT bản có nhóm mới tới bản KHÔNG có tên nhóm, id lớn nhất trước. Lý do: bản
      "no group" hay là raw/batch đè lên bản nhóm scan cũ hơn nhưng chỉn chu hơn
@@ -691,20 +692,46 @@ def group_versions(items):
     return by
 
 
+# Ưu tiên GIỮA các bản official (bản tick "v") khi 1 số chương có NHIỀU official
+# song song — vd Solo Leveling ch.0 có 7 official (Webcomic/Tapas/Manta/Yen Press/
+# TappyToon/...). Số NHỎ = ưu tiên CAO (tải trước). Nhóm không có trong bảng ->
+# hạng OFFICIAL_DEFAULT_RANK (giữa). Cùng hạng -> id mới nhất trước. Khớp KHÔNG phân
+# biệt hoa/thường. Sửa thứ tự chỉ cần sửa bảng này (user chốt: TappyToon cao nhất,
+# Webcomic thấp nhất).
+OFFICIAL_GROUP_RANK = {
+    "tappytoon": 0,        # dịch official Hàn -> Anh chất lượng, ưu tiên số 1
+    "yen press": 1,        # NXB chính thống, typeset chuẩn
+    "tapas": 2,
+    "manta": 3,
+    "pocket comics": 4,
+    "official": 5,         # nhãn chung, mơ hồ
+    "webcomic": 99,        # thấp nhất: chỉ tải khi không còn official nào khác
+}
+OFFICIAL_DEFAULT_RANK = 50  # nhóm official lạ chưa xếp hạng -> nằm giữa
+
+
+def _official_rank(ver):
+    return OFFICIAL_GROUP_RANK.get(_group_name(ver).lower(), OFFICIAL_DEFAULT_RANK)
+
+
 def candidates_for(versions):
     """Thứ tự ưu tiên tải:
-      1. official (id mới nhất trước).
+      1. official — theo HẠNG NHÓM (OFFICIAL_GROUP_RANK), cùng hạng thì id mới nhất trước.
       2. scan CÓ tên nhóm (id mới nhất trước).
       3. scan KHÔNG có tên nhóm (id mới nhất trước) — chỉ dùng khi hết bản có nhóm.
     Bản đầu 0 trang thì caller tự rơi xuống bản kế.
 
-    Vì sao ưu tiên NHÓM hơn ĐỘ MỚI (user chốt 19/08): các bản "no group" thường là
-    raw/batch đè lên bản nhóm scan cũ hơn nhưng chỉn chu hơn (vd Dai ch.345-349: bản
-    'no group' 6 tháng đè lên bản Square Ocean 10 tháng). Ưu tiên bản có nhóm cho chất
+    Trong nhóm official, KHÔNG chọn thuần theo độ mới nữa (user chốt): 1 chương có thể
+    có nhiều official khác nền tảng/chất lượng typeset khác nhau -> ưu tiên nhóm dịch tốt
+    (TappyToon...) hơn bản re-up mới nhất (Webcomic). Xem OFFICIAL_GROUP_RANK.
+
+    Vì sao ưu tiên NHÓM hơn ĐỘ MỚI ở nhóm SCAN (user chốt 19/08): các bản "no group"
+    thường là raw/batch đè lên bản nhóm scan cũ hơn nhưng chỉn chu hơn (vd Dai ch.345-349:
+    bản 'no group' 6 tháng đè lên bản Square Ocean 10 tháng). Ưu tiên bản có nhóm cho chất
     lượng ổn định; bản không nhóm chỉ để DỰ PHÒNG (nếu cả số chương chỉ có bản không
     nhóm thì vẫn tải, KHÔNG bỏ chương — user chốt phương án 1)."""
     off = sorted((v for v in versions if v.get("isOfficial")),
-                 key=lambda v: v["id"], reverse=True)
+                 key=lambda v: (_official_rank(v), -v["id"]))
     scan = [v for v in versions if not v.get("isOfficial")]
     grouped = sorted((v for v in scan if _group_name(v) != "?"),
                      key=lambda v: v["id"], reverse=True)

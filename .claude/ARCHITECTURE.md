@@ -58,12 +58,19 @@ cách chạy thật + decode thử ảnh.
     cf_clearance/UA thật từ browser đang sống; refresh vé ở MAIN THREAD (đầu mỗi
     chương + khi 403); 403 chỉ gắn cookie cho host `*.comix.to`, wowpic không cần.
     URL ảnh `*.wowpicN.store` KHÔNG có đuôi file → tải xong sniff magic bytes đổi đuôi.
-    Luật chọn per chương: `isOfficial` trước → scan CÓ tên nhóm (`id`/chapterId lớn
-    nhất = mới nhất trước) → hết bản có nhóm mới tới scan KHÔNG nhóm (id lớn nhất
-    trước). id tăng đơn điệu = độ mới (API không có timestamp thô, chỉ "2mos ago").
-    Ưu tiên NHÓM hơn độ mới vì bản "no group" hay là raw/batch đè lên bản nhóm scan
-    cũ hơn nhưng chỉn chu hơn (vd Dai ch.345-349); cả số chương chỉ có bản không nhóm
-    thì vẫn tải, không bỏ (user chốt 19/08). Xem `candidates_for()`.
+    Luật chọn per chương: `isOfficial` trước → hết official mới tới scan CÓ tên nhóm
+    (`id`/chapterId lớn nhất = mới nhất trước) → hết bản có nhóm mới tới scan KHÔNG nhóm
+    (id lớn nhất trước). id tăng đơn điệu = độ mới (API không có timestamp thô, chỉ
+    "2mos ago"). GIỮA các bản official (1 chương có thể có nhiều official song song khác
+    nền tảng/typeset — vd Solo Leveling ch.0 có 7: Webcomic/Tapas/Manta/Yen Press/
+    TappyToon/…) xếp theo `OFFICIAL_GROUP_RANK` (số nhỏ = ưu tiên cao: TappyToon 0 …
+    Webcomic 99; nhóm lạ = hạng giữa `OFFICIAL_DEFAULT_RANK`), cùng hạng thì id mới nhất
+    trước — KHÔNG chọn thuần theo độ mới nữa vì bản re-up mới nhất (Webcomic) thường kém
+    bản dịch official tốt (TappyToon); sửa thứ tự chỉ cần sửa dict `OFFICIAL_GROUP_RANK`
+    (user chốt 21/08). Ở nhóm SCAN thì ưu tiên NHÓM hơn độ mới vì bản "no group" hay là
+    raw/batch đè lên bản nhóm scan cũ hơn nhưng chỉn chu hơn (vd Dai ch.345-349); cả số
+    chương chỉ có bản không nhóm thì vẫn tải, không bỏ (user chốt 19/08). Xem
+    `candidates_for()`.
     Upgrade→Official: điều kiện `has_content AND not on_disk_official AND
     best.isOfficial` — "chưa phải official" GỒM cả chương tải từ SITE KHÁC (folder có
     ảnh + `.done` nhưng KHÔNG có sidecar `.source.json`; sidecar chỉ do comix tạo),
@@ -151,8 +158,11 @@ cách chạy thật + decode thử ảnh.
   2 tầng folder (arc/chương) lẫn phẳng, sort số chương tự nhiên (0.1, 14.2...),
   ghép trang đôi thủ công (nút ⧉ → POST `/api/spread`), bộ nạp ảnh tuần tự JS
   kèm retry (tự thử lại 3 lần backoff 1s-3s-8s → ô "chạm để tải lại" → hồi cả
-  cụm khi chạm/`online`/`visibilitychange`), bìa sidecar `cover.*`, thanh công
-  cụ chạm-để-hiện, **nút chỉnh cỡ ảnh** (stepper −/%/+ header cạnh ⧉, có ô gõ % tay;
+  cụm khi chạm/`online`/`visibilitychange`), bìa sidecar `cover.*`, **thanh công
+  cụ KHÔNG tự bật khi vào chương** (kiểu Asura: `#topbar`/`#botbar` render sẵn class
+  `hide`, `hid=true`; thay vào đó hiện pill `#tapcue` "Tap to show controls" nhấp nháy
+  nhẹ ở đáy — `pointer-events:none` để chạm xuyên qua cho handler vùng đọc bật bars +
+  ẩn pill; cuộn/chạm-lại → ẩn bars + pill trở lại), **nút chỉnh cỡ ảnh** (stepper −/%/+ header cạnh ⧉, có ô gõ % tay;
   100%=800px, min 1% cap 300%, đổi `#strip{max-width:min(var(--imgw,800px),100%)}`,
   kẹp theo màn không cuộn ngang, nhớ localStorage, ẩn ≤480px). **UI reader bằng
   tiếng Anh** (Bookmark/Bookmarked, All Comics, First/Latest Chapter, Prev/Next,
@@ -555,7 +565,11 @@ cách chạy thật + decode thử ảnh.
   (fallback `/brand` nếu thiếu PIL). **⑥ Prefetch trang series** (trị "bấm series lần đầu 2-3s" = cache-miss
   SWR): SW có hàng đợi `pfQ`/`pumpPrefetch` (giới hạn `PF_MAX=2`, nhận `{type:'prefetch',urls}`, bỏ cái đã
   cache, xoá khi purge); HOME_JS nạp trước theo `pointerdown` [ý định] + `IntersectionObserver`+`requestIdleCallback`
-  [card lọt viewport] → lần bấm đầu cũng cache-hit. *Đánh đổi*: nội dung HTML trễ 1 lần mở (SWR); iOS
+  [card lọt viewport] → lần bấm đầu cũng cache-hit. **⑦ Prefetch trang CHƯƠNG kế/trước** (trị khựng 1-2s khi
+  bấm Next / chọn chương): READER_JS lúc rảnh (`requestIdleCallback`) postMessage `{type:'prefetch',urls:[D.next,D.prev]}`
+  cho cùng hàng đợi SW → Next/Prev sau đó lấy HTML từ cache gần như tức thì; việc render trước còn WARM luôn
+  `_dim_cache` phía server (html_reader hết phải mở PIL từng ảnh khi chương nguội). Chỉ nạp HTML, KHÔNG kéo ảnh.
+  *Đánh đổi*: nội dung HTML trễ 1 lần mở (SWR); iOS
   Safari có thể evict SW sau ~7 ngày không dùng (mở lại chịu cold 1 lượt); prefetch tốn thêm băng thông
   (đã chặn 2 luồng + chỉ nạp cái chưa cache). *Gotcha*: header logo là `/brand` (KHÁC favicon `/logo`); đổi
   logo gốc thì phải để ý brand.webp cache-first sẽ giữ bản cũ tới khi SW_VERSION đổi.

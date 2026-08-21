@@ -924,6 +924,16 @@ img{border:0}
 #chsel{position:absolute;inset:0;width:100%;height:100%;opacity:0;cursor:pointer}
 #topbar.hide{transform:translateY(-110%)}
 #botbar.hide{transform:translateY(110%)}
+/* Gợi ý "chạm để hiện điều khiển" (kiểu Asura): pill mờ nhấp nháy nhẹ ở đáy,
+   pointer-events:none -> chạm xuyên qua để handler vùng đọc bật thanh công cụ.
+   Hiện khi bars đang ẩn; .off = mờ hẳn khi bars hiện. */
+#tapcue{position:fixed;left:50%;transform:translateX(-50%);
+  bottom:calc(16px + env(safe-area-inset-bottom,0px));z-index:9;
+  background:rgba(0,0,0,.8);color:rgba(255,255,255,.72);font-size:12px;
+  padding:6px 12px;border-radius:9999px;pointer-events:none;white-space:nowrap;
+  animation:tappulse 2s cubic-bezier(.4,0,.6,1) infinite;transition:opacity .25s ease}
+#tapcue.off{opacity:0}
+@keyframes tappulse{50%{opacity:.5}}
 .iconbtn{display:flex;align-items:center;justify-content:center;width:38px;height:38px;
   border-radius:10px;background:#1d1e25;border:1px solid #2b2c34;color:#e8e8ea;
   font-size:18px;cursor:pointer;flex:none}
@@ -1628,7 +1638,7 @@ def html_reader(s, rel, user=None):
     data = {"sid": sid, "rel": rel, "prev": prev_url, "next": next_url,
             "y": prog["y"] if (prog and prog.get("rel") == rel) else 0}
     body = (
-        f'<header id="topbar" class="bar">'
+        f'<header id="topbar" class="bar hide">'
         f'<a class="iconbtn home" href="/" title="Library">{HOME_SVG}</a>'
         f'<a class="tinfo" href="{series_url}" title="Chapters">'
         f'<img class="tcov" src="{cover_url(s)}" alt="">'
@@ -1642,7 +1652,7 @@ def html_reader(s, rel, user=None):
         '<script>(function(){try{var p=parseInt(localStorage.getItem("imgw"),10);'
         'if(p>=1)document.documentElement.style.setProperty("--imgw",(p/100*800)+"px");}catch(e){}})();</script>'
         f'<main id="strip">{"".join(imgs)}</main>{endbox}'
-        f'<footer id="botbar" class="bar">'
+        f'<footer id="botbar" class="bar hide">'
         + navbtn(prev_url, "‹ Prev")
         + ('<div class="chwrap">'
            '<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" '
@@ -1653,6 +1663,7 @@ def html_reader(s, rel, user=None):
            f'<select id="chsel">{"".join(opts)}</select></div>')
         + navbtn(next_url, "Next ›", acc=True)
         + "</footer>"
+        + '<div id="tapcue">Tap to show controls</div>'
         f"<script>const D={js(data)};const LOGGEDIN={js(bool(user))};</script>"
         + static_tag('ls.js') + static_tag('reader.js'))
     return page(f'{info["name"]} - {s["title"]}', body, body_class="reader")
@@ -2088,13 +2099,18 @@ SERIES_JS = """
 
 READER_JS = """
 (function(){
-  var top=document.getElementById('topbar'), bot=document.getElementById('botbar');
-  // --- ẩn/hiện thanh công cụ theo chiều cuộn ---
-  var hid=false, barT=Date.now();
+  var top=document.getElementById('topbar'), bot=document.getElementById('botbar'),
+      cue=document.getElementById('tapcue');
+  // --- ẩn/hiện thanh công cụ ---
+  // KHÔNG tự bật khi vào chương (kiểu Asura): bars ẩn sẵn (class 'hide' từ server),
+  // hid=true; thay vào đó hiện pill "Tap to show controls" nhấp nháy nhẹ ở đáy.
+  // Chạm vùng đọc -> bật bars + ẩn pill; chạm lại / cuộn -> ẩn bars + pill trở lại.
+  var hid=true, barT=Date.now();
   function setBars(h){
     hid=h; barT=Date.now();
     top.classList.toggle('hide',h);
     bot.classList.toggle('hide',h);
+    if(cue) cue.classList.toggle('off',!h);   // pill mờ hẳn khi bars đang hiện
   }
   // lưu vị trí đọc lên server theo tài khoản (guest thì bỏ qua). Gộp ghi tối đa
   // mỗi 2.5s, và ghi ngay khi rời/ẩn trang để không mất vị trí cuối.
@@ -2302,6 +2318,22 @@ READER_JS = """
       if(document.visibilityState==='visible')revive(null);
     });
     next();
+  })();
+  // --- Prefetch trang chương KẾ (và trước) vào cache SW khi rảnh -> bấm Next/Prev
+  // gần như tức thì (SW trả HTML từ cache, khỏi round-trip qua tunnel). Việc render
+  // trước cũng WARM luôn cache kích thước ảnh (_dim_cache) phía server -> hết cảnh
+  // mở nguội quét PIL từng ảnh. Chỉ nạp HTML (2 doc nhẹ), KHÔNG kéo ảnh chương.
+  (function(){
+    if(!('serviceWorker' in navigator)) return;
+    var urls=[]; if(D.next) urls.push(D.next); if(D.prev) urls.push(D.prev);
+    if(!urls.length) return;
+    var idle=window.requestIdleCallback||function(f){return setTimeout(f,800);};
+    function send(){ var c=navigator.serviceWorker.controller;
+      if(c){ try{ c.postMessage({type:'prefetch',urls:urls}); }catch(e){} } }
+    idle(function(){
+      if(navigator.serviceWorker.controller) send();
+      else navigator.serviceWorker.ready.then(function(){ setTimeout(send,50); });
+    });
   })();
 })();
 """
