@@ -168,6 +168,15 @@
 - **[10/08] Tool LÀM NÉT Real-ESRGAN — ĐÃ push. Tích hợp tự động vào `/tai` CHƯA làm.**
 
 ## Quyết định gần đây (mới nhất trước)
+- **21/08: Trị bookmark "cũ" khi điều hướng (2 gốc khác nhau) — bù cho việc bật bfcache** — sau khi bật
+  bfcache lộ 2 lỗi: **②** back về home/series thấy chưa bookmark (bfcache đóng băng DOM, JS hydrate không
+  chạy lại); **①** bookmark ở home rồi bấm vào truyện thấy chưa bookmark, vào lại mới đúng (SW prefetch/SWR
+  trả HTML cũ + series render server, không hydrate client khi đăng nhập). Chọn **hướng A** (giữ
+  server-render). Fix trong `reader_server.py`: **②** thêm `pageshow.persisted` ở HOME_JS/SERIES_JS →
+  guest đọc lại localStorage, đăng nhập refetch `GET /api/state` (đã có sẵn), áp lại bằng hàm idempotent
+  (không re-init → không double-bind). **①** khi toggle (chỉ đăng nhập) gọi `TOONY_PURGE_PAGE(url)` (ACCT_JS)
+  → SW xoá đúng key khỏi `PAGE_CACHE`. Guest không cần purge (tự hydrate từ localStorage). CHỈ bookmark;
+  tiến trình/đã-đọc để sau. Không phá bfcache. Chi tiết ở ARCHITECTURE.md.
 - **21/08: Trị "vuốt back nháy 1 phát" iOS Safari = KHÔI PHỤC BFCACHE, không phải xử lý cử chỉ** — vuốt
   trái→phải để back trên iPhone (Safari/Web App qua cloudflared) nháy trắng, còn nút Back thì không, vì
   vuốt-back là animation tương tác phải vẽ trang đích NGAY: trang không vào được bfcache (do document trả

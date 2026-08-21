@@ -492,6 +492,27 @@ cách chạy thật + decode thử ảnh.
   tay có thể trễ hiện ≤60s (đổi qua admin thì bust cache → tức thì). **Chẩn đoán gốc**: DevTools cho thấy
   màn trắng 100% là "Waiting for server response" (TTFB server-side), mạng/tunnel vô can (DNS+Connect+SSL
   bằng nhau giữa máy 124ms và máy 4.27s) → app SSR nên splash-in-HTML vô ích.
+- **Trị bookmark "cũ" khi điều hướng — bù cho việc bật bfcache** (21/08). *Bối cảnh*: sau khi bật bfcache
+  (mục dưới), lộ 2 kiểu hiện bookmark cũ, GỐC KHÁC NHAU nên fix riêng. **② back về home/series thấy chưa
+  bookmark**: trang bị bfcache "đóng băng" từ trước lúc bookmark, back khôi phục nguyên trạng → JS hydrate
+  KHÔNG chạy lại. **① vừa bookmark ở home rồi bấm vào truyện thấy chưa bookmark, vào lại mới đúng**: SW đã
+  prefetch/cache HTML trang series TỪ TRƯỚC (bookmark còn OFF), SWR trả bản cũ trước; và series page render
+  nút bookmark từ SERVER, không re-hydrate client khi ĐĂNG NHẬP (guest tự lành vì đọc localStorage mỗi lần
+  tải). *Chọn hướng A* (giữ server-render, không client-hydrate khắp nơi). *Cách làm* (`reader_server.py`):
+  **② pageshow.persisted** — HOME_JS + SERIES_JS thêm listener `pageshow`, chỉ chạy khi `e.persisted` (khôi
+  phục bfcache); guest đọc lại `localStorage`, đăng nhập refetch `GET /api/state` (đã có sẵn, trả
+  `{bookmarks,progress,read}`; fetch thường nên SW không chặn → luôn tươi), rồi ÁP LẠI trạng thái qua hàm
+  idempotent (`applyBM`/`setSbk`) — KHÔNG re-init nên không double-bind click. Lỗi mạng → giữ nguyên DOM.
+  **① SW purge-page** — khi toggle bookmark thành công (chỉ nhánh ĐĂNG NHẬP), client gọi
+  `TOONY_PURGE_PAGE(url)` (expose ở ACCT_JS, load trên home+series, KHÔNG ở reader) → postMessage
+  `{type:'purge-page',url}` cho SW xoá riêng key đó khỏi `PAGE_CACHE` (`cache.delete(url,{ignoreSearch})`)
+  → lần vào sau tải bản tươi. Home dùng `FOLLOWDATA[sid].url`, series dùng `location.href`. *Vì sao chỉ
+  đăng nhập*: guest hydrate nút từ localStorage mỗi lần tải nên KHÔNG lệ thuộc cache; purge cho guest chỉ
+  phí tốc độ prefetch. *Chỉ bookmark*: tiến trình/đã-đọc chưa refresh (giới hạn có sẵn, để sau). *Đánh đổi*:
+  đăng nhập tốn 1 request `/api/state` + "pop" nhẹ mỗi lần back; purge làm đúng series vừa toggle mất tốc
+  độ prefetch 1 lần; đua-prefetch hiếm (prefetch bay trước, về sau purge). *KHÔNG phá bfcache*:
+  pageshow/pagehide là sự kiện chính danh, không làm trang mất quyền vào bfcache. `SW_VERSION` tự bump vì
+  ver của home/series/acct.js đổi → SW mới activate, dọn cache cũ.
 - **Trị "vuốt back nháy 1 phát" trên iOS Safari** (21/08). *Triệu chứng*: đọc qua link cloudflared trên
   iPhone (Safari + Web App), **vuốt trái→phải để back thì màn hình nháy trắng 1 phát**, còn bấm nút Back
   của trình duyệt thì không. *Vì sao*: vuốt-back là **animation tương tác** — Safari phải vẽ trang đích

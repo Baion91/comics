@@ -294,6 +294,12 @@ python reader_server.py --port 8081
   Web App qua link cloudflared) bị **nháy trắng 1 phát**; đã sửa bằng cách giữ trang
   trong bfcache (đổi header document `no-store`→`no-cache`) + khai báo `color-scheme:dark`
   và nền tối trên `html` để không còn frame trắng khi trình duyệt dựng lại trang.
+- **Bookmark cập nhật đúng khi chuyển trang**: hệ quả của bfcache là trang giữ lại trong
+  bộ nhớ có thể hiện bookmark cũ khi quay lại; đã sửa để (a) khi **back** về home/trang
+  truyện, trạng thái bookmark tự đồng bộ lại (guest đọc localStorage, tài khoản hỏi lại
+  server), và (b) khi **bấm bookmark rồi mở truyện**, trang tải bản mới thay vì bản cache
+  cũ (Service Worker xoá đúng trang đó khỏi cache). *(Mới đồng bộ bookmark; tiến trình đọc
+  / chương đã đọc khi back sẽ làm sau.)*
 - **Theo dõi truyện (bookmark)**: bấm nút **Bookmark** (tím, dưới mỗi truyện ở
   trang chủ / cạnh ảnh bìa ở trang truyện) → chuyển **nền xám, sao + chữ vàng
   "Bookmarked"**. Truyện đang theo dõi hiện thành hàng **"Bookmarked"** cuộn ngang

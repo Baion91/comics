@@ -1697,6 +1697,15 @@ ACCT_JS = """
       setTimeout(go,300);
     }catch(e){ go(); }
   }
+  // Xoá 1 trang khỏi cache HTML của SW khi bookmark của nó đổi (chỉ cần cho tài
+  // khoản — trang series render nút bookmark từ server; guest thì series.js tự
+  // hydrate từ localStorage nên không lệ thuộc cache). No-op nếu chưa có SW.
+  window.TOONY_PURGE_PAGE=function(url){
+    var sw=navigator.serviceWorker;
+    if(sw&&sw.controller&&url){
+      try{ sw.controller.postMessage({type:'purge-page',url:url}); }catch(e){}
+    }
+  };
   // đưa con trỏ vào ô đăng nhập (gọi khi guest bấm bookmark)
   window.TOONY_LOGIN=function(){
     var u=document.getElementById('uname');
@@ -1783,6 +1792,25 @@ HOME_JS = """
     else BM=BM.filter(function(x){return x!==sid;});
     renderFollows();
   }
+  // Áp lại trạng thái bookmark cho toàn lưới + hàng follows theo BM hiện tại
+  // (idempotent — gọi lại bao nhiêu lần cũng không double).
+  function applyBM(){
+    [].forEach.call(grid.querySelectorAll('.card'),function(c){
+      var b=c.querySelector('.bkbtn'); if(b) setBk(b,BM.indexOf(c.dataset.sid)>=0);
+    });
+    renderFollows();
+  }
+  // Nạp BM từ nguồn SỐNG (guest: localStorage; đăng nhập: /api/state) rồi áp lại.
+  // Dùng khi trang khôi phục từ bfcache (pageshow.persisted): bookmark có thể đã
+  // đổi ở trang khác trong khi DOM ở đây bị đóng băng. Lỗi mạng -> giữ nguyên DOM.
+  function syncBM(){
+    if(!LOGGEDIN){ BM=LS.bms(); applyBM(); return; }
+    fetch('/api/state').then(function(r){return r.json();}).then(function(res){
+      if(res&&Array.isArray(res.bookmarks)){ BM=res.bookmarks; applyBM(); }
+    }).catch(function(){});
+  }
+  // Chỉ chạy khi khôi phục từ bfcache (persisted); tải mới thì init đã hydrate rồi.
+  addEventListener('pageshow',function(e){ if(e.persisted) syncBM(); });
   grid.addEventListener('click',function(e){
     var b=e.target.closest('.bkbtn'); if(!b) return;
     e.preventDefault();
@@ -1793,17 +1821,17 @@ HOME_JS = """
       body:JSON.stringify({op:'bookmark',sid:sid,on:on})})
     .then(function(r){return r.json();}).then(function(res){
       b.disabled=false;
-      if(res&&res.ok) afterToggle(sid,on,b);
+      if(res&&res.ok){
+        afterToggle(sid,on,b);
+        // HTML server của trang series này giờ đã cũ trong cache SW -> xoá để
+        // lần vào sau tải bản tươi (khớp nút bookmark). Guest không cần.
+        var d=FOLLOWDATA[sid];
+        if(d&&d.url&&window.TOONY_PURGE_PAGE) TOONY_PURGE_PAGE(d.url);
+      }
     }).catch(function(){b.disabled=false;});
   });
   // guest: hydrate bookmark từ localStorage (server render trung tính cho guest)
-  if(!LOGGEDIN){
-    BM=LS.bms();
-    [].forEach.call(grid.querySelectorAll('.card'),function(c){
-      var b=c.querySelector('.bkbtn'); if(b) setBk(b,BM.indexOf(c.dataset.sid)>=0);
-    });
-    renderFollows();
-  }
+  if(!LOGGEDIN){ BM=LS.bms(); applyBM(); }
   // tìm truyện theo tên trong lưới All Comics
   var hq=document.getElementById('homeq');
   var hnr=document.getElementById('homenores');
@@ -2000,8 +2028,22 @@ SERIES_JS = """
       body:JSON.stringify({op:'bookmark',sid:sid,on:on})})
     .then(function(r){return r.json();}).then(function(res){
       sbk.disabled=false;
-      if(res&&res.ok) setSbk(on);
+      if(res&&res.ok){
+        setSbk(on);
+        // Trang này (cache SW) giờ render nút bookmark cũ -> xoá để vào lại tươi.
+        if(window.TOONY_PURGE_PAGE) TOONY_PURGE_PAGE(location.href);
+      }
     }).catch(function(){sbk.disabled=false;});
+  });
+  // Khôi phục từ bfcache (persisted): bookmark có thể đã đổi ở home/nơi khác ->
+  // đồng bộ lại nút. Guest: đọc localStorage; đăng nhập: hỏi /api/state. Chỉ khi
+  // persisted (tải mới thì hydrate ở trên đã đúng).
+  addEventListener('pageshow',function(e){
+    if(!e.persisted||!sbk) return;
+    if(!LOGGEDIN){ setSbk(LS.isBm(sid)); return; }
+    fetch('/api/state').then(function(r){return r.json();}).then(function(res){
+      if(res&&Array.isArray(res.bookmarks)) setSbk(res.bookmarks.indexOf(sid)>=0);
+    }).catch(function(){});
   });
 
   // sort Mới nhất / Cũ nhất — server render mặc định 'new'; 'old' = đảo DOM
@@ -2396,6 +2438,11 @@ self.addEventListener('message', (e) => {
     e.waitUntil(caches.delete(PAGE_CACHE).then(() => {
       if (e.ports && e.ports[0]) e.ports[0].postMessage({ok: true});
     }));
+  } else if (d.type === 'purge-page' && d.url) {
+    // Bookmark 1 truyện đổi -> HTML server đã cache của ĐÚNG trang đó thành cũ
+    // (nút bookmark render sai). Xoá riêng key đó để lần vào sau tải bản tươi;
+    // các trang khác giữ nguyên tốc độ prefetch/SWR.
+    e.waitUntil(caches.open(PAGE_CACHE).then((c) => c.delete(d.url, {ignoreSearch: true})));
   } else if (d.type === 'prefetch' && Array.isArray(d.urls)) {
     for (const u of d.urls) if (pfQ.indexOf(u) < 0) pfQ.push(u);
     pumpPrefetch();
