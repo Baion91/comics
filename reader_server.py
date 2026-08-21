@@ -897,6 +897,11 @@ def cover_jpeg(series):
 
 CSS = """
 *{box-sizing:border-box}
+/* color-scheme:dark + nền tối trên html: khi trang phải dựng lại (vd back không
+   trúng bfcache), canvas mặc định là tối thay vì trắng -> hết chớp trắng lúc
+   vuốt back. Nền tối cũng đặt trên html chứ không chỉ body vì vùng sau body
+   dùng nền của html. */
+html{color-scheme:dark;background:#0b0c10}
 body{margin:0;background:#0b0c10;color:#e8e8ea;
   font-family:system-ui,'Segoe UI',Roboto,Arial,sans-serif;
   -webkit-tap-highlight-color:transparent}
@@ -1242,6 +1247,12 @@ def page(title, body, body_class=""):
     return ("<!doctype html><html lang=\"vi\"><head><meta charset=\"utf-8\">"
             "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1, viewport-fit=cover\">"
             "<meta name=\"theme-color\" content=\"#0b0c10\">"
+            # color-scheme + nền tối inline: áp NGAY, trước khi app.css (link
+            # ngoài) tải xong. Chặn frame trắng đầu tiên khi iOS dựng lại trang
+            # lúc vuốt back.
+            "<meta name=\"color-scheme\" content=\"dark\">"
+            "<style>html{color-scheme:dark;background:#0b0c10}"
+            "body{background:#0b0c10}</style>"
             # iOS: ẩn thanh Safari khi mở từ màn hình chính (không cần HTTPS)
             "<meta name=\"apple-mobile-web-app-capable\" content=\"yes\">"
             "<meta name=\"mobile-web-app-capable\" content=\"yes\">"
@@ -2501,7 +2512,12 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(code)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Content-Length", str(len(data)))
-        self.send_header("Cache-Control", "no-store")
+        # no-cache (KHÔNG phải no-store): vẫn buộc revalidate mỗi lần load nên
+        # không hiện nhầm trạng thái đăng nhập cũ, NHƯNG không chặn back-forward
+        # cache. no-store làm iOS Safari phải dựng lại trang khi back -> vuốt back
+        # (animation tương tác) lộ frame dựng lại thành "nháy". no-cache giữ được
+        # bfcache -> back tức thì, hết nháy.
+        self.send_header("Cache-Control", "no-cache")
         self.end_headers()
         if self.command != "HEAD":
             self.wfile.write(data)

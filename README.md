@@ -290,6 +290,10 @@ python reader_server.py --port 8081
   theo thứ tự chương.
 - Trên PC dùng nút `−`/`+` góc phải để chỉnh độ rộng trang; phím `←`/`→`
   chuyển chương; zoom thêm bằng `Ctrl` + lăn chuột (điện thoại: véo 2 ngón).
+- **Vuốt back mượt trên iPhone**: trước đây vuốt trái→phải để quay lại (trên Safari /
+  Web App qua link cloudflared) bị **nháy trắng 1 phát**; đã sửa bằng cách giữ trang
+  trong bfcache (đổi header document `no-store`→`no-cache`) + khai báo `color-scheme:dark`
+  và nền tối trên `html` để không còn frame trắng khi trình duyệt dựng lại trang.
 - **Theo dõi truyện (bookmark)**: bấm nút **Bookmark** (tím, dưới mỗi truyện ở
   trang chủ / cạnh ảnh bìa ở trang truyện) → chuyển **nền xám, sao + chữ vàng
   "Bookmarked"**. Truyện đang theo dõi hiện thành hàng **"Bookmarked"** cuộn ngang

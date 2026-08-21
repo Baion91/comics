@@ -168,6 +168,14 @@
 - **[10/08] Tool LÀM NÉT Real-ESRGAN — ĐÃ push. Tích hợp tự động vào `/tai` CHƯA làm.**
 
 ## Quyết định gần đây (mới nhất trước)
+- **21/08: Trị "vuốt back nháy 1 phát" iOS Safari = KHÔI PHỤC BFCACHE, không phải xử lý cử chỉ** — vuốt
+  trái→phải để back trên iPhone (Safari/Web App qua cloudflared) nháy trắng, còn nút Back thì không, vì
+  vuốt-back là animation tương tác phải vẽ trang đích NGAY: trang không vào được bfcache (do document trả
+  `no-store`) nên bị dựng lại từ đầu, các frame trung gian lộ ra = nháy. Fix trong `reader_server.py`:
+  `send_page()` đổi `no-store`→**`no-cache`** (không chặn bfcache mà vẫn revalidate mỗi load) + thêm
+  `color-scheme:dark`/nền tối trên `html` (CSS + inline `<head>`) để canvas mặc định là tối, khử chớp
+  trắng kể cả khi vẫn phải dựng lại. Đã kiểm: không có handler touch tùy biến, không `unload`/WebSocket
+  chặn bfcache; `pagehide` an toàn. Chi tiết ở ARCHITECTURE.md. Kiểm chứng: `pageshow`→`persisted===true`.
 - **21/08: Trị màn-trắng cold + bìa-nháy bằng SERVICE WORKER, không phải tối ưu server thêm** — đã
   chứng minh server render 0.5ms (vô can); nút thắt còn lại là client không có gì hiện ngay khi kết nối
   nguội + document `no-store` không cache được. SW (SWR shell + cache-first ảnh) cắt mạng khỏi đường

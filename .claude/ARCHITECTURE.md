@@ -492,6 +492,26 @@ cách chạy thật + decode thử ảnh.
   tay có thể trễ hiện ≤60s (đổi qua admin thì bust cache → tức thì). **Chẩn đoán gốc**: DevTools cho thấy
   màn trắng 100% là "Waiting for server response" (TTFB server-side), mạng/tunnel vô can (DNS+Connect+SSL
   bằng nhau giữa máy 124ms và máy 4.27s) → app SSR nên splash-in-HTML vô ích.
+- **Trị "vuốt back nháy 1 phát" trên iOS Safari** (21/08). *Triệu chứng*: đọc qua link cloudflared trên
+  iPhone (Safari + Web App), **vuốt trái→phải để back thì màn hình nháy trắng 1 phát**, còn bấm nút Back
+  của trình duyệt thì không. *Vì sao*: vuốt-back là **animation tương tác** — Safari phải vẽ trang đích
+  trượt vào NGAY; nếu trang không nằm sẵn trong **bfcache** (back-forward cache) thì nó bị **dựng lại từ
+  đầu** và các frame trung gian lộ ra = nháy. Nút Back không animate tương tác nên che được. Hai gốc: **(a)**
+  `send_page()` trả document với `Cache-Control: no-store` → WebKit đời mới coi trang `no-store` là
+  **không đủ điều kiện vào bfcache** ⇒ back luôn dựng lại; **(b)** nền tối `#0b0c10` chỉ đặt trên `body`
+  (nằm trong app.css tải qua `<link>` ngoài) và **không khai báo `color-scheme`** → canvas mặc định là
+  **trắng**, frame đầu khi dựng lại là trắng ⇒ chớp trắng (`theme-color` chỉ đổi thanh Safari, không cứu
+  canvas). *Cách làm* (đều trong `reader_server.py`): **①** `send_page()` đổi `no-store`→**`no-cache`** —
+  vẫn buộc revalidate mỗi load (không hiện nhầm trạng thái đăng nhập cũ) NHƯNG **`no-cache` không chặn
+  bfcache** ⇒ back tức thì, hết nháy; JSON/`api/*` giữ `no-store` như cũ. **②** thêm `color-scheme:dark` +
+  nền tối trên `html` (không chỉ `body`) trong CSS, và nhân đôi inline trong `<head>` (`<meta
+  name="color-scheme"...>` + `<style>html{color-scheme:dark;background:#0b0c10}...`) để áp TRƯỚC khi
+  app.css về ⇒ khử frame trắng kể cả khi vẫn phải dựng lại. *Đã kiểm*: không có handler touch/swipe tùy
+  biến (loại xung đột cử chỉ), không `unload`/WebSocket/EventSource chặn bfcache; `pagehide` (lưu vị trí)
+  an toàn với bfcache. *Kiểm chứng*: macOS Safari → Develop nối iPhone, nghe `pageshow` → `event.persisted
+  === true` = đang khôi phục từ bfcache (đã hết nháy). *Đánh đổi*: `no-cache` vẫn round-trip revalidate mỗi
+  lần (chấp nhận — SWR của SW đã lo first-paint nguội); bfcache chỉ hoạt động khi SW không chặn (đã kiểm
+  navigate handler không phá).
 - **Tài nguyên tĩnh tách file + Service Worker** (21/08, trị màn-trắng khi mở NGUỘI + bìa-nháy khi
   login/logout). *Vì sao*: SWR ở trên trị TTFB do scandil; còn 2 nút thắt CLIENT: (a) document `no-store`
   nhúng inline toàn bộ CSS(16KB)+JS → không cache được, mỗi lần mở kéo lại hết; (b) khi kết nối tunnel
