@@ -1568,7 +1568,16 @@ def html_reader(s, rel, user=None):
         return html.escape(fname, quote=True)
 
     def img_url(fname):
-        return u("img", sid, *rel.split("/"), fname)
+        # Gắn ?v=mtime để URL ĐỔI mỗi khi file đổi (vd upgrade Asura->Official làm
+        # ảnh đổi kích thước). SW cache ảnh kiểu cache-first + khoá theo URL: URL
+        # đứng yên -> bytes CŨ bị giữ, nhồi vào aspect-ratio MỚI của HTML -> méo ảnh
+        # (disk đúng nhưng reader méo). Cover đã versioned sẵn (cover_url) — đây là
+        # chỗ ảnh chương còn thiếu. Route /img bỏ qua query nên ?v không phá gì.
+        base = u("img", sid, *rel.split("/"), fname)
+        try:
+            return f"{base}?v={os.stat(os.path.join(ch_dir, fname)).st_mtime_ns}"
+        except OSError:
+            return base
 
     imgs = []
     for ui, unit in enumerate(units):

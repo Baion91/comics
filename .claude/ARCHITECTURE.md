@@ -555,7 +555,8 @@ cách chạy thật + decode thử ảnh.
   `"{cover_ver}-{len}"` (+ If-None-Match→304). **③ Service Worker** `SW_JS` phục vụ ở `/sw.js`
   (`Cache-Control: no-cache` để cập nhật ngay, header `Service-Worker-Allowed: /`), `SW_VERSION` = hash
   của precache-list nên đổi asset ⇒ SW mới ⇒ dọn cache cũ (activate): **cache-first** cho `/cover` `/img`
-  `/static` + icon (URL đã versioned/độc nhất nên an toàn), **stale-while-revalidate** cho điều hướng HTML
+  `/static` + icon (an toàn VÌ URL đều versioned — `/cover?v=cover_ver`, `/static?v=sha1`, ảnh chương
+  `/img/...?v=mtime`, xem ⑧), **stale-while-revalidate** cho điều hướng HTML
   (first paint từ cache tức thì, cập nhật nền cho lần sau), POST/`api/*` bỏ qua. **④** login/logout gọi
   `purgeAndReload()` (ACCT_JS): postMessage `{type:'purge-pages'}` cho SW xoá `PAGE_CACHE` (ack qua
   MessageChannel + fallback 300ms) rồi reload — BẮT BUỘC vì SW khoá theo URL, không phân biệt cookie `uid`,
@@ -569,6 +570,17 @@ cách chạy thật + decode thử ảnh.
   bấm Next / chọn chương): READER_JS lúc rảnh (`requestIdleCallback`) postMessage `{type:'prefetch',urls:[D.next,D.prev]}`
   cho cùng hàng đợi SW → Next/Prev sau đó lấy HTML từ cache gần như tức thì; việc render trước còn WARM luôn
   `_dim_cache` phía server (html_reader hết phải mở PIL từng ảnh khi chương nguội). Chỉ nạp HTML, KHÔNG kéo ảnh.
+  **⑧ Ảnh chương versioned `?v=mtime`** (22/08, trị **méo ảnh trong reader dù file trên ĐĨA ĐÚNG**): SW cache
+  `/img` cache-first + khoá theo URL, nhưng `img_url()` xưa KHÔNG gắn version (khác `/cover`). Khi 1 chương bị
+  THAY bằng bản khác kích thước (vd upgrade comix: Asura 720×4000 → Official TappyToon 720×1334), URL
+  `.../001.webp` ĐỨNG YÊN → SW trả bytes CŨ, còn HTML render `aspect-ratio` MỚI theo file mới → ảnh bị kéo méo
+  (chỉ dính chương ĐÃ đọc trước đó + bị thay; disk luôn đúng). *Fix*: `img_url()` gắn `?v={st_mtime_ns}` (route
+  `/img` dùng `urlsplit().path` nên bỏ qua query, vô hại; `ch_dir` có sẵn trong `html_reader`) → file đổi → mtime
+  đổi → URL đổi → SW cache-miss → tải tươi. **TỰ khỏi, không cần xoá cache tay** (URL versioned là cache-miss dù
+  bytes cũ vẫn nằm trong `IMG_CACHE`). Có hiệu lực sau ~1 lần mở lại (HTML qua SWR mới có URL `?v=`). KHÔNG dọn
+  bản `?v=` cũ trong `IMG_CACHE`: rác nhỏ, chỉ sinh khi THAY ảnh (không phải khi tải chương mới), browser tự
+  evict theo quota. *Lưu ý*: `mtime` đổi khi git-sync ghi lại file dù nội dung y hệt → client tải lại 1 lần (phí
+  nhẹ, không sai) — chấp nhận vì `/cover` cũng dùng `mtime`.
   *Đánh đổi*: nội dung HTML trễ 1 lần mở (SWR); iOS
   Safari có thể evict SW sau ~7 ngày không dùng (mở lại chịu cold 1 lượt); prefetch tốn thêm băng thông
   (đã chặn 2 luồng + chỉ nạp cái chưa cache). *Gotcha*: header logo là `/brand` (KHÁC favicon `/logo`); đổi

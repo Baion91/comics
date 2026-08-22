@@ -4,6 +4,15 @@
 > File này chỉ ghi TRẠNG THÁI hiện tại + việc đang dở.
 
 ## Đang làm / dở dang
+- **[22/08] Reader — méo ảnh sau khi upgrade chương, ĐÃ code + compile OK, CHƯA nghiệm thu LIVE** (`reader_server.py`).
+  *Triệu chứng*: file ảnh trên đĩa ĐÚNG (mở xem bình thường) nhưng reader hiển thị **méo** — chỉ ch0-2 của bộ
+  vừa upgrade từ comix (vd Solo Leveling: Asura 720×4000 → Official TappyToon 720×1334). *Nguyên nhân*: SW cache
+  `/img` cache-first khoá theo URL, mà `img_url()` KHÔNG versioned → sau khi thay bản khác kích thước, SW trả
+  bytes CŨ trong khi HTML render `aspect-ratio` MỚI → kéo méo (chỉ dính chương đã đọc/đã cache trước đó). Khâu
+  tải comix HOÀN TOÀN đúng (đã tái hiện: TappyToon tải 34/34 trang, crisp). *Fix*: `img_url()` gắn `?v={st_mtime_ns}`
+  (route `/img` bỏ qua query nên vô hại) → file đổi ⇒ URL đổi ⇒ SW cache-miss ⇒ tải tươi. Tự khỏi, không cần
+  xoá cache tay; hiệu lực sau ~1 lần mở lại (HTML qua SWR). Chi tiết: ARCHITECTURE mục Service Worker ⑧. **CHƯA**:
+  xem live (mở chương đang méo, xác nhận hết méo sau reload). **Deploy = `/update` qua bot** (chỉ `reader_server.py`).
 - **[21/08] Reader — tinh chỉnh 2 điểm UX, ĐÃ code + syntax OK, CHƯA nghiệm thu LIVE** (`reader_server.py`).
   **(A) Delay 2-3s khi bấm chương TỪ DANH SÁCH** (Next đã nhanh nhờ prefetch `D.next/D.prev`, nhưng
   link `a.ch` ở trang truyện là hard-nav render nguội → quét PIL từng ảnh). Fix: thêm block prefetch vào
