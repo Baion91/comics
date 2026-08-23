@@ -524,10 +524,16 @@ cách chạy thật + decode thử ảnh.
   *Gốc*: iOS Safari xoá `value` ô `inputmode=search` khi khôi phục bfcache nhưng GIỮ `display:none` của card
   (inline style trong DOM snapshot), mà bộ lọc chỉ chạy ở sự kiện `input` → không đường nào đồng bộ lại → lệch pha.
   *Cách làm* (HOME_JS): tách bộ lọc thành hàm idempotent `applyHomeFilter()` (đọc `hq.value`); lưu keyword vào
-  `sessionStorage['homeq']` **bền theo phiên tab** (bỏ `removeItem` một-lần cũ) mỗi lần gõ; lúc load + `pageshow`
-  (persisted) → `restoreHomeq()` tái lập value **rồi** `applyHomeFilter()` → ô search và lưới luôn khớp bất kể
-  bfcache/SW/tải mới. Chuẩn UX quốc tế = giữ keyword+lọc+scroll như lúc rời đi. `homey` vẫn là cuộn one-shot của
-  admin `reloadKeepSearch`; key `homeq` nay dùng chung (persistent) cho cả admin-reload lẫn back.
+  `sessionStorage['homeq']` **bền theo phiên tab** (bỏ `removeItem` một-lần cũ) mỗi lần gõ; lúc load →
+  `restoreHomeq()` tái lập value **rồi** `applyHomeFilter()`. `homey` vẫn là cuộn one-shot của admin
+  `reloadKeepSearch`; key `homeq` nay dùng chung (persistent) cho cả admin-reload lẫn back. Chuẩn UX quốc tế =
+  giữ keyword+lọc+scroll như lúc rời đi. **Gotcha iOS (quan trọng):** trên bfcache-restore KHÔNG được ghi value
+  đồng bộ trong `pageshow` — iOS Safari áp phần khôi phục form-control của RIÊNG nó **SAU** `pageshow`, ghi RỖNG
+  đè lên (→ ô trống nhưng list vẫn lọc vì `applyHomeFilter` đã chạy trước; F5 lại đúng vì tải mới không có form-state
+  để iOS khôi phục). Nhánh `persisted` vì thế **HOÃN** reconcile sang sau nhịp khôi phục của iOS: double-`rAF`
+  + `setTimeout(120)` dự phòng → `reconcileSearch()` ép lại value từ sessionStorage (nguồn sự thật) + lọc lại,
+  có chốt so-sánh `hq.value===saved` để idempotent (nhiều nhịp không nháy). URL-as-state (`?q=`) KHÔNG né được
+  gotcha này (vẫn phải JS ghi value ô search khi restore) nên chỉ là nâng cấp chia-sẻ-link, không thay cho việc hoãn.
 - **Trị bookmark "cũ" khi điều hướng — bù cho việc bật bfcache** (21/08). *Bối cảnh*: sau khi bật bfcache
   (mục dưới), lộ 2 kiểu hiện bookmark cũ, GỐC KHÁC NHAU nên fix riêng. **② back về home/series thấy chưa
   bookmark**: trang bị bfcache "đóng băng" từ trước lúc bookmark, back khôi phục nguyên trạng → JS hydrate

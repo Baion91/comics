@@ -12,6 +12,12 @@
   lưu keyword vào `sessionStorage['homeq']` **bền theo phiên tab** (bỏ `removeItem` cũ); lúc load + `pageshow`
   (persisted) → `restoreHomeq()` tái lập value rồi `applyHomeFilter()`. Chuẩn UX quốc tế = "list state restoration
   on back" (giữ keyword+lọc+scroll như Google/Amazon). `homey` vẫn one-shot cho admin `reloadKeepSearch`.
+  **[FOLLOW-UP 23/08 — trị timing iOS]** Bản đầu vẫn lỗi trên iOS: back thì ô TRỐNG nhưng list VẪN lọc, F5 mới hiện
+  keyword. Gốc: iOS Safari áp phần khôi phục form-control của RIÊNG nó **SAU** `pageshow` → ghi rỗng đè lên lần
+  restore đồng bộ của tôi (list vẫn lọc vì `applyHomeFilter` đã chạy trước). Fix (Cách C): nhánh `persisted` **HOÃN**
+  reconcile bằng **double-`requestAnimationFrame` + 1 `setTimeout(120)` dự phòng** → `reconcileSearch()` ép lại value
+  từ sessionStorage + lọc lại, có **chốt so-sánh** `hq.value===saved` nên chạy nhiều nhịp không nháy/không applyHomeFilter
+  thừa. (F5 đã chứng minh init path đúng → chỉ sửa nhánh bfcache.) home.js mới `?v=8388c4bccc`.
   **Bug 2 — số chương tự cập nhật (B3+B4+B5):** 3 tầng cache không tầng nào bị bust khi thêm/xoá chương (folder đổi
   ngoài tiến trình reader): `_lib_cache` TTL 60s, SW PAGE_CACHE SWR, bfcache. List chương cần 2-3 lần vào lại; home
   (back=bfcache) KHÔNG bao giờ đổi. Fix: **B3** `_library_signature()` — chữ ký RẺ 2 tầng thư mục (mtime folder

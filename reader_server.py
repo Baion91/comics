@@ -1945,10 +1945,30 @@ HOME_JS = """
     fetch('/api/library-meta',{credentials:'same-origin'})
       .then(function(r){return r.json();}).then(applyMeta).catch(function(){});
   }
+  // Khôi phục ô search sau khi khôi phục bfcache. iOS Safari áp phần khôi phục
+  // form-control của RIÊNG nó SAU sự kiện pageshow -> nếu ghi value ĐỒNG BỘ ở đây
+  // sẽ bị nó ghi RỖNG đè lên (ô trống nhưng list vẫn lọc, vì applyHomeFilter đã chạy
+  // trước). Trị: HOÃN sang sau nhịp khôi phục của iOS (double-rAF + 1 setTimeout dự
+  // phòng), rồi ÉP LẠI value từ sessionStorage (nguồn sự thật) + lọc lại. Hàm
+  // idempotent + chốt so-sánh nên chạy nhiều nhịp không nháy: nhịp nào value đã đúng
+  // thì bỏ qua, KHÔNG applyHomeFilter thừa.
+  function reconcileSearch(){
+    if(!hq) return;
+    var saved=null; try{ saved=sessionStorage.getItem('homeq'); }catch(e){}
+    if(saved==null) return;
+    if(hq.value===saved) return;        // đã đúng (nhịp trước lo rồi) -> khỏi đụng
+    hq.value=saved; applyHomeFilter();
+  }
+  function deferReconcile(){
+    if(window.requestAnimationFrame){
+      requestAnimationFrame(function(){ requestAnimationFrame(reconcileSearch); });
+    } else { setTimeout(reconcileSearch,0); }
+    setTimeout(reconcileSearch,120);    // dự phòng nếu iOS khôi phục trễ hơn 2 khung
+  }
   // pageshow fires cả lúc load thường (persisted=false) lẫn khôi phục bfcache
   // (persisted=true) -> bao trọn mọi đường vào.
   addEventListener('pageshow',function(e){
-    if(e.persisted){ restoreHomeq(); applyHomeFilter(); }   // bfcache: tái lập ô search
+    if(e.persisted) deferReconcile();   // bfcache: tái lập ô search SAU khi iOS xong
     syncCounts();
   });
   document.addEventListener('visibilitychange',function(){
