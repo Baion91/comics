@@ -324,7 +324,8 @@ python reader_server.py --port 8081
 - **Trang truyện**: nút **First Chapter** (chương đầu) và **Latest Chapter** (chương
   mới nhất, nền xanh dương); nếu đang đọc dở thì nút thứ 2 thành **"Chapter X -
   reading"** (nền xanh lá) mở đúng chỗ đọc dở. Ô **Search chapters…** lọc theo
-  số/tên tức thì; nút **Newest ⇄ Oldest** đảo thứ tự danh sách chương.
+  số/tên tức thì; khi có chữ, kính lúp đổi thành nút **✕** (bấm — hoặc phím **Esc** —
+  để xoá sạch nội dung tìm); nút **Newest ⇄ Oldest** đảo thứ tự danh sách chương.
 - **Tài khoản & nhớ chỗ đọc**: góc trên phải có ô **Username** — nhập tên rồi **Login**
   (không mật khẩu, chỉ để tách người). Khi **đã đăng nhập**, bookmark / vị trí đọc dở /
   chương đã đọc lưu **trên server theo tài khoản** (`.reader-meta\users.json`) → đăng nhập
@@ -332,7 +333,8 @@ python reader_server.py --port 8081
   mấy dữ liệu này lưu **trong trình duyệt máy đó** (localStorage) — mỗi máy riêng, không
   đụng người khác. Hai bên **tách riêng**, không trộn. Cỡ ảnh + kiểu sort chương luôn để
   riêng từng máy.
-- **Tìm truyện**: ô **Search comics** ở trang chủ lọc theo tên tức thì.
+- **Tìm truyện**: ô **Search comics** ở trang chủ lọc theo tên tức thì; khi có chữ,
+  kính lúp đổi thành nút **✕** (bấm hoặc **Esc** để xoá sạch).
 - **Web admin** (đăng nhập đúng username `admin`): trang chủ hiện thêm **Refresh** +
   **Dọn list** (bỏ mục truyện đã xoá khỏi danh sách), và mỗi truyện có nút đổi
   **Completed/Ongoing** + **⤒/▲/▼** sắp thứ tự + **đổi tên** + **đổi bìa** — bấm là

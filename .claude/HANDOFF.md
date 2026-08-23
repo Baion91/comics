@@ -1,9 +1,13 @@
-# Handoff — cập nhật lần cuối: 2026-08-23 (reader: search giữ trạng thái khi back + số chương tự cập nhật)
+# Handoff — cập nhật lần cuối: 2026-08-23 (reader: nút ✕ xoá ô search — chương + truyện)
 
 > Kiến trúc ổn định (reader, provider, comix, supervisor, mạng…) nằm ở `.claude/ARCHITECTURE.md`.
 > File này chỉ ghi TRẠNG THÁI hiện tại + việc đang dở.
 
 ## Đang làm / dở dang
+- **[23/08] Reader — nút ✕ xoá ô search (cả tìm CHƯƠNG lẫn tìm TRUYỆN) — ĐÃ code + compile OK + push, CHƯA nghiệm thu LIVE** (`reader_server.py`).
+  Layout do user chốt (2 câu hỏi): **giữ kính lúp bên PHẢI, X THAY CHỖ** (ô rỗng = kính lúp; có chữ = ✕ đúng vị trí đó) + **có phím Esc**. Dùng chung `.chsearch` cho cả 2 ô.
+  **CSS** (`.chsearch`): thêm `.chsearch.has-val .chsearch-ic{opacity:0}` (ẩn kính lúp khi có chữ) + `.chclear` (button phủ đúng chỗ kính lúp, hit-area 36×36, `pointer-events` chỉ bật khi `.has-val`, fade .15s, hover/active sáng dần). **Hằng** `CLEAR_BTN` (button `tabindex=-1` + SVG ✕) chèn sau `SEARCH_SVG` ở cả `homesearch` và `chhead`.
+  **home.js**: gộp toggle `has-val` **vào trong** `applyHomeFilter()` → đồng bộ nút X ở MỌI đường vào (gõ / load / bfcache `reconcileSearch`); `clearHomeq()` = xoá value + **xoá `sessionStorage['homeq']`** (chống bfcache kéo chữ về) + lọc lại + giữ focus; wiring click ✕ + keydown Esc. **series.js**: tách filter inline thành `applyChFilter()` (thêm toggle `has-val`), `clearChq()` xoá + lọc lại + focus; wiring ✕ + Esc. **Test dev**: `py_compile` OK. **CHƯA**: xem live (gõ → hiện ✕, bấm/Esc → xoá sạch + hiện lại kính lúp + giữ focus; back không kéo chữ về ở home). **Deploy = `/update` qua bot** (chỉ `reader_server.py`).
 - **[23/08] Reader — 2 bug: (1) search kẹt khi back, (2) số chương cập nhật chậm — ĐÃ code + test dev, CHƯA nghiệm thu LIVE** (`reader_server.py`).
   Làm trọn B1–B6 sau khi rà soát tổng thể freshness (kết luận: chỉ 2 gốc thật + 1 điểm phụ; ảnh/static/API đã chuẩn).
   **Bug 1 — search giữ trạng thái khi back (B1+B2):** ô search trống nhưng lưới vẫn lọc sau khi back — iOS Safari
@@ -234,6 +238,10 @@
 - **[10/08] Tool LÀM NÉT Real-ESRGAN — ĐÃ push. Tích hợp tự động vào `/tai` CHƯA làm.**
 
 ## Quyết định gần đây (mới nhất trước)
+- **23/08: Nút ✕ xoá search — giữ kính lúp bên PHẢI + X thay chỗ (không thêm cột icon), kèm Esc** — user chọn phương án
+  ít đổi layout nhất (thay vì kính-lúp-trái/X-phải kiểu Asura). Toggle bằng 1 class `.has-val` trên `.chsearch` (CSS lo
+  ẩn/hiện) + gộp việc toggle vào chính hàm lọc để đồng bộ ở mọi đường vào; clear ở home phải xoá luôn `sessionStorage['homeq']`
+  nếu không logic khôi phục bfcache sẽ kéo chữ về (bug). Dùng chung 1 CSS + 2 hàm clear cho cả 2 ô.
 - **23/08: Freshness dữ liệu phái sinh (số chương/trạng thái/bìa) = event-invalidation ở nơi GHI + SWR reconcile UI
   + refresh trên `pageshow`/`visibilitychange`, key theo 1 freshness token** — chuẩn quốc tế cho dữ liệu "gần
   tức thời, không real-time". KHÔNG hạ TTL về 0 (giết perf, không trị bfcache), KHÔNG tắt bfcache (phá vuốt-back

@@ -1212,7 +1212,17 @@ a.ch.read{opacity:.45}
 .chsearch input:focus{border-color:#7c3aed}
 .chsearch input::placeholder{color:#6b6c78}
 .chsearch-ic{position:absolute;right:15px;top:50%;transform:translateY(-50%);
-  color:#9a9aa5;pointer-events:none}
+  color:#9a9aa5;pointer-events:none;transition:opacity .15s}
+/* nút xoá (Asura): ô có chữ -> ẩn kính lúp, hiện X ĐÚNG chỗ đó; hit-area rộng */
+.chsearch.has-val .chsearch-ic{opacity:0}
+.chclear{position:absolute;right:6px;top:50%;transform:translateY(-50%);
+  display:flex;align-items:center;justify-content:center;width:36px;height:36px;
+  padding:0;border:0;border-radius:9px;background:transparent;color:#9a9aa5;
+  cursor:pointer;opacity:0;pointer-events:none;transition:opacity .15s,color .15s}
+.chsearch.has-val .chclear{opacity:1;pointer-events:auto}
+@media(hover:hover){.chclear:hover{color:#e8e8ea}}
+.chclear:active{color:#fff}
+.chclear:focus{outline:none}
 /* --- nút "lên đầu trang" kiểu Liquid Glass (chỉ Home + list chương) --- */
 #totop{position:fixed;right:16px;bottom:calc(16px + env(safe-area-inset-bottom,0px));
   width:54px;height:54px;border-radius:50%;border:1px solid rgba(255,255,255,.22);
@@ -1480,7 +1490,7 @@ def html_home(lib, user=None):
               '<button type="button" id="admprune" class="admbtn">🧹 Dọn list</button>'
               '<span id="admmsg" class="admmsg"></span></div>') if admin else ""
     homesearch = ('<div class="chsearch"><input id="homeq" type="text" inputmode="search" '
-                  'autocomplete="off" placeholder="Search comics…">' + SEARCH_SVG + '</div>')
+                  'autocomplete="off" placeholder="Search comics…">' + SEARCH_SVG + CLEAR_BTN + '</div>')
     grid = ('<section>' + sect_head("all", SECT_BOOK_SVG, "All Comics") + homesearch + admbar
             + '<div class="grid" id="grid">'
             + "".join(home_card_html(s, s["id"] in bmset, admin) for s in ordered)
@@ -1510,6 +1520,13 @@ SEARCH_SVG = ('<svg class="chsearch-ic" width="18" height="18" viewBox="0 0 24 2
               'fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" '
               'stroke-linejoin="round"><circle cx="11" cy="11" r="7"/>'
               '<path d="m21 21-4.3-4.3"/></svg>')
+
+# Nút xoá text tìm kiếm (chỉ hiện khi ô có chữ — CSS lo). tabindex=-1: dùng Esc để
+# xoá bằng bàn phím, giữ luồng Tab gọn.
+CLEAR_BTN = ('<button type="button" class="chclear" aria-label="Xoá tìm kiếm" tabindex="-1">'
+             '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" '
+             'stroke="currentColor" stroke-width="2" stroke-linecap="round" '
+             'stroke-linejoin="round"><path d="M18 6 6 18M6 6l12 12"/></svg></button>')
 
 
 def html_series(s, user=None):
@@ -1557,7 +1574,7 @@ def html_series(s, user=None):
         '<span id="sortlbl">Newest</span></button></div>'
         '<div class="chsearch">'
         '<input id="chq" type="text" inputmode="search" autocomplete="off" '
-        f'placeholder="Search chapters…">{SEARCH_SVG}</div>')
+        f'placeholder="Search chapters…">{SEARCH_SVG}{CLEAR_BTN}</div>')
     sdata = {"sid": sid, "read": ud["read"].get(sid, [])}
     body = (f'<div class="wrap">' + account_header(user)
             + f'<div class="shead"><img src="{cover_url(s)}" alt="">'
@@ -1900,6 +1917,7 @@ HOME_JS = """
   // khôi phục bfcache nhưng GIỮ display:none của card -> tự tái lập value từ sessionStorage.
   var hq=document.getElementById('homeq');
   var hnr=document.getElementById('homenores');
+  var hwrap=hq?hq.closest('.chsearch'):null;
   function applyHomeFilter(){
     var term=(hq?hq.value:'').trim().toLowerCase(), any=false;
     [].forEach.call(grid.querySelectorAll('.card'),function(c){
@@ -1908,7 +1926,20 @@ HOME_JS = """
       c.style.display=hit?'':'none'; if(hit)any=true;
     });
     if(hnr) hnr.classList.toggle('on', !!term && !any);
+    // toggle nút X gộp vào đây -> đồng bộ ở MỌI đường vào (gõ / load / bfcache / reconcile)
+    if(hwrap) hwrap.classList.toggle('has-val', !!(hq&&hq.value));
   }
+  function clearHomeq(){                          // bấm X hoặc Esc: xoá + lọc lại + giữ focus
+    if(!hq) return;
+    hq.value='';
+    try{ sessionStorage.removeItem('homeq'); }catch(e){}  // tránh bfcache kéo chữ về
+    applyHomeFilter();
+    hq.focus();
+  }
+  if(hwrap){ var hx=hwrap.querySelector('.chclear'); if(hx) hx.addEventListener('click', clearHomeq); }
+  if(hq) hq.addEventListener('keydown',function(e){
+    if(e.key==='Escape' && hq.value){ e.preventDefault(); clearHomeq(); }
+  });
   function restoreHomeq(){                       // tái lập value ô search từ phiên tab
     try{ var sq=sessionStorage.getItem('homeq'); if(hq && sq!=null) hq.value=sq; }catch(e){}
   }
@@ -2213,8 +2244,9 @@ SERIES_JS = """
 
   // tìm chương theo số + tên; tự ẩn arc không còn kết quả
   var q=document.getElementById('chq'), chnr=document.getElementById('chnores');
-  if(q) q.addEventListener('input',function(){
-    var term=q.value.trim().toLowerCase(), anyAll=false;
+  var qwrap=q?q.closest('.chsearch'):null;
+  function applyChFilter(){
+    var term=(q?q.value:'').trim().toLowerCase(), anyAll=false;
     container.querySelectorAll('.arcsec').forEach(function(sec){
       var any=false;
       sec.querySelectorAll('a.ch').forEach(function(a){
@@ -2225,6 +2257,15 @@ SERIES_JS = """
       sec.style.display=any?'':'none'; if(any)anyAll=true;
     });
     if(chnr) chnr.classList.toggle('on', !!term && !anyAll);
+    if(qwrap) qwrap.classList.toggle('has-val', !!(q&&q.value));
+  }
+  if(q) q.addEventListener('input', applyChFilter);
+  function clearChq(){                            // bấm X hoặc Esc: xoá + lọc lại + giữ focus
+    if(!q) return; q.value=''; applyChFilter(); q.focus();
+  }
+  if(qwrap){ var qx=qwrap.querySelector('.chclear'); if(qx) qx.addEventListener('click', clearChq); }
+  if(q) q.addEventListener('keydown',function(e){
+    if(e.key==='Escape' && q.value){ e.preventDefault(); clearChq(); }
   });
 
   // --- Prefetch trang CHƯƠNG vào cache SW -> bấm chương từ list vào gần như tức
