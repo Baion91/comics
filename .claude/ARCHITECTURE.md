@@ -498,10 +498,36 @@ cách chạy thật + decode thử ảnh.
   động / vừa `bust_library_cache`) mới quét đồng bộ, tuần tự hoá bằng `_lib_build_lock` (phần quét tách
   ra `_scan_library`). Nguồn bìa cache sẵn vào series lúc build: `build_series` tính `cover_src`+`cover_mt`
   (scandir/getsize 1 lần/bộ mỗi lượt scan) → `cover_ver` chỉ đọc `series["cover_mt"]`, `cover_jpeg` dùng
-  `series["cover_src"]` → **render home ~0 I/O đĩa** (đo dev: `html_home` 0.6ms). Hệ quả: đổi `cover.*`
-  tay có thể trễ hiện ≤60s (đổi qua admin thì bust cache → tức thì). **Chẩn đoán gốc**: DevTools cho thấy
+  `series["cover_src"]` → **render home ~0 I/O đĩa** (đo dev: `html_home` 0.6ms). **Chẩn đoán gốc**: DevTools cho thấy
   màn trắng 100% là "Waiting for server response" (TTFB server-side), mạng/tunnel vô can (DNS+Connect+SSL
   bằng nhau giữa máy 124ms và máy 4.27s) → app SSR nên splash-in-HTML vô ích.
+  **[BỔ SUNG 23/08 — chữ ký tự-bust khi thêm/xoá chương]**: TTL 60s một mình khiến số chương trễ tới 60s (chương
+  đổi ngoài tiến trình reader, không ai gọi `bust_library_cache`). Thêm `_library_signature()` — chữ ký RẺ quét
+  2 tầng thư mục (mtime folder truyện + folder con arc/chương, **KHÔNG lặn xuống ảnh** = chỗ đắt của scan), chạy
+  mỗi lần `get_library`. `_lib_cache` nay là `(ts, series, sig)`: chữ ký khớp → dùng cache bất kể tuổi; chữ ký đổi
+  (thêm/xoá chương/arc/truyện) → bust + quét nền NGAY (không đợi 60s), TTL chỉ còn là lưới an toàn. `bust_library_cache`
+  vẫn giữ cho thay đổi META (title/order/status/cover — không đổi mtime thư mục nên chữ ký không bắt).
+- **Số chương / trạng thái / bìa tự cập nhật xuyên bfcache+SW — `GET /api/library-meta` + sync khi hiển thị**
+  (23/08). *Bối cảnh*: dữ liệu phái sinh (số chương…) nhúng cứng trong HTML được cache; SW SWR chỉ ghi cache cho
+  lần sau (không vá UI đang mở → phải vào lại 2-3 lần), còn back về home = bfcache đóng băng → KHÔNG bao giờ đổi.
+  *Cách làm*: **(server)** endpoint `GET /api/library-meta` (`no-store`) trả `{version, series:{sid:{total,status,
+  label,cover}}}`, `version`=sha1 payload (đổi đúng khi có field đổi, bất kể nguồn). **(render)** số chương bọc trong
+  `<span class="chapn">` ở `home_card_html`/`smeta`/`chcount` để vá điểm không phải dựng lại innerHTML. **(client)**
+  HOME_JS + SERIES_JS thêm `syncCounts()` fetch meta trên `pageshow` (load thường + bfcache persisted) và
+  `visibilitychange` → `applyMeta`/`applySeriesMeta` vá TẠI CHỖ `.chapn` (text), `.st` (class+label), bìa `img.src`;
+  so `version` với lần trước để khỏi đụng DOM thừa. Mẫu **giống `syncBM`**. Fetch sống nên xuyên qua bfcache+SW;
+  server thì đã tươi nhờ chữ ký tự-bust (mục cache ở trên). Đây là "SWR đóng vòng bằng reconcile UI + refresh trên
+  pageshow" — remedy chuẩn web cho bfcache staleness. *(Cùng ngày, B6:)* manifest đổi `no-store`→`no-cache` (bỏ mâu
+  thuẫn header no-store nhưng SW `isStatic` lại cache-first).
+- **Search trang chủ giữ trạng thái khi back — list state restoration** (23/08). *Triệu chứng*: back từ trang truyện
+  về home → ô search TRỐNG nhưng lưới vẫn lọc theo keyword cũ, không bấm được truyện khác; gõ-rồi-xoá mới về all.
+  *Gốc*: iOS Safari xoá `value` ô `inputmode=search` khi khôi phục bfcache nhưng GIỮ `display:none` của card
+  (inline style trong DOM snapshot), mà bộ lọc chỉ chạy ở sự kiện `input` → không đường nào đồng bộ lại → lệch pha.
+  *Cách làm* (HOME_JS): tách bộ lọc thành hàm idempotent `applyHomeFilter()` (đọc `hq.value`); lưu keyword vào
+  `sessionStorage['homeq']` **bền theo phiên tab** (bỏ `removeItem` một-lần cũ) mỗi lần gõ; lúc load + `pageshow`
+  (persisted) → `restoreHomeq()` tái lập value **rồi** `applyHomeFilter()` → ô search và lưới luôn khớp bất kể
+  bfcache/SW/tải mới. Chuẩn UX quốc tế = giữ keyword+lọc+scroll như lúc rời đi. `homey` vẫn là cuộn one-shot của
+  admin `reloadKeepSearch`; key `homeq` nay dùng chung (persistent) cho cả admin-reload lẫn back.
 - **Trị bookmark "cũ" khi điều hướng — bù cho việc bật bfcache** (21/08). *Bối cảnh*: sau khi bật bfcache
   (mục dưới), lộ 2 kiểu hiện bookmark cũ, GỐC KHÁC NHAU nên fix riêng. **② back về home/series thấy chưa
   bookmark**: trang bị bfcache "đóng băng" từ trước lúc bookmark, back khôi phục nguyên trạng → JS hydrate

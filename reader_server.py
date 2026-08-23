@@ -213,29 +213,70 @@ def _scan_library():
     return series
 
 
+def _library_signature():
+    """Chữ ký RẺ của cây thư mục thư viện để phát hiện thêm/xoá chương ngay (không
+    chờ hết TTL). Quét 2 tầng: folder truyện + folder con (arc-hoặc-chương), lấy
+    mtime mỗi thư mục — KHÔNG lặn xuống tầng ảnh (đó mới là chỗ đắt của _scan_library).
+    Thêm/xoá 1 chương phẳng đổi mtime folder truyện; thêm/xoá chương trong arc đổi
+    mtime folder arc (tầng 2); thêm/xoá truyện đổi mtime root. Đủ bắt mọi thay đổi
+    về SỐ chương. scandir cache sẵn stat trên Windows nên gần như miễn phí."""
+    parts = []
+    for root in SCAN_ROOTS:
+        try:
+            parts.append((root, os.stat(root).st_mtime_ns))
+            entries = list(os.scandir(root))
+        except OSError:
+            continue
+        for e in entries:
+            if not e.is_dir() or e.name in EXCLUDE_DIRS or e.name.startswith("."):
+                continue
+            try:
+                parts.append((e.path, e.stat().st_mtime_ns))
+                subs = list(os.scandir(e.path))
+            except OSError:
+                continue
+            for sub in subs:
+                try:
+                    if sub.is_dir():
+                        parts.append((sub.path, sub.stat().st_mtime_ns))
+                except OSError:
+                    continue
+    parts.sort()
+    h = hashlib.sha1()
+    for p, m in parts:
+        h.update(p.encode("utf-8", "surrogatepass"))
+        h.update(str(m).encode())
+    return h.hexdigest()
+
+
 def _refresh_library():
     """Quét lại ở nền rồi thay cache. Chạy trong daemon thread (stale-while-revalidate)."""
     global _lib_cache, _lib_refreshing
     try:
         series = _scan_library()
+        sig = _library_signature()
         with _lib_lock:
-            _lib_cache = (time.time(), series)
+            _lib_cache = (time.time(), series, sig)
     finally:
         with _lib_lock:
             _lib_refreshing = False
 
 
 def get_library():
-    """Trả thư viện. Cache còn hạn -> trả ngay. Cache hết hạn nhưng đã có bản cũ ->
-    trả bản cũ NGAY và quét lại ở nền (không ai phải chờ scandir). Chưa có cache nào
-    (khởi động / vừa bust) -> buộc phải quét đồng bộ một lần."""
+    """Trả thư viện. Chữ ký thư mục KHÔNG đổi -> dùng cache luôn (bất kể tuổi). Chữ
+    ký đổi (thêm/xoá chương) hoặc hết TTL -> nếu còn bản cũ, trả stale NGAY và quét
+    lại ở nền (không ai chờ scandir); lần đồng bộ kế (pageshow/visibility) sẽ nhận số
+    mới. Chưa có cache (khởi động / vừa bust) -> buộc quét đồng bộ một lần."""
     global _lib_cache, _lib_refreshing
+    sig = _library_signature()
     with _lib_lock:
         cache = _lib_cache
-        if cache and time.time() - cache[0] < CACHE_TTL:
+        # cache[2] = chữ ký lúc quét. Còn khớp + còn hạn TTL -> tươi chắc chắn.
+        if cache and cache[2] == sig and time.time() - cache[0] < CACHE_TTL:
             return cache[1]
         if cache:
-            # hết hạn nhưng còn bản cũ: phục vụ stale, làm mới ở nền
+            # chữ ký đổi HOẶC quá TTL: phục vụ stale + làm mới nền (ngay lần này,
+            # không đợi thêm 60s như trước -> số chương tự lành trong ~1-2s).
             if not _lib_refreshing:
                 _lib_refreshing = True
                 threading.Thread(target=_refresh_library, daemon=True).start()
@@ -246,8 +287,9 @@ def get_library():
             if _lib_cache:  # request khác vừa build xong trong lúc ta chờ lock
                 return _lib_cache[1]
         series = _scan_library()
+        sig2 = _library_signature()
         with _lib_lock:
-            _lib_cache = (time.time(), series)
+            _lib_cache = (time.time(), series, sig2)
         return series
 
 
@@ -1413,7 +1455,7 @@ def home_card_html(s, bookmarked, admin=False):
             f'<img src="{cover_url(s)}" loading="lazy" alt="">'
             f'<div class="cbody"><div class="ct"><span class="cttext" title="{t}">{t}</span>'
             + pen + '</div>'
-            f'<div class="cm">{s["total"]} chaps · '
+            f'<div class="cm"><span class="chapn">{s["total"]}</span> chaps · '
             f'<span class="st {st}">{STATUS_LABELS[st]}</span></div></div></a>'
             + bookmark_btn(bookmarked) + (admin_card_ctrl(st) if admin else "") + '</div>')
 
@@ -1488,7 +1530,7 @@ def html_series(s, user=None):
         sections.append(f'<section class="arcsec">{inner}<div class="chgrid">{items}</div></section>')
     st = series_status(sid)
     n_arcs = sum(1 for a in s["arcs"] if a["name"])
-    meta = (f'{s["total"]} chaps'
+    meta = (f'<span class="chapn">{s["total"]}</span> chaps'
             + (f' · {n_arcs} arc' if n_arcs > 1 else "")
             + f' · <span class="st {st}">{STATUS_LABELS[st]}</span>')
     # Server render theo tài khoản đang đăng nhập: nút bookmark, nút "reading"
@@ -1510,7 +1552,7 @@ def html_series(s, user=None):
     chapbtns = f'<div class="chapbtns">{chapbtns}</div>' if chapbtns else ""
     chhead = (
         '<div class="chhead">'
-        f'<span class="chcount">{s["total"]} chapters</span>'
+        f'<span class="chcount"><span class="chapn">{s["total"]}</span> chapters</span>'
         f'<button type="button" id="sortbtn" class="sortbtn">{SORT_SVG}'
         '<span id="sortlbl">Newest</span></button></div>'
         '<div class="chsearch">'
@@ -1852,26 +1894,66 @@ HOME_JS = """
   });
   // guest: hydrate bookmark từ localStorage (server render trung tính cho guest)
   if(!LOGGEDIN){ BM=LS.bms(); applyBM(); }
-  // tìm truyện theo tên trong lưới All Comics
+  // --- Tìm truyện trong lưới All Comics + KHÔI PHỤC trạng thái lọc khi quay lại ---
+  // Bộ lọc tách thành hàm idempotent -> chạy lại được ở MỌI đường vào (load / bfcache
+  // / admin-reload) nên ô search và lưới luôn khớp. iOS Safari hay xoá value input khi
+  // khôi phục bfcache nhưng GIỮ display:none của card -> tự tái lập value từ sessionStorage.
   var hq=document.getElementById('homeq');
   var hnr=document.getElementById('homenores');
-  if(hq) hq.addEventListener('input',function(){
-    var term=hq.value.trim().toLowerCase(), any=false;
+  function applyHomeFilter(){
+    var term=(hq?hq.value:'').trim().toLowerCase(), any=false;
     [].forEach.call(grid.querySelectorAll('.card'),function(c){
       var t=((c.querySelector('.ct')||{}).textContent||'').toLowerCase();
       var hit=(!term || t.indexOf(term)>=0);
       c.style.display=hit?'':'none'; if(hit)any=true;
     });
     if(hnr) hnr.classList.toggle('on', !!term && !any);
+  }
+  function restoreHomeq(){                       // tái lập value ô search từ phiên tab
+    try{ var sq=sessionStorage.getItem('homeq'); if(hq && sq!=null) hq.value=sq; }catch(e){}
+  }
+  if(hq) hq.addEventListener('input',function(){
+    try{ sessionStorage.setItem('homeq', hq.value); }catch(e){}  // bền theo phiên tab
+    applyHomeFilter();
   });
-  // Khôi phục ô search + vị trí cuộn sau khi admin thao tác phải reload (order/prune/
-  // refresh) — cặp với reloadKeepSearch() trong ADMIN_JS. Dùng 1 lần rồi xoá.
+  // Lúc load: khôi phục keyword rồi áp lọc. 'homey' là cuộn one-shot do admin
+  // reloadKeepSearch đặt (order/prune/refresh) -> dùng 1 lần rồi xoá.
+  restoreHomeq();
   try{
-    var sq=sessionStorage.getItem('homeq'); sessionStorage.removeItem('homeq');
     var sy=sessionStorage.getItem('homey'); sessionStorage.removeItem('homey');
-    if(hq && sq){ hq.value=sq; hq.dispatchEvent(new Event('input')); }
     if(sy){ window.scrollTo(0, parseInt(sy,10)||0); }
   }catch(e){}
+  applyHomeFilter();
+
+  // --- B5: vá số chương / trạng thái / bìa TẠI CHỖ khi trang hiển thị (xuyên bfcache
+  // + SW cache mà không tải lại cả trang). version = chữ ký payload -> chỉ đụng DOM
+  // khi có thay đổi thật. Mẫu giống syncBM.
+  var lastMetaVer=null;
+  function applyMeta(res){
+    if(!res||!res.series||!res.version||res.version===lastMetaVer) return;
+    lastMetaVer=res.version; var S=res.series;
+    [].forEach.call(document.querySelectorAll('.card'),function(c){
+      var m=S[c.dataset.sid]; if(!m) return;
+      var n=c.querySelector('.chapn'); if(n) n.textContent=m.total;
+      var st=c.querySelector('.st'); if(st){ st.className='st '+m.status; st.textContent=m.label; }
+      var img=c.querySelector('.cardlink img');
+      if(img&&m.cover&&img.getAttribute('src')!==m.cover) img.src=m.cover;
+      try{ if(FOLLOWDATA[c.dataset.sid]&&m.cover) FOLLOWDATA[c.dataset.sid].cover=m.cover; }catch(e){}
+    });
+  }
+  function syncCounts(){
+    fetch('/api/library-meta',{credentials:'same-origin'})
+      .then(function(r){return r.json();}).then(applyMeta).catch(function(){});
+  }
+  // pageshow fires cả lúc load thường (persisted=false) lẫn khôi phục bfcache
+  // (persisted=true) -> bao trọn mọi đường vào.
+  addEventListener('pageshow',function(e){
+    if(e.persisted){ restoreHomeq(); applyHomeFilter(); }   // bfcache: tái lập ô search
+    syncCounts();
+  });
+  document.addEventListener('visibilitychange',function(){
+    if(document.visibilityState==='visible') syncCounts();
+  });
 
   // --- Prefetch trang series vào cache SW -> lần bấm ĐẦU cũng vào tức thì
   // (không còn chờ 2-3s tải HTML). Nạp trước khi (a) chạm/di chuột vào card
@@ -2064,6 +2146,27 @@ SERIES_JS = """
     fetch('/api/state').then(function(r){return r.json();}).then(function(res){
       if(res&&Array.isArray(res.bookmarks)) setSbk(res.bookmarks.indexOf(sid)>=0);
     }).catch(function(){});
+  });
+
+  // --- B5: vá số chương / trạng thái TẠI CHỖ khi trang hiển thị (xuyên bfcache + SW).
+  // .chapn có trong cả .chcount ("N chapters") lẫn .smeta ("N chaps"); .smeta .st là
+  // nhãn trạng thái. version = chữ ký payload -> chỉ đụng DOM khi có đổi thật.
+  var lastMetaVer=null;
+  function applySeriesMeta(res){
+    if(!res||!res.series||!res.version||res.version===lastMetaVer) return;
+    var m=res.series[sid]; if(!m) return;
+    lastMetaVer=res.version;
+    document.querySelectorAll('.chapn').forEach(function(n){ n.textContent=m.total; });
+    var st=document.querySelector('.smeta .st');
+    if(st){ st.className='st '+m.status; st.textContent=m.label; }
+  }
+  function syncCounts(){
+    fetch('/api/library-meta',{credentials:'same-origin'})
+      .then(function(r){return r.json();}).then(applySeriesMeta).catch(function(){});
+  }
+  addEventListener('pageshow',function(){ syncCounts(); });   // load thường + bfcache
+  document.addEventListener('visibilitychange',function(){
+    if(document.visibilityState==='visible') syncCounts();
   });
 
   // sort Mới nhất / Cũ nhất — server render mặc định 'new'; 'old' = đảo DOM
@@ -2839,6 +2942,20 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json({"bookmarks": d["bookmarks"],
                                    "progress": d["progress"], "read": d["read"]})
 
+        # Dữ liệu phái sinh theo-truyện (số chương / trạng thái / bìa) để client tự
+        # vá tại chỗ khi hiển thị (pageshow/visibilitychange) — xuyên qua bfcache +
+        # SW cache mà không phải tải lại cả trang. 'version' = chữ ký của CHÍNH payload
+        # nên đổi đúng khi có field đổi (bất kể do thêm/xoá chương hay admin sửa meta).
+        if segs == ["api", "library-meta"]:
+            meta = {}
+            for sid, s in lib.items():
+                st = series_status(sid)
+                meta[sid] = {"total": s["total"], "status": st,
+                             "label": STATUS_LABELS[st], "cover": cover_url(s)}
+            ver = hashlib.sha1(json.dumps(meta, sort_keys=True, ensure_ascii=False)
+                               .encode("utf-8")).hexdigest()[:12]
+            return self.send_json({"version": ver, "series": meta})
+
         if segs[0] == "series" and len(segs) == 2:
             s = lib.get(segs[1])
             return self.send_page(html_series(s, user)) if s else self.send_notfound()
@@ -2923,7 +3040,9 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Content-Type",
                              "application/manifest+json; charset=utf-8")
             self.send_header("Content-Length", str(len(data)))
-            self.send_header("Cache-Control", "no-store")
+            # no-cache (KHÔNG no-store): SW cache-first vẫn giữ được manifest cho
+            # offline launch; bỏ mâu thuẫn "no-store nhưng SW lại cache".
+            self.send_header("Cache-Control", "no-cache")
             self.end_headers()
             if self.command != "HEAD":
                 self.wfile.write(data)

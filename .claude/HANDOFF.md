@@ -1,9 +1,29 @@
-# Handoff — cập nhật lần cuối: 2026-08-21 (reader: pill hint-một-lần + prefetch chương TỪ DANH SÁCH)
+# Handoff — cập nhật lần cuối: 2026-08-23 (reader: search giữ trạng thái khi back + số chương tự cập nhật)
 
 > Kiến trúc ổn định (reader, provider, comix, supervisor, mạng…) nằm ở `.claude/ARCHITECTURE.md`.
 > File này chỉ ghi TRẠNG THÁI hiện tại + việc đang dở.
 
 ## Đang làm / dở dang
+- **[23/08] Reader — 2 bug: (1) search kẹt khi back, (2) số chương cập nhật chậm — ĐÃ code + test dev, CHƯA nghiệm thu LIVE** (`reader_server.py`).
+  Làm trọn B1–B6 sau khi rà soát tổng thể freshness (kết luận: chỉ 2 gốc thật + 1 điểm phụ; ảnh/static/API đã chuẩn).
+  **Bug 1 — search giữ trạng thái khi back (B1+B2):** ô search trống nhưng lưới vẫn lọc sau khi back — iOS Safari
+  xoá `value` ô search qua bfcache nhưng GIỮ `display:none` của card, mà bộ lọc chỉ chạy ở sự kiện `input` →
+  lệch pha, không bấm được truyện khác. Fix trong `HOME_JS`: tách bộ lọc thành hàm idempotent `applyHomeFilter()`;
+  lưu keyword vào `sessionStorage['homeq']` **bền theo phiên tab** (bỏ `removeItem` cũ); lúc load + `pageshow`
+  (persisted) → `restoreHomeq()` tái lập value rồi `applyHomeFilter()`. Chuẩn UX quốc tế = "list state restoration
+  on back" (giữ keyword+lọc+scroll như Google/Amazon). `homey` vẫn one-shot cho admin `reloadKeepSearch`.
+  **Bug 2 — số chương tự cập nhật (B3+B4+B5):** 3 tầng cache không tầng nào bị bust khi thêm/xoá chương (folder đổi
+  ngoài tiến trình reader): `_lib_cache` TTL 60s, SW PAGE_CACHE SWR, bfcache. List chương cần 2-3 lần vào lại; home
+  (back=bfcache) KHÔNG bao giờ đổi. Fix: **B3** `_library_signature()` — chữ ký RẺ 2 tầng thư mục (mtime folder
+  truyện + folder con arc/chương, KHÔNG lặn xuống ảnh) đưa vào `_lib_cache=(ts,series,sig)`; `get_library()` chữ ký
+  đổi ⇒ bust + quét nền NGAY (không đợi 60s). **B4** `GET /api/library-meta` → `{version, series:{sid:{total,status,
+  label,cover}}}` (`no-store`; version = sha1 payload). **B5** HOME_JS + SERIES_JS: `syncCounts()` fetch meta trên
+  `pageshow` (load+bfcache) và `visibilitychange`, vá TẠI CHỖ `.chapn`/`.st`/bìa (mẫu giống `syncBM`), so `version`
+  để khỏi đụng DOM thừa. Server render bọc số chương trong `<span class="chapn">` ở `home_card_html`/`smeta`/`chcount`.
+  **B6** manifest: `no-store`→`no-cache` (bỏ mâu thuẫn "no-store nhưng SW cache-first"). **Test dev**: compile OK;
+  `/api/library-meta` trả đúng payload; `.chapn` có ở home+series; **kiểm chứng B3**: tạo chương giả → sig đổi,
+  total 2→3 trong ~1.2s (không chờ 60s), dọn xong về 2. **CHƯA**: xem live trên trình duyệt + qua tunnel (back giữ
+  search; thêm/xoá chương → home & list tự cập nhật khi quay lại). **Deploy = `/update` qua bot** (chỉ `reader_server.py`).
 - **[22/08] Reader — méo ảnh sau khi upgrade chương, ĐÃ code + compile OK, CHƯA nghiệm thu LIVE** (`reader_server.py`).
   *Triệu chứng*: file ảnh trên đĩa ĐÚNG (mở xem bình thường) nhưng reader hiển thị **méo** — chỉ ch0-2 của bộ
   vừa upgrade từ comix (vd Solo Leveling: Asura 720×4000 → Official TappyToon 720×1334). *Nguyên nhân*: SW cache
@@ -208,6 +228,15 @@
 - **[10/08] Tool LÀM NÉT Real-ESRGAN — ĐÃ push. Tích hợp tự động vào `/tai` CHƯA làm.**
 
 ## Quyết định gần đây (mới nhất trước)
+- **23/08: Freshness dữ liệu phái sinh (số chương/trạng thái/bìa) = event-invalidation ở nơi GHI + SWR reconcile UI
+  + refresh trên `pageshow`/`visibilitychange`, key theo 1 freshness token** — chuẩn quốc tế cho dữ liệu "gần
+  tức thời, không real-time". KHÔNG hạ TTL về 0 (giết perf, không trị bfcache), KHÔNG tắt bfcache (phá vuốt-back
+  iOS), KHÔNG WebSocket (thừa). Chọn: chữ ký thư mục tự-bust `_lib_cache` + endpoint `/api/library-meta` + client
+  vá tại chỗ khi hiển thị. Một cơ chế chung trị cả count/status/cover (thêm field sau không đẻ bug).
+- **23/08: Search khi back — GIỮ keyword + list lọc + scroll (không xoá)** — chuẩn "list state restoration on back"
+  (Google/Amazon/YouTube: back từ chi tiết về đúng kết quả đang duyệt). Trạng thái cũ (ô trống + list lọc) là bug
+  lệch pha do iOS xoá value input qua bfcache, không phải lựa chọn thiết kế. Không tin trình duyệt giữ value → tự
+  tái lập từ sessionStorage + chạy lại bộ lọc idempotent ở mọi đường vào.
 - **21/08: comix — giữa nhiều bản official, chọn theo `OFFICIAL_GROUP_RANK` chứ KHÔNG thuần id mới nhất** —
   vì truyện license có nhiều official song song khác nền tảng/typeset (Solo Leveling ch0 có 7); bản re-up
   mới nhất (Webcomic) thường kém bản dịch tốt (TappyToon). User chốt: TappyToon cao nhất, Webcomic thấp nhất;
