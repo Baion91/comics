@@ -26,6 +26,7 @@ import sys
 import threading
 import time
 import unicodedata
+import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import quote, unquote, urlsplit
 
@@ -58,6 +59,10 @@ SERIES_META_FILE = os.path.join(META_DIR, "series-meta.json")
 # uid giữ phiên; đổi link tunnel thì mất phiên nhưng DỮ LIỆU còn (khóa theo tên).
 USERS_FILE = os.path.join(META_DIR, "users.json")
 USER_DATA_FILE = os.path.join(META_DIR, "user-data.json")  # [LEGACY] không còn dùng
+# Heartbeat RIÊNG cho reader (độc lập supervisor) — xem reader_heartbeat_loop().
+NOTIFY_CONFIG_FILE = os.path.join(META_DIR, "notify-config.json")
+READER_HB_EVERY = 300      # giây giữa 2 nhịp heartbeat reader (5')
+READER_HB_TIMEOUT = 10     # giây chờ mỗi cú tự-kiểm / ping
 # Icon PNG cho home-screen / PWA (tạo sẵn tĩnh trong META_DIR). Whitelist để
 # route chỉ phục vụ đúng các file này, không cho đọc file tùy ý.
 ICON_FILES = {
@@ -2723,11 +2728,33 @@ self.addEventListener('fetch', (e) => {
     e.respondWith((async () => {
       const cache = await caches.open(PAGE_CACHE);
       const hit = await cache.match(req);
-      const net = fetch(req).then((res) => {
+      if (hit) {
+        // Có bản cache -> trả ngay, revalidate NGẦM (nuốt lỗi mạng, khỏi vỡ điều hướng).
+        fetch(req).then((res) => { if (res && res.ok) cache.put(req, res.clone()); })
+                  .catch(() => {});
+        return hit;
+      }
+      // KHÔNG có cache: phải ra mạng. Mạng lỗi (vd link tunnel đã đổi/chết) mà TRẢ VỀ
+      // undefined thì respondWith báo "Returned response is null" (Safari không mở nổi
+      // trang). Vì vậy LUÔN trả 1 Response: thành công -> res; lỗi -> trang báo tử tế.
+      try {
+        const res = await fetch(req);
         if (res && res.ok) cache.put(req, res.clone());
         return res;
-      }).catch(() => hit);
-      return hit || net;
+      } catch (err) {
+        return new Response(
+          '<!doctype html><meta charset=utf-8>'
+          + '<meta name=viewport content="width=device-width,initial-scale=1">'
+          + '<style>body{background:#111;color:#ccc;margin:0;min-height:100vh;display:flex;'
+          + 'flex-direction:column;align-items:center;justify-content:center;text-align:center;'
+          + 'font:16px/1.5 system-ui,-apple-system,sans-serif;padding:28px;gap:8px}'
+          + 'b{color:#fff;font-size:19px}a{color:#a78bfa}</style>'
+          + '<body><b>Không kết nối được máy chủ</b>'
+          + '<div>Link chia sẻ có thể đã đổi hoặc server đang tắt.<br>'
+          + 'Hãy lấy link mới rồi mở lại.</div>'
+          + '<div><a href="/">Thử lại trang chủ</a></div></body>',
+          {status: 503, headers: {'Content-Type': 'text/html; charset=utf-8'}});
+      }
     })());
     return;
   }
@@ -3188,6 +3215,44 @@ def lan_ip():
         return None
 
 
+def reader_heartbeat_loop(port):
+    """Dead-man's-switch RIÊNG cho reader, ĐỘC LẬP với heartbeat của supervisor.
+
+    Mỗi READER_HB_EVERY giây: TỰ gọi http://127.0.0.1:<port>/ (READINESS — reader còn
+    PHỤC VỤ được không, bắt cả ca 'treo mà chưa chết' mà run_reader của supervisor không
+    thấy) rồi mới ping `reader_heartbeat_url` RA healthchecks.io. Tự-kiểm hỏng → KHÔNG
+    ping → dịch vụ ngoài thấy im lặng → báo 'reader down' (đúng ý đồ). Vì đây là check
+    RIÊNG, nhìn cặp tín hiệu (supervisor-check vs reader-check) biết CÁI NÀO chết:
+    supervisor chết mà reader-check còn xanh = reader mồ côi vẫn phục vụ (đúng ca sự cố).
+    Đọc URL từ notify-config.json MỖI vòng → điền URL xong không cần restart reader.
+    Trống URL = tắt heartbeat này."""
+    self_url = f"http://127.0.0.1:{port}/"
+    last_ok = None
+    while True:
+        try:
+            cfg = json.loads(open(NOTIFY_CONFIG_FILE, encoding="utf-8").read())
+        except Exception:
+            cfg = {}
+        url = (cfg.get("reader_heartbeat_url") or "").strip()
+        if url:
+            ok = False
+            try:
+                with urllib.request.urlopen(self_url, timeout=READER_HB_TIMEOUT) as r:
+                    if 200 <= r.status < 300:
+                        r.read(64)   # chạm nội dung → chắc chắn reader phục vụ được, không chỉ mở cổng
+                        req = urllib.request.Request(
+                            url, headers={"User-Agent": "toony-reader-hb"})
+                        with urllib.request.urlopen(req, timeout=READER_HB_TIMEOUT) as hr:
+                            ok = 200 <= hr.status < 300
+            except Exception:
+                ok = False
+            if ok != last_ok:   # chỉ in khi ĐỔI trạng thái → khỏi phình log mỗi 5'
+                print("[reader-heartbeat] " + ("OK." if ok else
+                      "ping THẤT BẠI (reader treo / mất mạng?)"), flush=True)
+                last_ok = ok
+        time.sleep(READER_HB_EVERY)
+
+
 def main():
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -3224,6 +3289,8 @@ def main():
     except OSError as e:
         print(f"Không mở được cổng {args.port} ({e}). Thử: python reader_server.py --port 8081")
         sys.exit(1)
+    # Heartbeat reader RA healthchecks.io (độc lập supervisor) — trống url trong config = tắt.
+    threading.Thread(target=reader_heartbeat_loop, args=(args.port,), daemon=True).start()
     try:
         srv.serve_forever()
     except KeyboardInterrupt:

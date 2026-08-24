@@ -33,6 +33,8 @@ META_DIR = os.path.join(BASE_DIR, ".reader-meta")
 CONFIG_FILE = os.path.join(META_DIR, "notify-config.json")
 LINK_FILE = os.path.join(META_DIR, "current-link.txt")
 LOG_FILE = os.path.join(META_DIR, "supervisor-log.txt")
+LOG_MAX = 2_000_000        # cắt log supervisor khi vượt ~2MB (giữ 1 bản .1) — chạy ẩn (pythonw)
+                           # nên log FILE là nơi soi chính, đừng để phình vô hạn.
 PID_FILE = os.path.join(META_DIR, "supervisor.pid")
 CLOUDFLARED = os.path.join(META_DIR, "cloudflared.exe")
 # Hàng đợi tải BỀN HOÁ ra đĩa (sống qua restart supervisor). Gitignore .reader-meta/*
@@ -96,14 +98,23 @@ for _s in (sys.stdout, sys.stderr):
         pass
 
 
+_log_lock = threading.Lock()
+
+
 def log(msg):
     stamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     line = f"[{stamp}] {msg}"
     print(line, flush=True)
     try:
         os.makedirs(META_DIR, exist_ok=True)
-        with open(LOG_FILE, "a", encoding="utf-8") as f:
-            f.write(line + "\n")
+        with _log_lock:   # nhiều luồng cùng ghi + xoay file → khoá cho gọn
+            try:
+                if os.path.getsize(LOG_FILE) > LOG_MAX:
+                    os.replace(LOG_FILE, LOG_FILE + ".1")   # xoay: giữ 1 bản trước, mở file mới
+            except OSError:
+                pass
+            with open(LOG_FILE, "a", encoding="utf-8") as f:
+                f.write(line + "\n")
     except OSError:
         pass
 

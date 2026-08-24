@@ -2,5 +2,6 @@
  "bot_token": "",
  "chat_ids": [],
  "reader_port": 8080,
- "heartbeat_url": ""
+ "heartbeat_url": "",
+ "reader_heartbeat_url": ""
 }

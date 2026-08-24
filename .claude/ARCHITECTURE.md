@@ -266,7 +266,18 @@ cách chạy thật + decode thử ảnh.
   chừng → kill sạch rồi thoát êm (job giữ 'running' cho resume). ① này bổ trợ ② (watchdog nội bộ comix):
   ② bắt nhanh ca mở-Chromium-wedge ~90s, ① phủ MỌI kiểu treo khác (≤20').
   **Heartbeat** (`heartbeat_loop`): mỗi 5' ping `heartbeat_url` (healthchecks.io) RA ngoài →
-  dịch vụ ngoài báo khi server sập (kênh độc lập, sống cả khi bot câm); trống = tắt.
+  dịch vụ ngoài báo khi server sập (kênh độc lập, sống cả khi bot câm); trống = tắt. LƯU Ý: check
+  này nằm TRONG supervisor nên chỉ chứng minh SUPERVISOR sống, KHÔNG chứng minh reader phục vụ →
+  reader có check RIÊNG (xem `reader_heartbeat_loop` trong reader). Supervisor chạy ẨN (`pythonw`)
+  nên `log()` xoay file khi >2MB (`LOG_MAX`, giữ `.1`); soi log ở `.reader-meta/supervisor-log.txt`.
+  **Giữ supervisor SỐNG — Hướng A** (24/08/2026, sau sự cố người-vào-server đóng cửa sổ supervisor):
+  onlogon CHỈ start-1-lần, supervisor sập giữa phiên không ai bật lại (reader con vẫn phục vụ →
+  healthchecks báo "down" mà web vẫn chạy, không "up"). KHÔNG chuyển Windows Service Session 0 vì
+  comix cần desktop tick Cloudflare. Thay bằng: (1) supervisor chạy ẩn pythonw; (2) task `ToonyWatchdog`
+  (`schtasks /sc MINUTE /mo 2 /it`) chạy `watchdog.ps1` mỗi 2' — quét CommandLine `supervisor.py`, chết
+  thì `Start-Process` pythonw bật lại (trong phiên đăng nhập → Chromium comix vẫn hiện), tôn trọng cờ
+  `.reader-meta/toony-paused.flag`; (3) `server-TAT-tudong.bat` ĐẶT cờ pause + xoá cả 2 task → tắt sạch
+  không bị watchdog cãi (để đồng nghiệp tắt máy test). Chi tiết & lý do: memory `supervisor-keepalive-huong-a`.
   **Auto-check chương mới** (`watch_loop`, 14/08/2026): mỗi ngày 1 lần lúc `check_hour:check_min`
   (mặc định 03:00 giờ server; bù nếu server tắt lúc đến hẹn — dò `last_run` trong watchlist so ngày
   hôm nay) chạy `check_updates.py` (subprocess) → `_apply_check_results`: cập nhật watchlist
@@ -298,12 +309,15 @@ cách chạy thật + decode thử ảnh.
 - **Auto-start / sống qua reboot** (Phương án A, 12/08/2026): `server-BAT-tudong.bat` đăng ký task
   Windows `ToonyServer` (`schtasks /sc onlogon`) chạy `supervisor.py` khi ĐĂNG NHẬP — bằng **đường
   dẫn TUYỆT ĐỐI** tới `python.exe` (task onlogon không có PATH → tên trần `python`/`pythonw` lỗi
-  `0x80070002`; suy `python.exe` từ `pythonw.exe` đã resolve để cùng thư mục). Dùng `python.exe`
-  (CÓ cửa sổ log) chứ không `pythonw` ẩn — để nhìn được log lúc autostart. Trigger là *onlogon* nên
-  cần một phiên đăng nhập; muốn tự lên sau reboot **không cần gõ mật khẩu** = `server-AUTOLOGIN.bat`
-  bật **Sysinternals Autologon** (mã hoá mật khẩu vào LSA secret, không plaintext). Hệ quả A:
-  supervisor gắn với phiên interactive Administrator → **Switch user** giữ sống, **Sign out** giết;
-  desktop tự mở khoá sau reboot (đánh đổi bảo mật đã chấp nhận).
+  `0x80070002`; suy `python.exe` từ `pythonw.exe` đã resolve để cùng thư mục). **[CẬP NHẬT 24/08]**
+  giờ dùng `pythonw.exe` (chạy ẨN, không cửa sổ) — bỏ cửa sổ đóng-được để không tái diễn sự cố; log
+  đọc ở file `.reader-meta/supervisor-log.txt`. Kèm task `ToonyWatchdog` hồi sinh mỗi 2' (xem mục
+  Heartbeat/Hướng A). Trigger là *onlogon* nên cần một phiên đăng nhập; muốn tự lên sau reboot
+  **không cần gõ mật khẩu** = `server-AUTOLOGIN.bat` bật **Sysinternals Autologon** (mã hoá mật khẩu
+  vào LSA secret, không plaintext). Hệ quả A: supervisor gắn với phiên interactive Administrator →
+  **Switch user** giữ sống, **Sign out** giết; desktop tự mở khoá sau reboot (đánh đổi bảo mật đã
+  chấp nhận). Từ 24/08 muốn TẮT phải chạy `server-TAT-tudong.bat` (đóng cửa sổ vô nghĩa vì chạy ẩn +
+  watchdog sẽ bật lại).
 - `Chia se link doc thu.bat` / `Tat chia se link.bat` — bật/tắt cloudflared
   quick tunnel (link trycloudflare ngẫu nhiên) cho người ngoài đọc thử.
 - `downloads/<Tên truyện>/Chapter N/001.webp...` — thư viện; mỗi truyện 1 folder.
@@ -613,6 +627,15 @@ cách chạy thật + decode thử ảnh.
   bản `?v=` cũ trong `IMG_CACHE`: rác nhỏ, chỉ sinh khi THAY ảnh (không phải khi tải chương mới), browser tự
   evict theo quota. *Lưu ý*: `mtime` đổi khi git-sync ghi lại file dù nội dung y hệt → client tải lại 1 lần (phí
   nhẹ, không sai) — chấp nhận vì `/cover` cũng dùng `mtime`.
+  **⑨ Navigation LUÔN trả 1 Response — không bao giờ null** (24/08, trị **"FetchEvent.respondWith received
+  an error: Returned response is null"** trên iPhone): handler `navigate` cũ `return hit||net` với
+  `net=fetch().catch(()=>hit)` → khi KHÔNG có cache VÀ mạng lỗi (điển hình: link quick-tunnel đã đổi/chết)
+  thì `net` resolve về `undefined` → `respondWith(undefined)` = null → Safari "can't open the page". Đây
+  chính là triệu chứng "web vào được, đọc ch1 ổn, sang ch2 ảnh fail, Next ra trang lỗi": SW phục vụ shell
+  + ch1 TỪ CACHE (offline), ch2 chưa cache → ra mạng → tunnel chết → ảnh fail + navigate null. *Fix*: có
+  cache → trả ngay + revalidate NGẦM (nuốt lỗi); không cache → `try fetch / catch` **luôn trả Response**
+  (lỗi → trang 503 "Không kết nối được máy chủ — lấy link mới"). Đổi SW_JS body → `/sw.js` khác byte →
+  browser tự cập nhật SW (served no-cache); cache-name (VER) không đổi nên không dọn IMG/PAGE cache.
   *Đánh đổi*: nội dung HTML trễ 1 lần mở (SWR); iOS
   Safari có thể evict SW sau ~7 ngày không dùng (mở lại chịu cold 1 lượt); prefetch tốn thêm băng thông
   (đã chặn 2 luồng + chỉ nạp cái chưa cache). *Gotcha*: header logo là `/brand` (KHÁC favicon `/logo`); đổi

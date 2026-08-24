@@ -42,25 +42,41 @@ del "%~dp0.reader-meta\supervisor.pid" >nul 2>&1
 echo Da don xong. Chi con 1 supervisor sau khi bat.
 echo.
 
-rem --- dang ky chay khi DANG NHAP (song qua reboot). Phuong an A: dung python.exe
-rem     (CO cua so log) de sau khi Windows tu dang nhap, supervisor tu len KEM cua so. ---
+rem --- xoa co PAUSE (neu truoc do TAT bang server-TAT) -> cho phep watchdog hoi sinh ---
+del "%~dp0.reader-meta\toony-paused.flag" >nul 2>&1
+
+rem --- dang ky chay khi DANG NHAP (song qua reboot). Chay AN bang pythonw.exe (khong con
+rem     cua so console de ai do bam nham X). Log ghi file .reader-meta\supervisor-log.txt. ---
 schtasks /create /tn "ToonyServer" /sc onlogon /rl LIMITED /f ^
-  /tr "\"%PY%\" \"%~dp0supervisor.py\""
+  /tr "\"%PYW%\" \"%~dp0supervisor.py\""
 if errorlevel 1 (
-  echo !!! Khong dang ky duoc Task Scheduler. Thu chay file nay bang quyen Admin.
+  echo !!! Khong dang ky duoc Task "ToonyServer". Thu chay file nay bang quyen Admin.
 ) else (
-  echo Da dang ky "ToonyServer" chay khi dang nhap Windows ^(co cua so log^).
+  echo Da dang ky "ToonyServer" chay khi dang nhap Windows ^(chay AN, khong cua so^).
+)
+
+rem --- WATCHDOG: moi 2 phut kiem supervisor con song khong; chet -> bat lai. /it = chay
+rem     trong PHIEN DANG NHAP -> supervisor + Chromium comix o session tuong tac (tick duoc).
+rem     Ton trong co .reader-meta\toony-paused.flag (co co -> khong hoi sinh). ---
+schtasks /create /tn "ToonyWatchdog" /sc MINUTE /mo 2 /it /rl LIMITED /f ^
+  /tr "powershell -NoProfile -ExecutionPolicy Bypass -File \"%~dp0watchdog.ps1\" -Pyw \"%PYW%\" -Base \"%~dp0\""
+if errorlevel 1 (
+  echo !!! Khong dang ky duoc Task "ToonyWatchdog".
+) else (
+  echo Da dang ky "ToonyWatchdog" ^(hoi sinh supervisor moi 2 phut neu chet^).
 )
 
 echo.
 echo Nhac: mo Telegram nhan /start cho bot de supervisor lay duoc chat_id.
-echo Bat supervisor ngay bay gio (cua so rieng se hien log + link)...
-start "ToonyServer" "%PY%" "%~dp0supervisor.py"
+echo Bat supervisor ngay bay gio (chay AN; xem log tai .reader-meta\supervisor-log.txt)...
+start "" "%PYW%" "%~dp0supervisor.py"
 
 echo.
 echo Xong.
+echo  - Supervisor chay AN + WATCHDOG hoi sinh moi 2 phut neu no chet.
+echo    -^> KHONG con cua so de dong; MUON TAT phai chay server-TAT-tudong.bat.
+echo    (Dong cua so / kill se bi watchdog bat lai trong ~2 phut.)
 echo  - Muon tu len sau reboot ma khong can go mat khau: chay server-AUTOLOGIN.bat 1 lan.
 echo  - Doi tai khoan ma van giu server: *Switch user* (DUNG *Sign out*).
-echo  - Chi de 1 supervisor: dung tay roi thi dung bam lai (2 cai -^> Telegram loi 409).
-echo  - Muon tat het: chay server-TAT-tudong.bat
+echo  - Xem tinh trang: Telegram /trangthai, hoac mo .reader-meta\supervisor-log.txt
 pause
