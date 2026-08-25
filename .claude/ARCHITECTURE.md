@@ -569,6 +569,25 @@ cách chạy thật + decode thử ảnh.
   độ prefetch 1 lần; đua-prefetch hiếm (prefetch bay trước, về sau purge). *KHÔNG phá bfcache*:
   pageshow/pagehide là sự kiện chính danh, không làm trang mất quyền vào bfcache. `SW_VERSION` tự bump vì
   ver của home/series/acct.js đổi → SW mới activate, dọn cache cũ.
+- **Ghép/tách trang đôi báo "Invalid action" oan** (25/08). *Triệu chứng*: bật chế độ ghép (⧉) → bấm
+  **Join 2 pages** → trang tự reload nhưng TRÔNG Y NHƯ CŨ (nút Join còn nguyên, chưa thấy spread) → bấm lại
+  → hiện `alert("Invalid action")`. *Gốc (đã tái hiện bằng test)*: **cùng một cơ chế stale-cache như bookmark**
+  nhưng thiếu purge — join THÀNH CÔNG ở server (POST `/api/spread` ghi `spreads.json`), rồi `location.reload()`
+  đi qua navigation-SWR → SW `return hit` = **HTML bản cache TRƯỚC join** (nút Join cũ còn đó), chỉ revalidate
+  ngầm; handler join KHÔNG hề purge trang như bookmark làm. User tưởng chưa ăn → bấm Join lần 2 lên đúng cặp
+  đó → `modify_spreads` cũ trả `False` ở nhánh `find(a) or find(b)` → endpoint trả "Invalid action". *Cách
+  làm* (`reader_server.py`, 3 lớp): **①** reader thêm `purgeAndReload()` — sau khi join/tách/đảo `ok:true`,
+  postMessage `{type:'purge-page',url:location.href}` (chờ SW **ack qua MessageChannel** + timeout 400ms dự
+  phòng) rồi mới reload → luôn thấy trạng thái mới (giống ý tưởng bookmark nhưng nay CÓ ở trang reader). **②**
+  SW handler `purge-page` trả ack qua `e.ports[0]` (trước chỉ xoá, không báo) để client chờ đúng lúc, khỏi
+  đua với chính lần reload. **③** `modify_spreads` join **idempotent**: nếu `a`&`b` VỐN đã là 1 cặp (`find(a)
+  is find(b)`, cùng object) → trả `True` (coi như xong) thay vì báo lỗi; chỉ khi 1 trang dính **cặp khác** mới
+  trả `False`. **④** bump `SW_VERSION` prefix `v1-`→`v2-` (băm precache không đổi khi sửa logic SW) → activate
+  dọn sạch `PAGE_CACHE` cũ trước-khi-vá. *Đánh đổi*: mỗi thao tác ghép tốn 1 vòng purge (≤400ms) trước reload.
+  *Ghi chú*: nút Join server-side chỉ hiện GIỮA 2 trang đơn liền nhau nên "cặp mồ côi" (file đã đổi tên/không
+  liền nhau, vd sau upgrade Asura→Official hay đổi tên folder làm `sid` lệch → spread mồ côi) vẫn có thể để lại
+  1 trang lẻ kèm nút Join mà `find()` chặn; idempotency KHÔNG che trường hợp này (đúng — trang thuộc cặp khác) —
+  cần dọn `spreads.json` tay nếu gặp.
 - **Trị "vuốt back nháy 1 phát" trên iOS Safari** (21/08). *Triệu chứng*: đọc qua link cloudflared trên
   iPhone (Safari + Web App), **vuốt trái→phải để back thì màn hình nháy trắng 1 phát**, còn bấm nút Back
   của trình duyệt thì không. *Vì sao*: vuốt-back là **animation tương tác** — Safari phải vẽ trang đích

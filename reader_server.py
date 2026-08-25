@@ -346,7 +346,15 @@ def modify_spreads(sid, rel, action, a, b=None):
             return None
 
         if action == "join":
-            if not b or find(a) or find(b):
+            if not b:
+                return False
+            pa, pb = find(a), find(b)
+            # a và b vốn ĐÃ là 1 cặp (bấm Join lại vì SW trả trang cache cũ) ->
+            # coi như đã xong (idempotent), khỏi báo "Invalid action" oan.
+            if pa is not None and pa is pb:
+                return True
+            # 1 trong 2 trang đã dính cặp khác -> không ghép được
+            if pa is not None or pb is not None:
                 return False
             # mặc định theo manga đọc phải->trái: trang đứng trước (a) là nửa PHẢI
             pairs.append({"left": b, "right": a})
@@ -2350,6 +2358,24 @@ READER_JS = """
     var on=document.body.classList.toggle('jmode');
     this.classList.toggle('on',on);
   });
+  // Sau khi ghép/tách/đảo, HTML trang ĐÃ đổi (nút Join biến mất, spread hiện ra).
+  // Nhưng SW điều hướng theo stale-while-revalidate -> reload thường sẽ trả BẢN
+  // CACHE CŨ (nút Join cũ còn nguyên) -> user bấm lại -> "Invalid action". Vì vậy
+  // xoá đúng trang này khỏi PAGE_CACHE (chờ SW xác nhận, có timeout dự phòng) rồi
+  // mới reload -> luôn thấy trạng thái mới. Không có SW thì reload thẳng.
+  function purgeAndReload(){
+    var sw=navigator.serviceWorker;
+    var url=location.href.split('#')[0];
+    if(!(sw&&sw.controller)){ location.reload(); return; }
+    var done=false;
+    function go(){ if(done) return; done=true; location.reload(); }
+    try{
+      var ch=new MessageChannel();
+      ch.port1.onmessage=go;
+      sw.controller.postMessage({type:'purge-page',url:url},[ch.port2]);
+      setTimeout(go,400);            // SW không trả lời -> vẫn reload
+    }catch(e){ go(); }
+  }
   document.addEventListener('click',function(e){
     var b=e.target.closest('button[data-act]');
     if(!b) return;
@@ -2360,7 +2386,7 @@ READER_JS = """
                            a:b.dataset.a,b:b.dataset.b||null})})
     .then(function(r){return r.json();})
     .then(function(res){
-      if(res.ok){savePosNow();sessionStorage.setItem('jmode','1');location.reload();}
+      if(res.ok){savePosNow();sessionStorage.setItem('jmode','1');purgeAndReload();}
       else{alert(res.error||'Action failed');b.disabled=false;}
     })
     .catch(function(){alert('Lost connection to server');b.disabled=false;});
@@ -2628,7 +2654,7 @@ _SW_PRECACHE = ([static_url(n) for n in STATIC_ASSETS]
                 + ["/manifest.webmanifest", "/logo", "/icon-180.png"])
 
 # Đổi khi logic SW đổi hoặc bất kỳ asset nào đổi -> SW mới, dọn cache cũ.
-SW_VERSION = "v1-" + hashlib.sha1(
+SW_VERSION = "v2-" + hashlib.sha1(
     ("|".join(_SW_PRECACHE)).encode()).hexdigest()[:10]
 
 SW_JS = ("""
@@ -2682,10 +2708,13 @@ self.addEventListener('message', (e) => {
       if (e.ports && e.ports[0]) e.ports[0].postMessage({ok: true});
     }));
   } else if (d.type === 'purge-page' && d.url) {
-    // Bookmark 1 truyện đổi -> HTML server đã cache của ĐÚNG trang đó thành cũ
-    // (nút bookmark render sai). Xoá riêng key đó để lần vào sau tải bản tươi;
-    // các trang khác giữ nguyên tốc độ prefetch/SWR.
-    e.waitUntil(caches.open(PAGE_CACHE).then((c) => c.delete(d.url, {ignoreSearch: true})));
+    // Bookmark 1 truyện đổi, HOẶC vừa ghép/tách/đảo trang đôi -> HTML server đã
+    // cache của ĐÚNG trang đó thành cũ (nút bookmark / nút Join render sai). Xoá
+    // riêng key đó để lần vào sau tải bản tươi; các trang khác giữ nguyên tốc độ
+    // prefetch/SWR. Có port -> xác nhận để trang chờ xoá xong mới reload (khỏi
+    // đua với chính lần reload đó).
+    e.waitUntil(caches.open(PAGE_CACHE).then((c) => c.delete(d.url, {ignoreSearch: true}))
+      .then(() => { if (e.ports && e.ports[0]) e.ports[0].postMessage({ok: true}); }));
   } else if (d.type === 'prefetch' && Array.isArray(d.urls)) {
     for (const u of d.urls) if (pfQ.indexOf(u) < 0) pfQ.push(u);
     pumpPrefetch();
