@@ -635,6 +635,15 @@ def user_data(uid):
             "progress": u.get("progress", {}), "read": u.get("read", {})}
 
 
+def user_key(user):
+    """Khoá NGẮN không-bí-mật để client namespace localStorage theo tài khoản
+    (mirror tiến trình đọc, xem ls.js). KHÔNG nhúng uid thật vào HTML vì uid
+    chính là cookie đăng nhập mà HTML lại nằm trong cache SW."""
+    if not user:
+        return ""
+    return hashlib.sha1(user["id"].encode("utf-8")).hexdigest()[:8]
+
+
 def update_user_data(uid, op):
     """Áp một thao tác /api/state cho ĐÚNG tài khoản uid; trả True nếu đổi."""
     if not isinstance(op, dict) or not uid:
@@ -666,7 +675,20 @@ def update_user_data(uid, op):
                 y = max(0, int(op.get("y") or 0))
             except (TypeError, ValueError):
                 y = 0
-            d["progress"][sid] = {"rel": rel, "y": y, "name": s["byrel"][rel]["name"]}
+            try:
+                ts = max(0, int(op.get("ts") or 0))
+            except (TypeError, ValueError):
+                ts = 0
+            # Guard chống pagehide-race: rời chương CŨ bắn keepalive, request có thể
+            # VỀ SAU write của chương MỚI (qua tunnel chậm) -> đè ngược con trỏ đọc.
+            # ts do client đóng dấu (Date.now() — cùng đồng hồ thiết bị nên so được);
+            # chỉ chặn write cũ hơn trong CỬA SỔ 30s (đúng cỡ race) để không khoá
+            # nhầm khi đổi thiết bị lệch giờ. Thiếu ts (JS cũ trong cache) -> nhận.
+            old_ts = (d["progress"].get(sid) or {}).get("ts") or 0
+            if ts and old_ts and ts < old_ts and old_ts - ts < 30_000:
+                return False
+            d["progress"][sid] = {"rel": rel, "y": y,
+                                  "name": s["byrel"][rel]["name"], "ts": ts}
             changed = True
         elif kind == "read":
             sid, rel = op.get("sid"), op.get("rel")
@@ -1518,7 +1540,8 @@ def html_home(lib, user=None):
                                "url": u("series", s["id"]), "label": label}
     body = ('<div class="wrap">' + account_header(user) + slider + grid + '</div>' + TOTOP_HTML
             + f'<script>const FOLLOWDATA={js(followdata)};let BM={js(bmorder)};'
-            f'const LOGGEDIN={js(bool(user))};const ADMIN={js(admin)};</script>'
+            f'const LOGGEDIN={js(bool(user))};const ADMIN={js(admin)};'
+            f'const UK={js(user_key(user))};</script>'
             + static_tag('ls.js') + static_tag('acct.js') + static_tag('home.js')
             + (static_tag('admin.js') if admin else ''))
     return page("TOONY READER", body)
@@ -1565,6 +1588,8 @@ def html_series(s, user=None):
             + f' · <span class="st {st}">{STATUS_LABELS[st]}</span>')
     # Server render theo tài khoản đang đăng nhập: nút bookmark, nút "reading"
     # (đang đọc dở) và làm mờ chương đã đọc. Guest -> mặc định (chưa theo dõi).
+    # Chỉ là BEST-EFFORT ban đầu: HTML này nằm trong cache SW (SWR) nên có thể cũ;
+    # series.js syncReading() sẽ vá lại nút reading + làm-mờ từ nguồn sống.
     bm = sid in set(ud["bookmarks"])
     first = s["order"][0] if s["order"] else None
     latest = s["order"][-1] if s["order"] else None
@@ -1588,7 +1613,7 @@ def html_series(s, user=None):
         '<div class="chsearch">'
         '<input id="chq" type="text" inputmode="search" autocomplete="off" '
         f'placeholder="Search chapters…">{SEARCH_SVG}{CLEAR_BTN}</div>')
-    sdata = {"sid": sid, "read": ud["read"].get(sid, [])}
+    sdata = {"sid": sid, "read": ud["read"].get(sid, []), "uk": user_key(user)}
     body = (f'<div class="wrap">' + account_header(user)
             + f'<div class="shead"><img src="{cover_url(s)}" alt="">'
             f'<div class="sinfo"><h1>{html.escape(s["title"])}</h1>'
@@ -1713,11 +1738,17 @@ def html_reader(s, rel, user=None):
               + '</div>'
               + f'<a class="navbtn" href="{series_url}">Back to Series</a></div>')
 
-    # Tiến trình ở localStorage: client tự khôi phục vị trí cuộn. Kèm name/url để
-    # Server render theo tài khoản: nhúng vị trí đọc dở (D.y) để client khôi phục.
+    # Vị trí đọc dở: server nhúng D.y/D.ts theo tài khoản (best-effort — HTML này
+    # có thể là bản SW cache/prefetch CŨ), client so ts với mirror localStorage
+    # (ls.js) và lấy bản MỚI hơn khi khôi phục. D.name để ghi kèm vào progress
+    # (nhãn card home), D.uk để namespace mirror theo tài khoản.
     prog = user_data(user["id"])["progress"].get(sid) if user else None
-    data = {"sid": sid, "rel": rel, "prev": prev_url, "next": next_url,
-            "y": prog["y"] if (prog and prog.get("rel") == rel) else 0}
+    cur = prog if (prog and prog.get("rel") == rel) else None
+    data = {"sid": sid, "rel": rel, "name": info["name"],
+            "prev": prev_url, "next": next_url,
+            "y": cur["y"] if cur else 0,
+            "ts": (cur.get("ts") or 0) if cur else 0,
+            "uk": user_key(user)}
     body = (
         f'<header id="topbar" class="bar hide">'
         f'<a class="iconbtn home" href="/" title="Library">{HOME_SVG}</a>'
@@ -1750,9 +1781,13 @@ def html_reader(s, rel, user=None):
     return page(f'{info["name"]} - {s["title"]}', body, body_class="reader")
 
 
-# Kho localStorage per-device cho GUEST (chưa đăng nhập): bookmark / tiến trình /
-# đã-đọc. Đã đăng nhập thì dùng server per-account, KHÔNG đụng localStorage. Không
-# di trú qua lại (mỗi bên riêng). Nạp trên cả 3 trang trước HOME/SERIES/READER JS.
+# Kho localStorage per-device. GUEST (chưa đăng nhập): bookmark / tiến trình /
+# đã-đọc lưu trọn ở đây. ĐÃ đăng nhập: nguồn chính vẫn là server per-account,
+# nhưng tiến trình đọc có thêm MIRROR per-tài-khoản (key theo UK = hash ngắn của
+# uid, server nhúng) — vì HTML server render nằm trong cache SW (stale-while-
+# revalidate) nên nút "reading"/D.y bake sẵn có thể CŨ; entry nào cũng đóng dấu
+# ts để client so độ tươi và lấy bản mới hơn. Không di trú guest<->account.
+# Nạp trên cả 3 trang trước HOME/SERIES/READER JS.
 LS_JS = """
 (function(){
   function rd(k,d){try{var v=localStorage.getItem(k);return v?JSON.parse(v):d;}catch(e){return d;}}
@@ -1763,7 +1798,14 @@ LS_JS = """
     toggleBm:function(sid,on){var a=this.bms(),i=a.indexOf(sid);
       if(on&&i<0)a.push(sid); if(!on&&i>=0)a.splice(i,1); wr('toony_bm',a); return a;},
     getProg:function(sid){return rd('toony_prog',{})[sid]||null;},
-    setProg:function(sid,rel,y){var p=rd('toony_prog',{});p[sid]={rel:rel,y:y};wr('toony_prog',p);},
+    setProg:function(sid,rel,y,name){var p=rd('toony_prog',{});
+      p[sid]={rel:rel,y:y,name:name||'',ts:Date.now()};wr('toony_prog',p);},
+    // mirror tiến trình cho TÀI KHOẢN đang đăng nhập (uk rỗng -> no-op/null)
+    mget:function(uk,sid){if(!uk)return null;return rd('toony_prog_u_'+uk,{})[sid]||null;},
+    mset:function(uk,sid,rel,y,name){if(!uk)return;var k='toony_prog_u_'+uk,p=rd(k,{});
+      p[sid]={rel:rel,y:y,name:name||'',ts:Date.now()};wr(k,p);},
+    // chọn bản tiến trình MỚI hơn theo ts (entry cũ thiếu ts -> coi như 0)
+    newer:function(a,b){if(!a)return b;if(!b)return a;return ((b.ts||0)>(a.ts||0))?b:a;},
     reads:function(sid){return rd('toony_read',{})[sid]||[];},
     addRead:function(sid,rel){var r=rd('toony_read',{}),a=r[sid]||[];
       if(a.indexOf(rel)<0){a.push(rel);r[sid]=a;wr('toony_read',r);}}
@@ -1892,16 +1934,39 @@ HOME_JS = """
     });
     renderFollows();
   }
-  // Nạp BM từ nguồn SỐNG (guest: localStorage; đăng nhập: /api/state) rồi áp lại.
-  // Dùng khi trang khôi phục từ bfcache (pageshow.persisted): bookmark có thể đã
-  // đổi ở trang khác trong khi DOM ở đây bị đóng băng. Lỗi mạng -> giữ nguyên DOM.
+  // Vá nhãn "đang đọc" (.fcm) của card theo dõi từ nguồn sống — nhãn bake trong
+  // HTML/FOLLOWDATA có thể là bản SW cache cũ (SWR) -> hiện chương đọc dở đời
+  // trước. progMap: sid -> {rel,y,name,ts}; đã đăng nhập thì so ts với mirror
+  // localStorage (bản mới hơn thắng). Entry thiếu name (JS đời cũ) -> giữ nhãn cũ.
+  function applyLabels(progMap){
+    Object.keys(FOLLOWDATA).forEach(function(s){
+      var p=progMap?progMap[s]:null;
+      if(LOGGEDIN) p=LS.newer(p,LS.mget(UK,s));
+      if(p&&p.name&&FOLLOWDATA[s]) FOLLOWDATA[s].label=p.name;
+    });
+    var row=document.getElementById('frow'); if(!row) return;
+    [].forEach.call(row.children,function(el){
+      var d=FOLLOWDATA[el.dataset.sid], m=el.querySelector('.fcm');
+      if(d&&m&&m.textContent!==d.label) m.textContent=d.label;
+    });
+  }
+  function guestProgMap(){                     // gom localStorage -> map cùng dạng
+    var out={};
+    Object.keys(FOLLOWDATA).forEach(function(s){
+      var p=LS.getProg(s); if(p) out[s]=p; });
+    return out;
+  }
+  // Nạp BM + nhãn đang đọc từ nguồn SỐNG (guest: localStorage; đăng nhập:
+  // /api/state) rồi áp lại. Chạy cả lúc LOAD (HTML có thể là bản SW cache cũ) lẫn
+  // khi khôi phục bfcache (DOM đóng băng trong lúc đọc ở trang khác). Lỗi mạng ->
+  // giữ nguyên bookmark, riêng nhãn vẫn vá được từ mirror localStorage.
   function syncBM(){
-    if(!LOGGEDIN){ BM=LS.bms(); applyBM(); return; }
+    if(!LOGGEDIN){ BM=LS.bms(); applyBM(); applyLabels(guestProgMap()); return; }
     fetch('/api/state').then(function(r){return r.json();}).then(function(res){
       if(res&&Array.isArray(res.bookmarks)){ BM=res.bookmarks; applyBM(); }
-    }).catch(function(){});
+      applyLabels(res&&res.progress?res.progress:null);
+    }).catch(function(){ applyLabels(null); });
   }
-  // Chỉ chạy khi khôi phục từ bfcache (persisted); tải mới thì init đã hydrate rồi.
   addEventListener('pageshow',function(e){ if(e.persisted) syncBM(); });
   grid.addEventListener('click',function(e){
     var b=e.target.closest('.bkbtn'); if(!b) return;
@@ -1922,8 +1987,10 @@ HOME_JS = """
       }
     }).catch(function(){b.disabled=false;});
   });
-  // guest: hydrate bookmark từ localStorage (server render trung tính cho guest)
-  if(!LOGGEDIN){ BM=LS.bms(); applyBM(); }
+  // hydrate lúc load từ nguồn sống: guest lấy localStorage (server render trung
+  // tính); tài khoản hỏi /api/state — vì HTML server render có thể là bản SW
+  // cache cũ (bookmark/nhãn đang đọc bake sẵn đã lỗi thời).
+  syncBM();
   // --- Tìm truyện trong lưới All Comics + KHÔI PHỤC trạng thái lọc khi quay lại ---
   // Bộ lọc tách thành hàm idempotent -> chạy lại được ở MỌI đường vào (load / bfcache
   // / admin-reload) nên ô search và lưới luôn khớp. iOS Safari hay xoá value input khi
@@ -2307,6 +2374,53 @@ SERIES_JS = """
     var idle=window.requestIdleCallback||function(f){return setTimeout(f,800);};
     idle(function(){ pf(urls); });
   })();
+
+  // --- Đồng bộ nút "reading" + làm-mờ-đã-đọc từ NGUỒN SỐNG. HTML server render
+  // nằm trong cache SW (stale-while-revalidate) VÀ bfcache -> nút reading bake sẵn
+  // có thể trỏ chương CŨ (đọc dở ch7, mở lại thấy ch6). purge-page không với tới
+  // bfcache nên phải vá DOM tại chỗ, cùng khuôn syncCounts/syncBM.
+  // Guest: đọc localStorage (đồng bộ, zero-flash) — server luôn render trung tính
+  // cho guest nên đây cũng là nơi DUY NHẤT guest có nút reading. Đã đăng nhập:
+  // hỏi /api/state rồi so ts với mirror localStorage — mirror thắng cả khi server
+  // lỡ bị pagehide-race đè ngược (mở đọc tiếp sẽ tự ghi giá trị đúng lại server).
+  function applyReading(p){
+    if(!p||!p.rel) return;
+    var target=null;
+    container.querySelectorAll('a.ch').forEach(function(a){
+      if(a.dataset.rel===p.rel) target=a; });
+    if(!target) return;                       // chương đã bị xoá -> giữ nguyên nút
+    var btn=document.querySelector('.chapbtns .cbtn.reading')
+          ||document.querySelector('.chapbtns .cbtn.latest');
+    if(!btn) return;
+    var href=target.getAttribute('href');
+    if(btn.classList.contains('reading')&&btn.getAttribute('href')===href) return;
+    btn.className='cbtn reading';
+    btn.setAttribute('href',href);
+    // nhãn cùng công thức với server: data-num = fmt_num(chapter_num(name))
+    btn.textContent=(target.dataset.num?('Chapter '+target.dataset.num):target.textContent)+' - reading';
+    pf([btn.href]);                           // đón đầu HTML chương mới trỏ tới
+  }
+  function applyReadList(list){
+    try{ var rs=new Set(list||[]);
+      container.querySelectorAll('a.ch').forEach(function(a){
+        if(rs.has(a.dataset.rel)) a.classList.add('read'); });
+    }catch(e){}
+  }
+  function syncReading(){
+    if(!LOGGEDIN){ applyReading(LS.getProg(sid)); return; }
+    var mp=LS.mget(SDATA.uk,sid);
+    fetch('/api/state',{credentials:'same-origin'})
+      .then(function(r){return r.json();}).then(function(res){
+        var sp=(res&&res.progress)?res.progress[sid]:null;
+        applyReading(LS.newer(sp,mp));
+        if(res&&res.read) applyReadList(res.read[sid]);
+      }).catch(function(){ applyReading(mp); });  // offline -> mirror vẫn vá được
+  }
+  syncReading();                                              // load thường (kể cả bản SW cache)
+  addEventListener('pageshow',function(e){ if(e.persisted) syncReading(); });  // bfcache
+  document.addEventListener('visibilitychange',function(){
+    if(document.visibilityState==='visible') syncReading();
+  });
 })();
 """
 
@@ -2336,11 +2450,16 @@ READER_JS = """
   function sendPos(){
     netT=Date.now();
     if(netTimer){clearTimeout(netTimer);netTimer=null;}
-    if(!LOGGEDIN){ try{LS.setProg(D.sid,D.rel,Math.round(scrollY));}catch(e){} return; }
+    var y=Math.round(scrollY);
+    if(!LOGGEDIN){ try{LS.setProg(D.sid,D.rel,y,D.name);}catch(e){} return; }
+    // đã đăng nhập: ghi server + MIRROR localStorage (đồng bộ, sống sót cả khi
+    // request keepalive thất lạc); ts để trang khác / lần mở sau so độ tươi với
+    // HTML bake sẵn từ cache SW cũ.
+    try{LS.mset(D.uk,D.sid,D.rel,y,D.name);}catch(e){}
     try{
       fetch('/api/state',{method:'POST',keepalive:true,
         headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({op:'progress',sid:D.sid,rel:D.rel,y:Math.round(scrollY)})});
+        body:JSON.stringify({op:'progress',sid:D.sid,rel:D.rel,y:y,ts:Date.now()})});
     }catch(e){}
   }
   function savePos(){
@@ -2461,11 +2580,15 @@ READER_JS = """
     var init=100; try{var s=parseInt(localStorage.getItem('imgw'),10); if(s>=MINP) init=s;}catch(e){}
     apply(init,false);                        // đồng bộ nhãn + var với giá trị đã lưu
   })();
-  // khôi phục vị trí đọc dở (server nhúng vào D.y theo tài khoản). Tắt auto-restore
-  // của trình duyệt (nó reset về 0 sau RAF sớm) và bám đích vài frame tới khi tới
+  // khôi phục vị trí đọc dở. Guest: localStorage (luôn tươi). Đã đăng nhập: D.y
+  // bake từ server có thể CŨ (HTML từ SW cache/prefetch) -> so ts với mirror
+  // localStorage của chính tài khoản, bản mới hơn thắng. Tắt auto-restore của
+  // trình duyệt (nó reset về 0 sau RAF sớm) và bám đích vài frame tới khi tới
   // nơi — chiều cao đã được aspect-ratio giữ sẵn.
   try{ var _gy=D.y;
     if(!LOGGEDIN){ var gp=LS.getProg(D.sid); _gy=(gp&&gp.rel===D.rel)?gp.y:0; }
+    else{ var mp=LS.mget(D.uk,D.sid);
+      if(mp&&mp.rel===D.rel&&(mp.ts||0)>(D.ts||0)) _gy=mp.y; }
     if(_gy>200){
       if('scrollRestoration' in history) history.scrollRestoration='manual';
       var ty=_gy, tries=0;

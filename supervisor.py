@@ -12,7 +12,9 @@ CHỈ dùng thư viện chuẩn (urllib) — không cần requests/Pillow. Bật
 server-BAT-tudong.bat / server-TAT-tudong.bat (đăng ký Task Scheduler "At startup").
 
 Cấu hình: .reader-meta/notify-config.json
-  {"bot_token":"123:ABC","chat_id":"", "reader_port":8080}
+  {"bot_token":"123:ABC","chat_id":"", "reader_ports":[4953,7749,6829,5471,7561]}
+  (reader thử lần lượt các cổng này, lấy cổng trống đầu tiên — cổng "hẻo" để không
+   giẫm chân phần mềm khác trên máy dùng chung. Thiếu key này -> dùng mặc định.)
 chat_id để trống -> supervisor tự điền khi bạn nhắn /start cho bot.
 """
 
@@ -90,6 +92,14 @@ READER_WAIT = 60           # giây: chờ reader nội bộ tối đa ngần nà
 READER_RETRY = 3           # giây giữa 2 lần thử reader nội bộ
 NO_WINDOW = 0x08000000 if os.name == "nt" else 0   # đừng bật cửa sổ console con
 
+# Cổng cho reader: THỬ LẦN LƯỢT, lấy cổng TRỐNG đầu tiên. Cố ý chọn cổng "hẻo" (gần như
+# không phần mềm nào dùng) để trên MÁY DÙNG CHUNG không giẫm chân đối tác/đồng nghiệp.
+# Nguyên tắc lịch sự: chỉ NHƯỜNG (sang cổng kế) hoặc reap ĐÚNG orphan reader_server.py CỦA
+# MÌNH — TUYỆT ĐỐI KHÔNG giết tiến trình lạ để giành cổng. Đè được bằng cfg "reader_ports".
+DEFAULT_READER_PORTS = [4953, 7749, 6829, 5471, 7561]
+READER_HOST = "0.0.0.0"    # reader bind 0.0.0.0 (đọc được cả qua LAN) — test-bind cùng host
+READER_PORT_WAIT_NONE = 15 # giây chờ rồi thử lại khi MỌI cổng đều bị kẻ lạ chiếm (không tranh)
+
 # In được tiếng Việt trên console Windows (cp1252)
 for _s in (sys.stdout, sys.stderr):
     try:
@@ -126,7 +136,16 @@ def load_config():
     except (OSError, ValueError):
         cfg = {}
     cfg.setdefault("bot_token", "")
-    cfg.setdefault("reader_port", 8080)
+    cfg.setdefault("reader_port", 8080)   # LEGACY — không còn dùng để chọn cổng (xem reader_ports)
+    # Danh sách cổng ưu tiên cho reader (thử lần lượt, lấy cổng trống đầu). Chuẩn hoá về
+    # list số nguyên; rỗng/sai kiểu -> quay về mặc định. reader_port cũ bị BỎ QUA khi chọn.
+    rp = cfg.get("reader_ports")
+    if isinstance(rp, list):
+        rp = [int(p) for p in rp if isinstance(p, int)
+              or (isinstance(p, str) and p.strip().isdigit())]
+    else:
+        rp = []
+    cfg["reader_ports"] = rp or list(DEFAULT_READER_PORTS)
     cfg.setdefault("heartbeat_url", "")   # URL ping healthchecks.io (trống = tắt heartbeat)
     cfg.setdefault("check_hour", 3)       # giờ (0-23) chạy auto-check chương mới hằng ngày
     cfg.setdefault("check_min", 0)        # phút (0-59)
@@ -250,6 +269,13 @@ class Supervisor:
         self.stop = threading.Event()
         self.reader = None
         self.tunnel = None
+        # Cổng reader: danh sách ưu tiên (đã chuẩn hoá ở load_config) + cổng ĐANG dùng.
+        # reader_port được chọn lại MỖI lần bật reader (_choose_reader_port); đổi cổng thì
+        # run_reader dựng lại tunnel để cloudflared trỏ đúng cổng.
+        self.reader_ports = self.cfg["reader_ports"]
+        self.reader_port = self.reader_ports[0]
+        self.reader_bound = False   # reader đã bám được 1 cổng CỦA MÌNH chưa? (chốt cho tunnel:
+        #                             chưa bám thì KHÔNG trỏ tunnel, tránh phơi dịch vụ kẻ lạ)
         self.link = None            # link ứng viên mới nhất (kể cả chưa xác minh) — cho /link
         self._notified_link = None  # link ĐÃ báo Telegram gần nhất — chỉ báo khi link ĐỔI
         self.lock = threading.Lock()
@@ -266,16 +292,93 @@ class Supervisor:
         self._checking = False             # đang chạy 1 lần auto-check -> chặn chạy chồng
 
     def reader_url(self):
-        return f"http://127.0.0.1:{self.cfg.get('reader_port', 8080)}"
+        return f"http://127.0.0.1:{self.reader_port}"
 
-    # reader_server.py: chết thì bật lại
+    @staticmethod
+    def _can_bind(port):
+        """Thử bind THẬT cổng (cùng host reader dùng) để biết có xài được không. Bắt cả
+        EADDRINUSE (cổng đang bận) LẪN WSAEACCES (Windows GIỮ TRƯỚC dải cổng cho
+        Hyper-V/WSL/Docker — 'trống' nhưng bind vẫn bị từ chối). Đóng ngay sau khi thử."""
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        try:
+            s.bind((READER_HOST, port))
+            return True
+        except OSError:
+            return False
+        finally:
+            s.close()
+
+    @staticmethod
+    def _reclaim_port_if_ours(port):
+        """Cổng đang bị GIỮ: nếu kẻ giữ là ORPHAN reader_server.py CỦA MÌNH -> reap (rác của
+        chính mình, an toàn) trả 'reaped'; nếu là tiến trình LẠ -> KHÔNG đụng, trả 'foreign';
+        không ai nghe -> 'free'. Windows-only (Get-NetTCPConnection); OS khác -> 'skip'.
+        BẤT BIẾN: tuyệt đối KHÔNG giết tiến trình lạ để giành cổng (đây là server dùng chung)."""
+        if os.name != "nt":
+            return "skip"
+        ps = (
+            "$p = Get-NetTCPConnection -LocalPort " + str(port) + " -State Listen "
+            "-ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty OwningProcess; "
+            "if (-not $p) { 'free' } "
+            "else { $pr = Get-CimInstance Win32_Process -Filter \"ProcessId=$p\" "
+            "-ErrorAction SilentlyContinue; "
+            "if ($pr -and $pr.Name -match 'python' -and $pr.CommandLine -match 'reader_server\\.py') "
+            "{ Stop-Process -Id $p -Force -ErrorAction SilentlyContinue; 'reaped' } "
+            "else { 'foreign' } }"
+        )
+        try:
+            out = subprocess.run(
+                ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", ps],
+                creationflags=NO_WINDOW, timeout=15,
+                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
+            return (out.stdout or "").strip().lower() or "free"
+        except Exception:
+            return "foreign"   # không chắc chắn -> coi như LẠ, KHÔNG đụng
+
+    def _choose_reader_port(self):
+        """Chọn cổng cho reader theo THỨ TỰ ƯU TIÊN: lấy cổng TRỐNG đầu tiên. Cổng ưu tiên bị
+        ORPHAN reader CỦA MÌNH giữ -> reap để TÁI DÙNG (khỏi phải đổi link). Bị tiến trình LẠ
+        giữ (hoặc rơi vào dải Windows giữ trước) -> NHƯỜNG sang cổng kế, KHÔNG bao giờ giết kẻ
+        lạ. Trả cổng, hoặc None nếu MỌI cổng đều bị kẻ lạ chiếm (gọi lại sẽ thử lại)."""
+        for port in self.reader_ports:
+            if self._can_bind(port):
+                return port
+            status = self._reclaim_port_if_ours(port)   # 'free'/'reaped'/'foreign'/'skip'
+            if status == "reaped":
+                for _ in range(6):                       # chờ OS nhả cổng sau khi reap (~<=3s)
+                    if self.stop.wait(0.5):
+                        return None
+                    if self._can_bind(port):
+                        log(f"Reader: đã reap orphan cũ giữ cổng {port} -> tái dùng cổng này.")
+                        return port
+            elif status == "foreign":
+                log(f"Reader: cổng {port} đang bị tiến trình LẠ dùng -> nhường, thử cổng kế.")
+            # 'free'/'skip' mà _can_bind vẫn fail = dải Windows giữ trước / vừa bị chen -> thử kế
+        return None
+
+    # reader_server.py: chết thì bật lại (kèm chọn cổng lịch sự + đổi cổng -> dựng lại tunnel)
     def run_reader(self):
         while not self.stop.is_set():
-            log("Bật reader_server.py ...")
+            port = self._choose_reader_port()
+            if port is None:
+                self.reader_bound = False   # không cổng nào của mình -> tunnel ngừng trỏ
+                log("! Reader: mọi cổng ưu tiên đều bị tiến trình LẠ chiếm — chờ "
+                    f"{READER_PORT_WAIT_NONE}s rồi thử lại (KHÔNG giết ai để giành cổng).")
+                if self.stop.wait(READER_PORT_WAIT_NONE):
+                    return
+                continue
+            if port != self.reader_port:
+                old = self.reader_port
+                self.reader_port = port
+                log(f"Reader: đổi cổng {old} -> {port}. Dựng lại tunnel để trỏ đúng cổng "
+                    "(link chia sẻ sẽ đổi).")
+                self._kill(self.tunnel)   # ép run_tunnel tạo lại cloudflared trỏ reader_url() mới
+            self.reader_bound = True        # đã chốt 1 cổng bind-được của mình -> tunnel được phép trỏ
+            log(f"Bật reader_server.py trên cổng {port} ...")
             try:
                 self.reader = subprocess.Popen(
                     [sys.executable, os.path.join(BASE_DIR, "reader_server.py"),
-                     "--port", str(self.cfg.get("reader_port", 8080))],
+                     "--port", str(port)],
                     cwd=BASE_DIR, creationflags=NO_WINDOW,
                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             except Exception as e:
@@ -300,6 +403,13 @@ class Supervisor:
             if st != "ok":
                 log(f"! Mạng chưa sẵn sàng ({st}) — hoãn bật cloudflared, dò lại sau {NET_RECHECK}s.")
                 if self.stop.wait(NET_RECHECK):
+                    return
+                continue
+            # CHỐT: reader chưa bám được cổng CỦA MÌNH thì đừng trỏ tunnel — nếu không, cổng
+            # ưu tiên đang bị kẻ lạ giữ sẽ bị phơi ra internet qua link. Poll ngắn tới khi reader
+            # bám cổng (bình thường ~1s). KHÔNG hạ tunnel khi reader chỉ restart chớp (cờ vẫn True).
+            if not self.reader_bound:
+                if self.stop.wait(2):
                     return
                 continue
             log("Bật cloudflared quick-tunnel ...")

@@ -1,7 +1,7 @@
 {
  "bot_token": "",
  "chat_ids": [],
- "reader_port": 8080,
+ "reader_ports": [4953, 7749, 6829, 5471, 7561],
  "heartbeat_url": "",
  "reader_heartbeat_url": ""
 }

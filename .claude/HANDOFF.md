@@ -1,9 +1,15 @@
-# Handoff — cập nhật lần cuối: 2026-08-25 (vá Join trang đôi báo "Invalid action" oan: purge-page + endpoint idempotent + SW v2)
+# Handoff — cập nhật lần cuối: 2026-08-29 (vá nút "reading" trỏ chương CŨ: client-sync từ nguồn sống + mirror localStorage per-account + ts guard)
 
 > Kiến trúc ổn định (reader, provider, comix, supervisor, mạng…) nằm ở `.claude/ARCHITECTURE.md`.
 > File này chỉ ghi TRẠNG THÁI hiện tại + việc đang dở.
 
 ## Đang làm / dở dang
+- **[29/08] Reader — nút "reading" trỏ chương CŨ (đọc dở ch7, mở lại vào ch6) — ĐÃ code + test dev + nghiệm thu browser dev, CHƯA nghiệm thu LIVE trên server** (`reader_server.py`, README.md).
+  *Gốc (đã chứng minh bằng đọc code + tái hiện stale-doc trong browser dev)*: con trỏ đọc dở được **bake cứng vào HTML** ở 3 chỗ — nút "Chapter X - reading" trang series (`html_series` chapbtns), nhãn `.fcm`/`FOLLOWDATA.label` trang home, và `D.y` (vị trí cuộn) trang reader — mà HTML đi qua **SW stale-while-revalidate** (trả bản cache cũ trước, revalidate ngầm) LẪN **bfcache** (DOM đóng băng khi back) → mở lại là thấy con trỏ của PHIÊN TRƯỚC, lệch đúng 1 nhịp. Ghi progress thì `_save_users_locked()` atomic NGAY mỗi op (đã xác minh) nên dữ liệu server luôn đúng — chỉ HTML hiển thị là cũ. Purge-page KHÔNG dùng được: không với tới bfcache.
+  **Fix (①+ theo khuôn syncBM/syncCounts sẵn có):** **①** `SERIES_JS.syncReading()` — vá nút reading + làm-mờ-đã-đọc **tại chỗ từ nguồn sống** (guest: `LS.getProg` đồng bộ — guest GIỜ MỚI CÓ nút reading, trước server render trung tính không ai vá; đã đăng nhập: fetch `/api/state` + so `ts` với mirror), chạy lúc load + `pageshow(persisted)` + `visibilitychange`; nhãn tái tạo từ `a.ch[data-num]` (đúng công thức server `fmt_num(chapter_num)`); vá xong `pf([href])` prefetch lại. **②** **mirror localStorage per-account**: `ls.js` thêm `mget/mset/newer` (key `toony_prog_u_<UK>`, `UK` = sha1(uid)[:8] server nhúng — KHÔNG nhúng uid thật vì uid là cookie auth mà HTML nằm trong SW cache); reader `sendPos` (đã đăng nhập) ghi server + mirror; khôi phục cuộn so `mp.ts > D.ts` → mirror thắng bake cũ. Mọi entry progress (LS + server) giờ có `ts` + `name`. **③** `HOME_JS.applyLabels()` vá `.fcm` + `FOLLOWDATA.label` trong cùng fetch `syncBM` (giờ chạy cả lúc LOAD, không chỉ bfcache). **④** server `update_user_data` op progress: **ts guard chống pagehide-race** — chặn write CŨ HƠN trong cửa sổ 30s (rời ch6 bắn keepalive về SAU write ch7 → không đè ngược nữa); thiếu ts (JS cũ) thì nhận (tương thích). Server vẫn render nút reading best-effort (KHÔNG đổi sang trung tính — tránh flash Latest→reading mỗi lần cho tài khoản).
+  **Test dev đã chạy**: `py_compile` OK; `node --check` cả 6 JS asset OK; smoke test guard ts 4 ca (nhận mới / chặn race 1s / nhận lệch >30s / nhận thiếu-ts) OK; render 3 trang nhúng đúng `UK`/`SDATA.uk`/`D.ts` (login vs guest). **Nghiệm thu browser dev (server 8099)**: guest — LS có progress → reload → nút thành "Chapter 365 - reading" đúng href+nhãn; logged-in — mirror ts mới hơn thắng server (nút đổi theo mirror sau `pageshow(persisted)` giả lập); home logged-in — card Bookmarked hiện nhãn tươi nhất (mirror thắng). *Không test được tầng SW sống trong browser sandbox (đã biết từ 25/08) + browser dev có quirk không gửi cookie theo navigation — nhưng chính nhờ đó đã tái hiện được "trang stale" và thấy client patch tự sửa đúng.*
+  **Deploy = `/update` qua bot** (chỉ `reader_server.py`; JS đổi → `SW_VERSION` tự đổi theo hash → SW mới activate tự dọn PAGE_CACHE cũ, các trang "ch6 kẹt" được flush luôn).
+  **Còn ngỏ**: (a) khe đua sub-giây cho tài khoản (bấm nút trước khi fetch `/api/state` về — trước đây sai cả phiên, giờ chỉ còn <1s; guest = 0 vì LS đồng bộ). (b) Đổi thiết bị lệch giờ >30s + chuyển máy trong <30s → 1 write bị guard chặn oan (tự hồi khi cuộn tiếp). (c) LS entry ghi bởi JS đời cũ thiếu `ts`/`name` → nhãn home giữ bản server tới khi đọc lại 1 lần (tự lành).
 - **[25/08] Reader — Join/tách/đảo trang đôi báo "Invalid action" oan — ĐÃ code + test dev (tái hiện + xác nhận fix ở tầng server) + parse OK, CHƯA nghiệm thu LIVE trên trình duyệt thật/SW** (`reader_server.py`).
   *Gốc (đã TÁI HIỆN bằng server thật)*: join THÀNH CÔNG rồi `location.reload()`, nhưng navigation-SWR của SW trả **HTML cache TRƯỚC join** (nút Join cũ còn) và handler join KHÔNG purge như bookmark → user tưởng chưa ăn, bấm lại đúng cặp → `find(a)/find(b)` chặn → "Invalid action". *SW-layer KHÔNG chạy được trong trình duyệt in-app của sandbox* (đăng ký `/sw.js` báo "unknown error", dù curl 200) → phần "SW trả bản cũ" chứng minh bằng đọc code + khác biệt HTML trước/sau (11→10 nút, Join(00→01) mất, spread 1→2), KHÔNG chạy SW sống.
   **Fix 3+1 lớp** (`reader_server.py`): **①** reader thêm `purgeAndReload()` — join `ok:true` → postMessage `{type:'purge-page',url}` chờ SW ack (MessageChannel + timeout 400ms) rồi reload. **②** SW `purge-page` trả ack qua `e.ports[0]`. **③** `modify_spreads` join **idempotent** — `a`&`b` đã là 1 cặp → trả `True`; chỉ khi dính cặp KHÁC mới `False`. **④** bump `SW_VERSION` `v1-`→`v2-` để activate dọn `PAGE_CACHE` cũ. Chi tiết + đánh đổi: ARCHITECTURE mục "Ghép/tách trang đôi báo Invalid action oan".
@@ -254,6 +260,14 @@
 - **[10/08] Tool LÀM NÉT Real-ESRGAN — ĐÃ push. Tích hợp tự động vào `/tai` CHƯA làm.**
 
 ## Quyết định gần đây (mới nhất trước)
+- **29/08: Con trỏ "đang đọc" (nút reading / nhãn .fcm / vị trí cuộn) = client-sync từ nguồn sống + mirror
+  localStorage per-account có ts, KHÔNG purge-page và KHÔNG render trung tính** — purge không với tới bfcache;
+  render trung tính gây flash Latest→reading MỖI lần cho tài khoản (phạt ca thường để trị ca hiếm). Server vẫn
+  bake best-effort, client vá lại tại chỗ (cùng khuôn syncBM/syncCounts đã chạy ổn). Mirror per-uid (key hash
+  ngắn `UK`, không nhúng uid thật vào HTML vì uid = cookie auth) + `ts` mọi entry → so được độ tươi giữa 3 nguồn
+  (bake/server/mirror), mirror còn tự chữa lành server nếu bị pagehide-race đè (lần đọc kế ghi giá trị đúng lại).
+  Guard ts phía server chỉ chặn write cũ hơn trong CỬA SỔ 30s — đủ bắt race (cỡ giây) mà không khoá nhầm
+  chuyển-thiết-bị lệch giờ (cỡ phút). Bonus: guest có nút reading (trước không có vì server không biết LS).
 - **23/08: Nút ✕ xoá search — giữ kính lúp bên PHẢI + X thay chỗ (không thêm cột icon), kèm Esc** — user chọn phương án
   ít đổi layout nhất (thay vì kính-lúp-trái/X-phải kiểu Asura). Toggle bằng 1 class `.has-val` trên `.chsearch` (CSS lo
   ẩn/hiện) + gộp việc toggle vào chính hàm lọc để đồng bộ ở mọi đường vào; clear ở home phải xoá luôn `sessionStorage['homeq']`
@@ -385,6 +399,12 @@
   09-10/08 về comix loop/relaunch đã ghi đầy đủ ở ARCHITECTURE.)
 
 ## Việc tiếp theo
+- **[Nút reading tươi — nghiệm thu LIVE]** `/update` qua bot (chỉ `reader_server.py`). Kịch bản đúng bug gốc:
+  đăng nhập trên điện thoại, đọc dở chương N, **Next sang N+1**, đọc dở rồi TẮT hẳn app/tab → mở lại link →
+  vào trang truyện: nút xanh lá phải ghi **"Chapter N+1 - reading"** NGAY LẦN ĐẦU (không cần F5), bấm vào phải
+  ĐÚNG chương N+1 và trôi về đúng chỗ đang đọc dở. Thêm: back từ reader về trang truyện (bfcache) → nút cập nhật
+  theo chương vừa đọc; card Bookmarked ở home ghi đúng chương; guest (chưa đăng nhập) đọc dở 1 chương → trang
+  truyện có nút "reading" (tính năng mới). Sau deploy nhớ **đóng hết tab reader 1 lần** cho SW mới activate.
 - **[Reader pill + prefetch nghiệm thu LIVE]** `/update` qua bot (chỉ `reader_server.py`). Mở 1 chương:
   xác nhận **KHÔNG** tự hiện thanh công cụ, thay vào đó pill "Tap to show controls" nhấp nháy nhẹ ở đáy;
   chạm bất kỳ đâu → bật bars + pill tắt; cuộn/chạm-lại → ẩn bars + pill trở lại. Bấm Next / chọn chương:

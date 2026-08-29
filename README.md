@@ -308,8 +308,16 @@ python reader_server.py --port 8081
   bộ nhớ có thể hiện bookmark cũ khi quay lại; đã sửa để (a) khi **back** về home/trang
   truyện, trạng thái bookmark tự đồng bộ lại (guest đọc localStorage, tài khoản hỏi lại
   server), và (b) khi **bấm bookmark rồi mở truyện**, trang tải bản mới thay vì bản cache
-  cũ (Service Worker xoá đúng trang đó khỏi cache). *(Mới đồng bộ bookmark; tiến trình đọc
-  / chương đã đọc khi back sẽ làm sau.)*
+  cũ (Service Worker xoá đúng trang đó khỏi cache).
+- **Nút "reading" / nhãn đang đọc / chương đã đọc luôn tươi**: trang HTML được Service
+  Worker phục vụ kiểu stale-while-revalidate (mở tức thì từ cache, cập nhật ngầm) nên nút
+  **"Chapter X - reading"**, nhãn chương đang đọc trên card Bookmarked và phần làm-mờ
+  chương đã đọc "nướng" sẵn trong HTML có thể là **bản của phiên trước** (đọc dở ch7 mà
+  mở lại thấy ch6). Đã sửa: sau khi trang hiện, client tự **vá lại tại chỗ từ nguồn sống**
+  (guest: localStorage; tài khoản: hỏi `/api/state` + so mốc thời gian `ts` với bản mirror
+  localStorage của chính tài khoản — bản mới hơn thắng) — chạy cả khi load thường, back
+  qua bfcache lẫn khi mở lại tab. Vị trí cuộn đọc dở trong chương cũng so `ts` như vậy khi
+  khôi phục. Nhờ đó **guest giờ cũng có nút "reading"** (trước chỉ tài khoản mới có).
 - **Theo dõi truyện (bookmark)**: bấm nút **Bookmark** (tím, dưới mỗi truyện ở
   trang chủ / cạnh ảnh bìa ở trang truyện) → chuyển **nền xám, sao + chữ vàng
   "Bookmarked"**. Truyện đang theo dõi hiện thành hàng **"Bookmarked"** cuộn ngang
@@ -329,7 +337,9 @@ python reader_server.py --port 8081
 - **Tài khoản & nhớ chỗ đọc**: góc trên phải có ô **Username** — nhập tên rồi **Login**
   (không mật khẩu, chỉ để tách người). Khi **đã đăng nhập**, bookmark / vị trí đọc dở /
   chương đã đọc lưu **trên server theo tài khoản** (`.reader-meta\users.json`) → đăng nhập
-  lại ở máy nào cũng thấy, không mất khi đổi link/restart. **Chưa đăng nhập (guest)** thì
+  lại ở máy nào cũng thấy, không mất khi đổi link/restart. Vị trí đọc dở còn được **mirror
+  vào localStorage của máy** (key riêng theo tài khoản, kèm mốc thời gian) để chống trang
+  cache cũ chỉ sai chỗ đọc — xem mục "luôn tươi" phía trên. **Chưa đăng nhập (guest)** thì
   mấy dữ liệu này lưu **trong trình duyệt máy đó** (localStorage) — mỗi máy riêng, không
   đụng người khác. Hai bên **tách riêng**, không trộn. Cỡ ảnh + kiểu sort chương luôn để
   riêng từng máy.
