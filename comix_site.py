@@ -1243,6 +1243,10 @@ def run(args):
                 # KHÔNG tải chương mới (dùng lệnh tải thường cho việc đó). Dò offline
                 # trước -> chương không dính thì bỏ nhanh, khỏi chạm mạng.
                 if repair_mode:
+                    # In tiến độ MỖI chương (kể cả chương bỏ nhanh) để log luôn tiến —
+                    # tránh stall-watchdog supervisor kill oan khi quét nhiều chương sạch.
+                    print(f"\r[{idx}/{total}] {label} — dò tráo ô...            ",
+                          end="", flush=True)
                     status, nfix = _repair_scramble_chapter(cs, folder, cands, side, args)
                     if status == "fixed":
                         n_repaired += 1

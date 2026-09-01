@@ -221,6 +221,8 @@ HELP_TEXT = (
     "Admin:\n"
     "/tai <link> [chương] — tải truyện; thêm dải chương để chỉ tải phần đó\n"
     "     vd: /tai <link> 1-20  hoặc  /tai <link> 5,7,20-25  (bỏ trống = cả truyện)\n"
+    "/repair <link comix> [chương] — vá trang bị TRÁO Ô (bản Official comix.to)\n"
+    "     vd: /repair <link>  (cả bộ)  hoặc  /repair <link> 1  (thử 1 chương trước)\n"
     "/trangthai — xem truyện đang tải + hàng chờ\n"
     "/stop — dừng truyện đang tải + xoá hàng chờ (của bạn)\n"
     "/killnow — chỉ dừng truyện đang tải (của bạn)\n"
@@ -512,6 +514,7 @@ class Supervisor:
             {"command": "link", "description": "Lấy link đọc hiện tại"},
             {"command": "whoami", "description": "Xem chat_id của bạn"},
             {"command": "tai", "description": "Tải truyện: /tai <link> [chương vd 1-20] (admin)"},
+            {"command": "repair", "description": "Vá trang tráo ô comix: /repair <link> [chương] (admin)"},
             {"command": "trangthai", "description": "Xem tải đang chạy + hàng chờ (admin)"},
             {"command": "stop", "description": "Dừng tải + xoá hàng chờ của bạn (admin)"},
             {"command": "killnow", "description": "Chỉ dừng truyện đang tải của bạn (admin)"},
@@ -597,6 +600,8 @@ class Supervisor:
             self.handle_status(token, cid)
         elif text.startswith("/tai"):
             self.handle_tai(token, cid, raw)
+        elif text.startswith("/repair"):
+            self.handle_repair(token, cid, raw)
         elif text.startswith("/stopall"):
             self.handle_cancel(token, cid, kill=True, clear=True, scope_all=True)
         elif text.startswith("/stop"):
@@ -862,23 +867,26 @@ class Supervisor:
                 self._save_jobs_locked()
             log(f"Nạp lại {len(loaded)} truyện trong hàng đợi từ phiên trước -> tải tiếp.")
 
-    def _enqueue_jobs(self, pairs):
+    def _enqueue_jobs(self, pairs, repair=False):
         """Thêm [(url, cid[, chapters]), ...] vào hàng đợi tải. chapters = None -> tải cả
-        truyện; hoặc chuỗi chọn chương '5,7,20-25' (như --chapters). Chống trùng theo CẢ
-        (url, chapters) nên tải cùng truyện khác dải chương KHÔNG bị coi là trùng. Trả
-        (added, dup). Dùng chung cho /tai và auto-check chương mới."""
+        truyện; hoặc chuỗi chọn chương '5,7,20-25' (như --chapters). repair=True -> job
+        chạy comic_downloader `--repair-scramble` (vá trang tráo ô, KHÔNG tải chương mới).
+        Chống trùng theo (url, chapters, repair) nên job tải và job vá cùng truyện KHÔNG
+        đè nhau. Trả (added, dup). Dùng chung cho /tai, /repair và auto-check chương mới."""
         added, dup = [], 0
         with self._dlq_lock:
-            have = {(j["url"], j.get("chapters")) for j in self._jobs}
+            have = {(j["url"], j.get("chapters"), bool(j.get("repair")))
+                    for j in self._jobs}
             for pair in pairs:
                 url, cid = pair[0], pair[1]
                 chapters = pair[2] if len(pair) > 2 else None
-                key = (url, chapters)
+                key = (url, chapters, repair)
                 if key in have:
                     dup += 1
                 else:
                     self._jobs.append({"url": url, "cid": cid, "state": "pending",
-                                       "resumed": False, "chapters": chapters})
+                                       "resumed": False, "chapters": chapters,
+                                       "repair": repair})
                     have.add(key)
                     added.append(url)
             if added:
@@ -922,6 +930,41 @@ class Supervisor:
         tg_api(token, "sendMessage", {"chat_id": cid, "text": "\n".join(parts),
             "disable_web_page_preview": "true"})
 
+    def handle_repair(self, token, cid, raw):
+        """/repair <link comix> [chương] — VÁ trang TRÁO Ô (bản Official comix.to đã tải):
+        đưa job `--repair-scramble` vào hàng đợi. Dò offline nên chương không dính bỏ qua
+        rất nhanh; KHÔNG tải chương mới. Cần Chromium hiện (giống /tai)."""
+        if not self._is_admin(cid):
+            tg_api(token, "sendMessage", {"chat_id": cid, "text": "⛔ Bạn không phải admin."})
+            return
+        words = raw.split()[1:]
+        urls = [w for w in words if w.startswith("http")]
+        spec_raw = ",".join(w for w in words if not w.startswith("http"))
+        chapters = re.sub(r",+", ",", spec_raw.replace(" ", "")).strip(",") or None
+        if not urls:
+            tg_api(token, "sendMessage", {"chat_id": cid,
+                "text": "Gửi: /repair <link comix> [chương]\n"
+                        "Vá lại các trang bị TRÁO Ô (bản Official). Ví dụ:\n"
+                        "  /repair https://comix.to/... — quét & vá cả bộ\n"
+                        "  /repair https://comix.to/... 1 — thử 1 chương trước cho chắc\n"
+                        "(Chỉ dùng cho comix.to; chương không dính bỏ qua nhanh.)"})
+            return
+        if chapters and not re.fullmatch(r"[0-9.,\-]+", chapters):
+            tg_api(token, "sendMessage", {"chat_id": cid,
+                "text": f"⚠ Chọn chương không hợp lệ: “{chapters}”.\n"
+                        "Chỉ dùng số, dấu phẩy, gạch nối — vd 1 hoặc 1-20."})
+            return
+        added, dup = self._enqueue_jobs([(u, cid, chapters) for u in urls], repair=True)
+        parts = []
+        scope = f"chương {chapters}" if chapters else "cả bộ"
+        if added:
+            parts.append(f"🧩 Đã thêm {len(added)} bộ vào hàng đợi SỬA TRÁO Ô ({scope}).")
+        if dup:
+            parts.append(f"⏭ {dup} bộ đã có job sửa trong hàng đợi (bỏ qua).")
+        parts.append("Gõ /trangthai để theo dõi.")
+        tg_api(token, "sendMessage", {"chat_id": cid, "text": "\n".join(parts),
+            "disable_web_page_preview": "true"})
+
     @staticmethod
     def _slug(url):
         """Rút tên gọn từ URL để hiển thị (bỏ đuôi '/', lấy cụm cuối có ý nghĩa)."""
@@ -932,7 +975,11 @@ class Supervisor:
     def _job_label(cls, job):
         """Tên gọn + dải chương (nếu có) để hiển thị trong /trangthai và tin báo."""
         lbl = cls._slug(job["url"])
-        return f"{lbl} (ch {job['chapters']})" if job.get("chapters") else lbl
+        if job.get("chapters"):
+            lbl = f"{lbl} (ch {job['chapters']})"
+        if job.get("repair"):
+            lbl = "🧩 " + lbl                # job SỬA TRÁO Ô
+        return lbl
 
     def handle_status(self, token, cid):
         """/trangthai — ảnh chụp hàng đợi: truyện đang tải (kèm tiến độ đọc từ log)
@@ -1036,7 +1083,8 @@ class Supervisor:
         except OSError:
             return ""
         text = text.replace("\r", "\n")
-        idx = text.rfind("===== TỔNG KẾT")
+        # Lượt tải in "===== TỔNG KẾT"; lượt --repair-scramble in "===== SỬA TRÁO Ô".
+        idx = max(text.rfind("===== TỔNG KẾT"), text.rfind("===== SỬA TRÁO Ô"))
         if idx < 0:
             return ""
         lines = [l.rstrip() for l in text[idx:].splitlines() if l.strip()]
@@ -1132,9 +1180,14 @@ class Supervisor:
             # thì im để khỏi lặp tin mỗi vòng.
             if token and cid is not None and job.get("net_retries", 0) == 0:
                 scope = f"\n(chỉ chương {job['chapters']})" if job.get("chapters") else ""
+                if job.get("repair"):
+                    head = "🧩 Bắt đầu SỬA TRÁO Ô:"
+                elif job.get("resumed"):
+                    head = "🔄 Đang tiếp tục truyện bị gián đoạn:"
+                else:
+                    head = "⏳ Bắt đầu tải:"
                 tg_api(token, "sendMessage", {"chat_id": cid,
-                    "text": (f"🔄 Đang tiếp tục truyện bị gián đoạn:\n{url}{scope}"
-                             if job.get("resumed") else f"⏳ Bắt đầu tải:\n{url}{scope}"),
+                    "text": f"{head}\n{url}{scope}",
                     "disable_web_page_preview": "true"})
             start_pos = 0
             keep = False        # True = lỗi MẠNG tạm -> giữ job trong hàng đợi, thử lại (không xoá)
@@ -1161,6 +1214,8 @@ class Supervisor:
                            os.path.join(BASE_DIR, "comic_downloader.py"), url]
                     if job.get("chapters"):               # chọn chương cụ thể (như tai-truyen.bat)
                         cmd += ["--chapters", job["chapters"]]
+                    if job.get("repair"):                 # /repair -> vá trang tráo ô (comix)
+                        cmd += ["--repair-scramble"]
                     proc = subprocess.Popen(              # -u: không buffer -> tail real-time
                         cmd, cwd=BASE_DIR, creationflags=NO_WINDOW,
                         stdout=logf, stderr=subprocess.STDOUT)
@@ -1193,7 +1248,8 @@ class Supervisor:
                                f"thử lại:\n{url}") if n == 1 else None
                 elif rc == 0:
                     summary = self._read_summary(start_pos)   # số liệu chương + ảnh
-                    msg = f"✅ Tải xong:\n{url}" + (("\n\n" + summary) if summary else "")
+                    done_head = "✅ Sửa tráo ô xong" if job.get("repair") else "✅ Tải xong"
+                    msg = f"{done_head}:\n{url}" + (("\n\n" + summary) if summary else "")
                 else:
                     # LỖI MẠNG (mất mạng lúc này, HOẶC log có dấu hiệu mạng: getaddrinfo,
                     # 'mạng chập chờn'...) -> GIỮ job trong hàng đợi, thử lại sau; KHÔNG xoá

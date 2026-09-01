@@ -147,7 +147,11 @@ cách chạy thật + decode thử ảnh.
     `s:1`, ghi đè tại chỗ + đóng lại `.done`; KHÔNG tải chương mới. Lý do phải có repair riêng:
     chương xáo cũ đã mang `.done` (file webp hợp lệ, `is_known_broken` chỉ tra sổ URL-hỏng nên
     không bắt được) → chạy `/tai` thường (kể cả `--recheck`) sẽ BỎ QUA/không tải lại. Xem
-    memory `comix-scramble-s-flag`.
+    memory `comix-scramble-s-flag`. **Bot `/repair <link> [chương]`** (`supervisor.py`):
+    enqueue job `--repair-scramble` vào chung hàng đợi tải (dedup theo (url,chapters,repair)
+    → không đè job /tai; nhãn 🧩); repair in progress mỗi chương để log tiến (tránh
+    stall-watchdog kill oan khi quét chương sạch). Đổi `supervisor.py` ⇒ `/update` phải kèm
+    RESTART supervisor tay mới nạp lệnh mới.
   - `asura_downloader.py` — **giờ chỉ là shim** gọi `comic_downloader.main(default=asura)`
     → lệnh/shortcut cũ + gõ slug trần vẫn chạy như Asura như trước.
   - `Tai truyen.bat` — shortcut trong folder (không ra Desktop): **vòng lặp** hỏi link
