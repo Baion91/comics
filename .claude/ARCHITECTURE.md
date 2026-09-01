@@ -129,16 +129,25 @@ cách chạy thật + decode thử ảnh.
     `s` — `s:1` là trang bị **cắt lưới ô rồi xáo vị trí** (đo thực: đúng MỖI TRANG THỨ 10
     — 10,20,30…; xác minh 5 chương Farmer of Spirits). URL trả bytes XÁO cho mọi client
     (KHÔNG có URL sạch riêng); reader hiển thị sạch bằng cách dùng chunk `secure-*.js`
-    (export `t` = hàm `vs`) tải ảnh rồi **giải-xáo VẼ LÊN `<canvas>` qua rAF** (trang thường
-    dùng `<img>`). `fetch_pages` nay trả `[{"url","s"}]`; trong `run()` trang thường tải HTTP
-    như cũ, trang `s:1` đi `ComixSession.descramble_pages()` — chạy `DESCRAMBLE_JS` bằng
-    `page.evaluate`: `import(secureUrl)` (dò động từ Performance API → bền khi build đổi hash),
-    gọi `vs(url).apply(canvas)` trên canvas ẩn tự tạo, chờ vẽ xong (poll pixel) rồi `toDataURL`
-    lấy bytes SẠCH (ảnh wowpic serve CORS mở → canvas KHÔNG taint, đọc lại được). KHÔNG tự
-    reverse permutation vì `secure.js` obfuscate nặng (control-flow flattening) — dễ gãy;
-    dùng chính thuật toán site. **Cần Chromium HEADFUL HIỂN THỊ** (rAF chỉ chạy khi cửa sổ
-    compositing — desktop server phải mở, không khóa màn hình; đúng ràng buộc "KHÔNG Session 0"
-    của comix). **Guard**: `comics_core.looks_scrambled()` (đo "năng lượng đường nối" tại biên
+    (export `t` = hàm `vs`) tải ảnh rồi **giải-xáo VẼ LÊN `<canvas>`** (trang thường dùng
+    `<img>`). `fetch_pages` nay trả `[{"url","s"}]`; trong `run()` trang thường tải HTTP như
+    cũ, trang `s:1` đi `ComixSession.descramble_pages(url_path, pairs, img_client)`.
+    **CÁCH GIẢI-XÁO — ghi bản đồ ô, KHÔNG đọc canvas** (chốt sau khi thử đọc canvas THẤT BẠI,
+    xem dưới): `descramble_ops()` chạy `DESCRAMBLE_JS` (`page.evaluate`): `import(secureUrl)`
+    (dò động qua Performance API → bền khi build đổi hash), ép `requestAnimationFrame` ĐỒNG BỘ,
+    **chặn `CanvasRenderingContext2D.drawImage`** trong lúc gọi `vs(url).apply(canvas)` để GHI
+    LẠI mọi lệnh vẽ (lưới ô: 1 lệnh nền + N lệnh chép ô `sx,sy,sw,sh→dx,dy,dw,dh`; vd trang
+    940×1388 = 5×5 ô 188×277). Rồi Python **tải LẠI chính ảnh xáo đó** bằng `img_client`
+    (byte ỔN ĐỊNH theo URL — đã xác minh 2 fetch trùng hash) và `_unscramble_ops()` xếp lại
+    bằng PIL (crop→(resize nếu khác cỡ)→paste theo thứ tự). **Vì sao KHÔNG toDataURL**: setup
+    này (cả server lẫn dev) đọc pixel canvas ra RỖNG (114 bytes) dù màn hình thấy sạch — nghi
+    chống-scrape chặn readback (reader chỉ hiển thị, không cần đọc lại); ghi tham số drawImage
+    thì KHÔNG cần compositing/đọc canvas nên **chạy được cả khi server không màn hình / RDP
+    ngắt**, và kiểm chứng offline được (đã dựng lại trang 10 ch.1 sạch bằng PIL). KHÔNG reverse
+    permutation trong `secure.js` (obfuscate control-flow, dễ gãy) — chỉ QUAN SÁT drawImage.
+    Lưu ý: bản xáo cũ trên đĩa có thể khác permutation hiện tại (token đổi theo thời gian) nên
+    KHÔNG giải được từ file cũ → repair tải lại bytes mới rồi mới xếp. **Guard**:
+    `comics_core.looks_scrambled()` (đo "năng lượng đường nối" tại biên
     ô bằng PIL, ngưỡng 4.0 — sạch ~1-2 / xáo ~9-22; không numpy) coi trang `s:1` còn dấu xáo là
     "CHƯA đúng" → không đánh `.done` → tự thử lại lần sau (giải-xáo hụt KHÔNG bao giờ bị nhận
     nhầm là xong). **Sửa kho cũ**: `--repair-scramble` (chỉ comix) — dò offline từng chương

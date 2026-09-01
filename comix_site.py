@@ -57,7 +57,7 @@ Playwright là DEP TÙY CHỌN — chỉ import khi tải comix; thiếu thì in
     pip install playwright && python -m playwright install chromium
 """
 
-import base64
+import io
 import json
 import os
 import random
@@ -124,15 +124,17 @@ HOOK_JS = """
 })();
 """
 
-# Giải-xáo trang TRÁO Ô (cờ s:1) bằng CHÍNH thuật toán của site: chunk secure-*.js
-# xuất hàm `vs` (giải mã payload dùng chung), gọi vs(url) trả object có .apply(canvas)
-# — nó tải ảnh xáo rồi vẽ ĐÃ SẮP LẠI lên canvas (qua rAF). Ta gọi trực tiếp trên canvas
-# ẩn tự tạo rồi toDataURL lấy bytes sạch (ảnh wowpic serve CORS mở nên canvas KHÔNG bị
-# taint, đọc lại được). KHÔNG tự reverse permutation: secure.js obfuscate nặng, dễ gãy.
-# Chạy được là nhờ Chromium HEADFUL hiển thị (rAF fires); Session-0/ẩn sẽ không vẽ.
-# Ưu tiên export 't'; site đổi tên -> thử mọi hàm export tới khi ra canvas có nội dung.
+# Giải-xáo trang TRÁO Ô (cờ s:1): dùng CHÍNH thuật toán của site nhưng KHÔNG đọc canvas.
+# chunk secure-*.js xuất hàm `vs` (export 't'); vs(url) trả object có .apply(canvas) — nó
+# tải ảnh xáo rồi VẼ CÁC Ô ĐÃ SẮP LẠI lên canvas bằng nhiều lệnh drawImage (lưới ô, vd
+# 5×5 ô 188×277). Ta KHÔNG toDataURL (setup này chặn đọc pixel canvas -> ra rỗng, nghi
+# chống-scrape) mà CHẶN drawImage để GHI LẠI BẢN ĐỒ Ô (sx,sy,sw,sh -> dx,dy,dw,dh); rồi
+# tải lại chính ảnh xáo đó (byte ỔN ĐỊNH theo URL) và xếp lại bằng PIL ở Python. Ghi tham
+# số hàm KHÔNG cần compositing/đọc canvas nên chạy được cả khi server không màn hình / RDP
+# ngắt. Ép requestAnimationFrame chạy đồng bộ để apply vẽ ngay trong lúc evaluate.
+# Trả {idx: {w,h,ops:[{argc,a:[...]}]}} — null nếu ghi hụt. Xem [[comix-scramble-s-flag]].
 DESCRAMBLE_JS = r"""
-async ({items, q, timeoutMs}) => {
+async ({items, timeoutMs}) => {
   const sleep = ms => new Promise(r => setTimeout(r, ms));
   let secUrl = null;
   for (let t = 0; t < 30 && !secUrl; t++) {
@@ -145,44 +147,48 @@ async ({items, q, timeoutMs}) => {
   try { mod = await import(secUrl); } catch (e) { return {__error: 'import: ' + e}; }
   const fns = (typeof mod.t === 'function') ? [mod.t]
               : Object.values(mod).filter(v => typeof v === 'function');
+  const proto = CanvasRenderingContext2D.prototype;
+  const origDraw = proto.drawImage;
+  const origRAF = window.requestAnimationFrame;
   const out = {};
-  for (const it of items) {
-    let data = null;
-    for (const fn of fns) {
-      let cvs = null;
-      try {
-        const obj = await Promise.race([
-          fn(it.url, new AbortController().signal),
-          new Promise((_, rej) => setTimeout(() => rej(new Error('vs timeout')), timeoutMs)),
-        ]);
+  try {
+    let depth = 0;   // rAF đồng bộ (có chặn đệ quy) -> apply vẽ NGAY, khỏi chờ khung hình
+    window.requestAnimationFrame = (cb) => {
+      if (depth < 300) { depth++; try { cb(performance.now()); } finally { depth--; } }
+      return 0;
+    };
+    for (const it of items) {
+      let rec = null;
+      for (const fn of fns) {
+        let obj = null;
+        try {
+          obj = await Promise.race([
+            fn(it.url, new AbortController().signal),
+            new Promise((_, rej) => setTimeout(() => rej(new Error('vs timeout')), timeoutMs)),
+          ]);
+        } catch (e) { continue; }
         if (!obj || typeof obj.apply !== 'function') continue;
-        cvs = document.createElement('canvas');
-        cvs.style.cssText = 'position:fixed;left:-99999px;top:0;';
-        document.body.appendChild(cvs);
-        obj.apply(cvs);                 // vẽ (qua rAF) — gọi ĐÚNG 1 lần (gọi lại -> 'detached')
-        const ctx = cvs.getContext('2d');
-        let drawn = false;
-        for (let t = 0; t < Math.ceil(timeoutMs / 100) && !drawn; t++) {
-          if (cvs.width > 0 && cvs.height > 0) {
-            let hit = 0, y = cvs.height >> 1;
-            for (let x = 20; x < cvs.width - 1; x += Math.max(1, cvs.width / 6 | 0)) {
-              if (ctx.getImageData(x, y, 1, 1).data[3] > 0 && ++hit >= 2) { drawn = true; break; }
-            }
-          }
-          if (!drawn) await sleep(100);
+        const ops = [];
+        proto.drawImage = function (img, ...a) {   // a: [dx,dy]|[dx,dy,dw,dh]|[sx,sy,sw,sh,dx,dy,dw,dh]
+          ops.push({argc: a.length, a: a});
+          try { return origDraw.apply(this, [img, ...a]); } catch (e) { return; }
+        };
+        let c = null;
+        try {
+          c = document.createElement('canvas');
+          obj.apply(c);            // vẽ NGAY (rAF đồng bộ) -> ops được ghi trong lúc này
+          await sleep(30);
+        } catch (e) {
+        } finally {
+          proto.drawImage = origDraw;
         }
-        if (!drawn) continue;
-        try { data = cvs.toDataURL('image/webp', q); } catch (e) {}
-        if (!data || data.length < 300) { try { data = cvs.toDataURL('image/png'); } catch (e) {} }
-        if (data && data.length > 300) break;
-        data = null;
-      } catch (e) {
-        // thử hàm khác / bỏ trang này
-      } finally {
-        if (cvs && cvs.parentNode) cvs.parentNode.removeChild(cvs);
+        if (ops.length >= 1) { rec = {w: c ? c.width : 0, h: c ? c.height : 0, ops: ops}; break; }
       }
+      out[String(it.idx)] = rec;   // null nếu không ghi được lệnh drawImage nào
     }
-    out[String(it.idx)] = data;
+  } finally {
+    proto.drawImage = origDraw;
+    window.requestAnimationFrame = origRAF;
   }
   return out;
 };
@@ -641,15 +647,14 @@ class ComixSession:
             out.append({"url": u, "s": it.get("s") == 1})
         return out
 
-    def descramble_pages(self, url_path, pairs, q=0.92, timeout_ms=8000):
-        """Giải-xáo các trang TRÁO Ô (cờ s:1) bằng chính thuật toán của site, trả
-        {idx: bytes webp/png sạch} (bỏ qua trang giải hụt -> người gọi coi là thiếu,
-        chạy lại bù). `pairs` = [(idx, url), ...]. Xem DESCRAMBLE_JS + [[comix-scramble-s-flag]].
+    def descramble_ops(self, url_path, urls, timeout_ms=12000):
+        """GHI bản đồ tráo ô cho từng URL trang `s:1`: chạy DESCRAMBLE_JS (chặn drawImage
+        lúc apply chạy). Trả {idx: {"w","h","ops":[...]}} (null nếu ghi hụt). CHỈ đụng
+        browser — không tải/không xếp ảnh (việc đó để Python làm, xem descramble_pages).
 
         Cần đang ở TRANG ĐỌC comix (import() same-origin + chunk secure.js đã nạp);
-        thường đúng vì fetch_pages vừa điều hướng tới đây. Browser chết -> BrowserGone
-        (để _resilient dựng lại rồi thử lại: lần sau page.url = about:blank nên tự goto)."""
-        if not pairs:
+        thường đúng vì fetch_pages vừa điều hướng tới đây. Browser chết -> BrowserGone."""
+        if not urls:
             return {}
         try:
             cur = self.page.url or ""
@@ -658,24 +663,53 @@ class ComixSession:
         if not cur.startswith(BASE + url_path):
             self._goto(BASE + url_path)
             time.sleep(1.5)                   # chờ SPA nạp chunk reader (secure.js)
-        items = [{"idx": i, "url": u} for i, u in pairs]
+        items = [{"idx": i, "url": u} for i, u in urls]
         try:
             res = self.page.evaluate(
-                DESCRAMBLE_JS, {"items": items, "q": q, "timeoutMs": timeout_ms})
+                DESCRAMBLE_JS, {"items": items, "timeoutMs": timeout_ms})
         except Exception as e:
             if not self.alive():
-                raise BrowserGone(f"Chromium đã đóng khi giải-xáo: {e}") from e
+                raise BrowserGone(f"Chromium đã đóng khi ghi bản đồ tráo ô: {e}") from e
             raise
+        if isinstance(res, dict) and res.get("__error"):
+            print(f"\n    ! Ghi bản đồ tráo ô lỗi: {res['__error']}",
+                  file=sys.stderr, flush=True)
+            return {}
         out = {}
-        if isinstance(res, dict) and not res.get("__error"):
-            for k, durl in res.items():
-                if durl and "," in durl:
-                    try:
-                        out[int(k)] = base64.b64decode(durl.split(",", 1)[1])
-                    except Exception:
-                        pass
-        elif isinstance(res, dict) and res.get("__error"):
-            print(f"\n    ! Giải-xáo lỗi: {res['__error']}", file=sys.stderr, flush=True)
+        for k, rec in (res or {}).items():
+            if rec and rec.get("ops"):
+                try:
+                    out[int(k)] = rec
+                except (TypeError, ValueError):
+                    pass
+        return out
+
+    def descramble_pages(self, url_path, pairs, img_client, timeout_ms=12000):
+        """Giải-xáo các trang TRÁO Ô (cờ s:1), trả {idx: bytes webp SẠCH}. Cách làm:
+        (1) GHI bản đồ ô qua browser (descramble_ops — không đọc canvas), (2) TẢI LẠI
+        chính ảnh xáo đó bằng `img_client` (byte ổn định theo URL), (3) xếp lại bằng PIL
+        (_unscramble_ops). Trang nào ghi hụt / tải hụt -> bỏ (người gọi coi là thiếu, chạy
+        lại bù). `pairs` = [(idx, url), ...]. Xem [[comix-scramble-s-flag]]."""
+        if not pairs:
+            return {}
+        recs = self.descramble_ops(url_path, pairs, timeout_ms=timeout_ms)
+        url_by_idx = {i: u for i, u in pairs}
+        out = {}
+        for idx, rec in recs.items():
+            url = url_by_idx.get(idx)
+            if not url:
+                continue
+            try:
+                resp = img_client.get(url)
+                data = getattr(resp, "content", None)
+                if not data:
+                    continue
+                clean = _unscramble_ops(data, rec.get("w"), rec.get("h"), rec["ops"])
+                if clean:
+                    out[idx] = clean
+            except Exception as e:
+                print(f"\n    ! Giải-xáo trang {idx:03d} hụt (tải/xếp): {e}",
+                      file=sys.stderr, flush=True)
         return out
 
 
@@ -878,6 +912,59 @@ def _page_file(folder: Path, i: int):
     return None
 
 
+def _unscramble_ops(scrambled, w, h, ops):
+    """Xếp lại 1 ảnh TRÁO Ô theo bản đồ drawImage ghi từ apply() của site (xem
+    descramble_ops). Mỗi op áp THEO THỨ TỰ (op sau đè op trước) lên canvas cỡ (w,h):
+      argc 2 -> drawImage(img,dx,dy)                   : dán FULL ảnh nguồn tại (dx,dy)
+      argc 4 -> drawImage(img,dx,dy,dw,dh)             : co FULL về (dw,dh) rồi dán
+      argc 8 -> drawImage(img,sx,sy,sw,sh,dx,dy,dw,dh) : cắt ô nguồn ->(co nếu khác cỡ)-> dán
+    Trả webp bytes; thiếu Pillow / lỗi -> None (người gọi coi trang là thiếu, chạy lại bù)."""
+    try:
+        from PIL import Image
+    except Exception:
+        return None
+    try:
+        src = Image.open(io.BytesIO(scrambled)).convert("RGB")
+    except Exception:
+        return None
+
+    def _i(x):
+        try:
+            return int(round(float(x)))
+        except (TypeError, ValueError):
+            return 0
+
+    W = _i(w) or src.width
+    H = _i(h) or src.height
+    if W <= 0 or H <= 0 or W * H > 64 * 1024 * 1024:   # cỡ vô lý -> bỏ
+        return None
+    dst = Image.new("RGB", (W, H))
+    for op in ops or []:
+        a = op.get("a") or []
+        argc = op.get("argc")
+        try:
+            if argc == 2 and len(a) >= 2:
+                dst.paste(src, (_i(a[0]), _i(a[1])))
+            elif argc == 4 and len(a) >= 4:
+                dst.paste(src.resize((max(1, _i(a[2])), max(1, _i(a[3])))),
+                          (_i(a[0]), _i(a[1])))
+            elif argc == 8 and len(a) >= 8:
+                sx, sy, sw, sh = _i(a[0]), _i(a[1]), max(1, _i(a[2])), max(1, _i(a[3]))
+                dx, dy, dw, dh = _i(a[4]), _i(a[5]), max(1, _i(a[6])), max(1, _i(a[7]))
+                tile = src.crop((sx, sy, sx + sw, sy + sh))
+                if (dw, dh) != (sw, sh):
+                    tile = tile.resize((dw, dh))
+                dst.paste(tile, (dx, dy))
+        except Exception:
+            continue
+    try:
+        buf = io.BytesIO()
+        dst.save(buf, "WEBP", quality=92, method=4)
+        return buf.getvalue()
+    except Exception:
+        return None
+
+
 def _fix_ext(path: Path) -> Path:
     """URL comix không có đuôi -> tải về đặt .webp rồi sửa theo magic bytes thật."""
     try:
@@ -1072,7 +1159,7 @@ def _resilient(cs, call):
             cs.relaunch()
 
 
-def _repair_scramble_chapter(cs, folder, cands, side, args):
+def _repair_scramble_chapter(cs, img_client, folder, cands, side, args):
     """Vá 1 chương ĐÃ tải bị TRÁO Ô (mỗi trang thứ 10 của bản Official). Trả (status,
     n_fixed). status:
       'noimg'  - folder trống -> để lượt tải thường lo (repair KHÔNG tải chương mới).
@@ -1116,7 +1203,7 @@ def _repair_scramble_chapter(cs, folder, cands, side, args):
                  if it.get("s") and (i not in present or core.looks_scrambled(present[i]))]
     if not scr_pairs:
         return "clean", 0
-    got = _resilient(cs, lambda: cs.descramble_pages(ver["url"], scr_pairs))
+    got = _resilient(cs, lambda: cs.descramble_pages(ver["url"], scr_pairs, img_client))
     nfix = 0
     for i, _u in scr_pairs:
         data = got.get(i)
@@ -1247,7 +1334,8 @@ def run(args):
                     # tránh stall-watchdog supervisor kill oan khi quét nhiều chương sạch.
                     print(f"\r[{idx}/{total}] {label} — dò tráo ô...            ",
                           end="", flush=True)
-                    status, nfix = _repair_scramble_chapter(cs, folder, cands, side, args)
+                    status, nfix = _repair_scramble_chapter(
+                        cs, img_client, folder, cands, side, args)
                     if status == "fixed":
                         n_repaired += 1
                         img_repaired += nfix
@@ -1437,7 +1525,7 @@ def run(args):
                     print(f"\r{prefix} [{tag}] — giải-xáo {len(scr_jobs)} trang tráo ô "
                           "(canvas site)...          ", end="", flush=True)
                     got = _resilient(
-                        cs, lambda: cs.descramble_pages(chosen["url"], scr_jobs))
+                        cs, lambda: cs.descramble_pages(chosen["url"], scr_jobs, img_client))
                     for i, _u in scr_jobs:
                         data = got.get(i)
                         if not data:
