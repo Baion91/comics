@@ -147,11 +147,16 @@ cách chạy thật + decode thử ảnh.
     `s:1`, ghi đè tại chỗ + đóng lại `.done`; KHÔNG tải chương mới. Lý do phải có repair riêng:
     chương xáo cũ đã mang `.done` (file webp hợp lệ, `is_known_broken` chỉ tra sổ URL-hỏng nên
     không bắt được) → chạy `/tai` thường (kể cả `--recheck`) sẽ BỎ QUA/không tải lại. Xem
-    memory `comix-scramble-s-flag`. **Bot `/repair <link> [chương]`** (`supervisor.py`):
-    enqueue job `--repair-scramble` vào chung hàng đợi tải (dedup theo (url,chapters,repair)
-    → không đè job /tai; nhãn 🧩); repair in progress mỗi chương để log tiến (tránh
-    stall-watchdog kill oan khi quét chương sạch). Đổi `supervisor.py` ⇒ `/update` phải kèm
-    RESTART supervisor tay mới nạp lệnh mới.
+    memory `comix-scramble-s-flag`. **Bot `/repair <link…> [chương]`** (`supervisor.py`):
+    gom NHIỀU link → mỗi link 1 job `--repair-scramble` vào CHUNG hàng đợi tải (dedup theo
+    (url,chapters,repair) → không đè job /tai; nhãn 🧩), chạy TUẦN TỰ 1 worker (chung queue
+    với /tai). Báo per-job GIỐNG /tai: ack "🧩 Đã thêm N bộ" → "🧩 Bắt đầu SỬA TRÁO Ô" →
+    "✅ Sửa tráo ô xong" + bảng số liệu (`_read_summary` bắt cả khối "===== SỬA TRÁO Ô");
+    KHÔNG phải digest gộp như auto-check "chương mới". repair in progress mỗi chương để log
+    tiến (tránh stall-watchdog kill oan khi quét chương sạch). Còn ngỏ (cosmetic/nice-to-have,
+    chưa làm — user biết): tin HUỶ/TREO của job vá vẫn dùng chữ "tải"/gợi ý "/tai" (chức năng
+    đúng, chỉ sai câu chữ); chưa có "/repair all" (phải liệt kê từng link comix). Đổi
+    `supervisor.py` ⇒ `/update` phải kèm RESTART supervisor tay mới nạp lệnh mới.
   - `asura_downloader.py` — **giờ chỉ là shim** gọi `comic_downloader.main(default=asura)`
     → lệnh/shortcut cũ + gõ slug trần vẫn chạy như Asura như trước.
   - `Tai truyen.bat` — shortcut trong folder (không ra Desktop): **vòng lặp** hỏi link
