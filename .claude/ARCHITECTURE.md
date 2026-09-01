@@ -125,6 +125,29 @@ cách chạy thật + decode thử ảnh.
     `os._exit(2)` (chốt chặn cứng). `_launch` giờ NÉM `BrowserGone` khi lỗi (thay vì lỗi thô);
     `relaunch()` mid-session cũng gọi `_kill_profile_chrome()` trước khi mở lại. Lưới bao chót
     cho MỌI kiểu treo khác = stall-watchdog ở supervisor (xem `supervisor.py`).
+    **TRÁO Ô chống-scrape (bản Official) + giải-xáo (01/09/2026)**: payload trang có cờ
+    `s` — `s:1` là trang bị **cắt lưới ô rồi xáo vị trí** (đo thực: đúng MỖI TRANG THỨ 10
+    — 10,20,30…; xác minh 5 chương Farmer of Spirits). URL trả bytes XÁO cho mọi client
+    (KHÔNG có URL sạch riêng); reader hiển thị sạch bằng cách dùng chunk `secure-*.js`
+    (export `t` = hàm `vs`) tải ảnh rồi **giải-xáo VẼ LÊN `<canvas>` qua rAF** (trang thường
+    dùng `<img>`). `fetch_pages` nay trả `[{"url","s"}]`; trong `run()` trang thường tải HTTP
+    như cũ, trang `s:1` đi `ComixSession.descramble_pages()` — chạy `DESCRAMBLE_JS` bằng
+    `page.evaluate`: `import(secureUrl)` (dò động từ Performance API → bền khi build đổi hash),
+    gọi `vs(url).apply(canvas)` trên canvas ẩn tự tạo, chờ vẽ xong (poll pixel) rồi `toDataURL`
+    lấy bytes SẠCH (ảnh wowpic serve CORS mở → canvas KHÔNG taint, đọc lại được). KHÔNG tự
+    reverse permutation vì `secure.js` obfuscate nặng (control-flow flattening) — dễ gãy;
+    dùng chính thuật toán site. **Cần Chromium HEADFUL HIỂN THỊ** (rAF chỉ chạy khi cửa sổ
+    compositing — desktop server phải mở, không khóa màn hình; đúng ràng buộc "KHÔNG Session 0"
+    của comix). **Guard**: `comics_core.looks_scrambled()` (đo "năng lượng đường nối" tại biên
+    ô bằng PIL, ngưỡng 4.0 — sạch ~1-2 / xáo ~9-22; không numpy) coi trang `s:1` còn dấu xáo là
+    "CHƯA đúng" → không đánh `.done` → tự thử lại lần sau (giải-xáo hụt KHÔNG bao giờ bị nhận
+    nhầm là xong). **Sửa kho cũ**: `--repair-scramble` (chỉ comix) — dò offline từng chương
+    (bỏ NHANH chương không dính, không chạm mạng), chương còn ảnh xáo thì lấy payload bản ĐANG
+    có trên đĩa (khớp `chapterId` sidecar, hoặc đòi khớp số trang) rồi giải-xáo lại ĐÚNG trang
+    `s:1`, ghi đè tại chỗ + đóng lại `.done`; KHÔNG tải chương mới. Lý do phải có repair riêng:
+    chương xáo cũ đã mang `.done` (file webp hợp lệ, `is_known_broken` chỉ tra sổ URL-hỏng nên
+    không bắt được) → chạy `/tai` thường (kể cả `--recheck`) sẽ BỎ QUA/không tải lại. Xem
+    memory `comix-scramble-s-flag`.
   - `asura_downloader.py` — **giờ chỉ là shim** gọi `comic_downloader.main(default=asura)`
     → lệnh/shortcut cũ + gõ slug trần vẫn chạy như Asura như trước.
   - `Tai truyen.bat` — shortcut trong folder (không ra Desktop): **vòng lặp** hỏi link
@@ -138,6 +161,10 @@ cách chạy thật + decode thử ảnh.
   cờ `--fix` (cách ly `.bad`), `--recheck` (bỏ cache), `--workers N` (mặc định=số nhân,
   tối đa 8), **`--black`** (opt-in: thêm dò "trang một màu"; là quét SÂU — bỏ cache đọc,
   giải mã lại toàn bộ, chậm). MẶC ĐỊNH = tầng 2 (giải mã) + khuyết trang, **0 báo nhầm**.
+  **Dò TRÁO Ô (comix, 01/09/2026)**: ảnh giải mã OK vẫn có thể bị tráo ô — thêm
+  `looks_scrambled_bytes()` cho mỗi ảnh "ok"; trang dính vào mục "trang tráo ô" (KHÔNG
+  cache 'tốt' → vẫn báo tới khi sửa), console/HTML gợi ý chạy
+  `comic_downloader.py <url> --repair-scramble`. Chỉ BÁO, không tự cách ly (sửa qua repair).
   Xuất `.reader-meta/check-report.html` (thumbnail base64) + `.json`; cache
   `.reader-meta/check-cache.json` (mtime+size, ghi liên tục mỗi 1000 ảnh + ghi nguyên tử
   qua .tmp → Ctrl-C không mất tiến độ/không hỏng cache) → quét lại chỉ soi cái mới. Bỏ qua

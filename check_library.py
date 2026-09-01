@@ -43,7 +43,7 @@ from datetime import datetime
 from pathlib import Path
 
 from comics_core import (IMG_EXTS, META_DIR, Image, bad_marker, compact_ints,
-                         inspect_image_bytes, load_issues)
+                         inspect_image_bytes, load_issues, looks_scrambled_bytes)
 
 for _s in (sys.stdout, sys.stderr):
     try:
@@ -150,7 +150,8 @@ def collect(scan_root: Path, cache: dict, use_cache: bool):
             jobs.append((fidx, name, fp, key, st.st_mtime, st.st_size))
         folders.append({"folder": folder, "rel": rel_key(folder), "imgs": imgs,
                         "present": present, "quarantined": quarantined,
-                        "bad": [], "suspect": [], "unsupported": [], "salvaged": []})
+                        "bad": [], "suspect": [], "unsupported": [], "salvaged": [],
+                        "scrambled": []})
     return folders, jobs, total_imgs
 
 
@@ -169,6 +170,12 @@ def write_html(report: dict):
             pct = f"{x['intact'] * 100:.0f}%" if x.get("intact") else "phần lớn"
             parts.append(f"<p class='known'>◐ <b>{e(x['file'])}</b> — ảnh hỏng ở nguồn, "
                          f"đã cứu vớt (đọc được {e(pct)}). Giữ nguyên, không cách ly.</p>")
+        if r.get("scrambled"):
+            files = ", ".join(e(x["file"]) for x in r["scrambled"])
+            parts.append(f"<p class='bad'>🧩 Nghi TRÁO Ô (comix official chèn mỗi trang "
+                         f"thứ 10): <b>{files}</b> → chạy "
+                         f"<code>comic_downloader.py &lt;url&gt; --repair-scramble</code> "
+                         f"để tự giải-xáo lại.</p>")
         if r["quarantined"]:
             parts.append("<p class='bad'>⛔ Đang cách ly (chờ tải bù): "
                          + ", ".join(e(x) for x in r["quarantined"]) + "</p>")
@@ -191,7 +198,8 @@ def write_html(report: dict):
     summary = (f"Quét lúc {e(report['scanned_at'])} · phạm vi <code>{e(report['scope'])}</code> "
                f"· {'CÓ' if report['black'] else 'KHÔNG'} dò trang-một-màu<br>"
                f"{t['images']} ảnh · {t['bad']} hỏng · {t['gaps']} chương khuyết trang · "
-               f"{t['suspect']} trang một màu · {t['unsupported']} chưa kiểm được"
+               f"{t['suspect']} trang một màu · {t.get('scrambled', 0)} trang tráo ô · "
+               f"{t['unsupported']} chưa kiểm được"
                + (f" · đã cách ly {t['fixed']}" if t['fixed'] else "")
                + (f" · {t.get('salvaged', 0)} ảnh cứu vớt" if t.get('salvaged') else "")
                + (f" · {t.get('known_gaps', 0)} khuyết trang đã biết"
@@ -252,7 +260,7 @@ def main():
         if n is not None:
             broken_by_folder.setdefault(p.parent, set()).add(n)
     stats = {"images": 0, "bad": 0, "gaps": 0, "suspect": 0, "unsupported": 0,
-             "fixed": 0, "salvaged": 0, "known_gaps": 0}
+             "fixed": 0, "salvaged": 0, "known_gaps": 0, "scrambled": 0}
 
     folders, jobs, total_imgs = collect(scan_root, cache, use_cache_read)
     stats["images"] = total_imgs
@@ -266,9 +274,12 @@ def main():
         try:
             data = fp.read_bytes()
         except OSError as ex:
-            return (fidx, name, fp, key, mt, sz, "unreadable", str(ex), None)
+            return (fidx, name, fp, key, mt, sz, "unreadable", str(ex), None, False)
         v, d, u = inspect_image_bytes(data, want_uniform=args.black)
-        return (fidx, name, fp, key, mt, sz, v, d, u)
+        # ảnh giải mã OK vẫn có thể bị TRÁO Ô (comix official chèn mỗi trang thứ 10) —
+        # magic/decode không bắt được; dò 'năng lượng đường nối'. Xem comics_core.looks_scrambled.
+        sc = (v == "ok") and looks_scrambled_bytes(data)
+        return (fidx, name, fp, key, mt, sz, v, d, u, sc)
 
     start = time.time()
     done = last_flush = 0
@@ -276,7 +287,7 @@ def main():
         with ThreadPoolExecutor(max_workers=workers) as pool:
             futures = [pool.submit(work, j) for j in jobs]
             for fut in as_completed(futures):
-                fidx, name, fp, key, mt, sz, v, d, u = fut.result()
+                fidx, name, fp, key, mt, sz, v, d, u, sc = fut.result()
                 fe = folders[fidx]
                 if v in ("empty", "not_image", "corrupt", "unreadable") \
                         and str(fp.resolve()) in salvaged:
@@ -300,6 +311,10 @@ def main():
                 elif v == "unsupported":
                     fe["unsupported"].append({"file": name, "detail": d})
                     stats["unsupported"] += 1
+                elif sc and rel_key(fp) not in ignore:      # v == "ok" nhưng bị TRÁO Ô
+                    fe["scrambled"].append({"file": name, "thumb": thumb_data_uri(fp)})
+                    stats["scrambled"] += 1
+                    # KHÔNG cache 'tốt' -> vẫn báo tới khi sửa (comic_downloader --repair-scramble)
                 elif u and rel_key(fp) not in ignore:      # v == "ok", có cờ một-màu
                     fe["suspect"].append({"file": name, "label": u[0], "detail": u[1],
                                           "thumb": thumb_data_uri(fp)})
@@ -339,11 +354,12 @@ def main():
         if known_gaps:
             stats["known_gaps"] += len(known_gaps)
         if (fe["bad"] or fe["suspect"] or fe["unsupported"] or gaps or fe["quarantined"]
-                or fe["salvaged"] or known_gaps):
+                or fe["salvaged"] or known_gaps or fe["scrambled"]):
             results.append({"folder": fe["rel"], "images": len(fe["imgs"]), "gaps": gaps,
                             "known_gaps": known_gaps, "bad": fe["bad"],
                             "quarantined": fe["quarantined"], "suspect": fe["suspect"],
-                            "unsupported": fe["unsupported"], "salvaged": fe["salvaged"]})
+                            "unsupported": fe["unsupported"], "salvaged": fe["salvaged"],
+                            "scrambled": fe["scrambled"]})
 
     report = {"scanned_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
               "scope": rel_key(scan_root), "black": args.black, "totals": stats,
@@ -368,6 +384,8 @@ def main():
                 bits.append(f"{len(r['quarantined'])} đang cách ly")
             if r["suspect"]:
                 bits.append(f"{len(r['suspect'])} trang một màu")
+            if r.get("scrambled"):
+                bits.append(f"{len(r['scrambled'])} trang tráo ô")
             if r["unsupported"]:
                 bits.append(f"{len(r['unsupported'])} chưa kiểm được")
             if r.get("salvaged"):
@@ -383,6 +401,9 @@ def main():
     print("        (mở bằng trình duyệt để xem ảnh tận mắt)")
     if stats["bad"] or stats["gaps"]:
         print("→ Sau khi cách ly, chạy lại lệnh tải bộ đó để tự tải bù các trang thiếu.")
+    if stats.get("scrambled"):
+        print(f"→ {stats['scrambled']} trang TRÁO Ô (comix): chạy "
+              "'comic_downloader.py <url> --repair-scramble' để tự giải-xáo lại.")
 
 
 if __name__ == "__main__":

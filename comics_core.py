@@ -249,6 +249,71 @@ def is_known_broken(dest: Path) -> bool:
     return str(Path(dest).resolve()) in load_issues().get("source_broken", {})
 
 
+SCRAMBLE_THRESH = 4.0   # ranh giới giữa vùng sạch (~1-2) và vùng tráo-ô (~9-22); xem ghi chú dưới
+
+
+def _scramble_ratio(gray) -> float:
+    """'Năng lượng đường nối' lớn nhất tại biên ô, chuẩn hóa theo nền, cho ảnh xám.
+
+    comix.to (bản Official) chèn TRÁO Ô ở mỗi trang thứ 10: ảnh bị cắt thành lưới ô
+    rồi xáo vị trí -> tại các bội số của bề rộng/cao ô xuất hiện đường nối tương phản
+    mạnh. Đo trung bình |chênh lệch| giữa cột (và hàng) kề nhau TẠI các biên ô, chia
+    cho nền chung. Ảnh sạch ~1-2; ảnh tráo ~9-22 (đo thực trên 9 trang xáo + 5 trang
+    sạch của Farmer of Spirits) -> ngưỡng 4.0 tách chắc, biên an toàn rộng cả 2 phía.
+    Chỉ dùng PIL (khỏi thêm numpy); các phép crop/Stat chạy ở lớp C nên nhanh."""
+    from PIL import ImageChops, ImageStat
+    w, h = gray.size
+    best = 0.0
+    # seam DỌC: chênh lệch giữa 2 cột kề nhau, đo tại biên ô x = k*(w/n)
+    dv = ImageChops.difference(gray, ImageChops.offset(gray, -1, 0))
+    base_v = ImageStat.Stat(dv).mean[0] or 0.001
+    for n in (4, 5, 6, 8, 10):
+        seams = []
+        for k in range(1, n):
+            x = int(round(k * w / n)) - 1
+            if 1 <= x < w - 1:
+                seams.append(ImageStat.Stat(dv.crop((x, 0, x + 1, h))).mean[0])
+        if seams:
+            best = max(best, (sum(seams) / len(seams)) / base_v)
+    # seam NGANG: chênh lệch giữa 2 hàng kề nhau, đo tại biên ô y = k*(h/n)
+    dh = ImageChops.difference(gray, ImageChops.offset(gray, 0, -1))
+    base_h = ImageStat.Stat(dh).mean[0] or 0.001
+    for n in (4, 5, 6, 8, 10):
+        seams = []
+        for k in range(1, n):
+            y = int(round(k * h / n)) - 1
+            if 1 <= y < h - 1:
+                seams.append(ImageStat.Stat(dh.crop((0, y, w, y + 1))).mean[0])
+        if seams:
+            best = max(best, (sum(seams) / len(seams)) / base_h)
+    return best
+
+
+def looks_scrambled_bytes(data: bytes, thresh: float = SCRAMBLE_THRESH) -> bool:
+    """Bytes ảnh này có dấu hiệu bị tráo ô (comix) không? Lỗi/thiếu Pillow -> False
+    (tuyệt đối KHÔNG misflag ảnh thường thành hỏng)."""
+    if Image is None:
+        return False
+    try:
+        with Image.open(io.BytesIO(data)) as im:
+            gray = im.convert("L")
+        return _scramble_ratio(gray) >= thresh
+    except Exception:
+        return False
+
+
+def looks_scrambled(path, thresh: float = SCRAMBLE_THRESH) -> bool:
+    """File ảnh này có dấu hiệu bị tráo ô (comix) không? (xem [[comix-scramble-s-flag]])."""
+    if Image is None:
+        return False
+    try:
+        with Image.open(path) as im:
+            gray = im.convert("L")
+        return _scramble_ratio(gray) >= thresh
+    except Exception:
+        return False
+
+
 def intact_fraction(data: bytes, who=None):
     """Ảnh cụt còn đọc được bao nhiêu? Trả (tỉ lệ 0..1, rộng, cao) hoặc None nếu chịu.
 

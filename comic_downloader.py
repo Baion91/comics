@@ -127,6 +127,10 @@ def main(default_provider=None):
                     help="Tải HÀNG LOẠT: mỗi dòng trong FILE là 1 link, chạy lần lượt")
     ap.add_argument("--recheck", action="store_true",
                     help="Quét lại cả chương đã đánh dấu .done (mặc định bỏ qua cho nhanh)")
+    ap.add_argument("--repair-scramble", dest="repair_scramble", action="store_true",
+                    help="comix.to: quét thư viện ĐÃ tải, tự tìm & giải-xáo lại các trang "
+                         "TRÁO Ô (bản Official chèn mỗi trang thứ 10). KHÔNG tải chương "
+                         "mới; chương không dính bỏ qua nhanh (không chạm mạng)")
     ap.add_argument("--out", default="downloads", help="Thư mục lưu (mặc định: downloads)")
     ap.add_argument("--from", dest="c_from", type=float, help="Từ chương số ...")
     ap.add_argument("--to", dest="c_to", type=float, help="Đến chương số ...")

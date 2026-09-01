@@ -57,6 +57,7 @@ Playwright là DEP TÙY CHỌN — chỉ import khi tải comix; thiếu thì in
     pip install playwright && python -m playwright install chromium
 """
 
+import base64
 import json
 import os
 import random
@@ -121,6 +122,70 @@ HOOK_JS = """
     return o;
   };
 })();
+"""
+
+# Giải-xáo trang TRÁO Ô (cờ s:1) bằng CHÍNH thuật toán của site: chunk secure-*.js
+# xuất hàm `vs` (giải mã payload dùng chung), gọi vs(url) trả object có .apply(canvas)
+# — nó tải ảnh xáo rồi vẽ ĐÃ SẮP LẠI lên canvas (qua rAF). Ta gọi trực tiếp trên canvas
+# ẩn tự tạo rồi toDataURL lấy bytes sạch (ảnh wowpic serve CORS mở nên canvas KHÔNG bị
+# taint, đọc lại được). KHÔNG tự reverse permutation: secure.js obfuscate nặng, dễ gãy.
+# Chạy được là nhờ Chromium HEADFUL hiển thị (rAF fires); Session-0/ẩn sẽ không vẽ.
+# Ưu tiên export 't'; site đổi tên -> thử mọi hàm export tới khi ra canvas có nội dung.
+DESCRAMBLE_JS = r"""
+async ({items, q, timeoutMs}) => {
+  const sleep = ms => new Promise(r => setTimeout(r, ms));
+  let secUrl = null;
+  for (let t = 0; t < 30 && !secUrl; t++) {
+    secUrl = performance.getEntriesByType('resource').map(r => r.name)
+      .find(n => /\/secure-[^\/]*\.js(\?|$)/.test(n));
+    if (!secUrl) await sleep(200);
+  }
+  if (!secUrl) return {__error: 'secure.js not found'};
+  let mod;
+  try { mod = await import(secUrl); } catch (e) { return {__error: 'import: ' + e}; }
+  const fns = (typeof mod.t === 'function') ? [mod.t]
+              : Object.values(mod).filter(v => typeof v === 'function');
+  const out = {};
+  for (const it of items) {
+    let data = null;
+    for (const fn of fns) {
+      let cvs = null;
+      try {
+        const obj = await Promise.race([
+          fn(it.url, new AbortController().signal),
+          new Promise((_, rej) => setTimeout(() => rej(new Error('vs timeout')), timeoutMs)),
+        ]);
+        if (!obj || typeof obj.apply !== 'function') continue;
+        cvs = document.createElement('canvas');
+        cvs.style.cssText = 'position:fixed;left:-99999px;top:0;';
+        document.body.appendChild(cvs);
+        obj.apply(cvs);                 // vẽ (qua rAF) — gọi ĐÚNG 1 lần (gọi lại -> 'detached')
+        const ctx = cvs.getContext('2d');
+        let drawn = false;
+        for (let t = 0; t < Math.ceil(timeoutMs / 100) && !drawn; t++) {
+          if (cvs.width > 0 && cvs.height > 0) {
+            let hit = 0, y = cvs.height >> 1;
+            for (let x = 20; x < cvs.width - 1; x += Math.max(1, cvs.width / 6 | 0)) {
+              if (ctx.getImageData(x, y, 1, 1).data[3] > 0 && ++hit >= 2) { drawn = true; break; }
+            }
+          }
+          if (!drawn) await sleep(100);
+        }
+        if (!drawn) continue;
+        try { data = cvs.toDataURL('image/webp', q); } catch (e) {}
+        if (!data || data.length < 300) { try { data = cvs.toDataURL('image/png'); } catch (e) {} }
+        if (data && data.length > 300) break;
+        data = null;
+      } catch (e) {
+        // thử hàm khác / bỏ trang này
+      } finally {
+        if (cvs && cvs.parentNode) cvs.parentNode.removeChild(cvs);
+      }
+    }
+    out[String(it.idx)] = data;
+  }
+  return out;
+};
 """
 
 
@@ -536,7 +601,10 @@ class ComixSession:
         """URL ảnh của 1 bản upload (điều hướng tới trang đọc, hook bắt payload).
 
         Trả:
-          [url, ...] - lấy được (rỗng nếu payload có nhưng 0 trang = khóa/premium thật)
+          [{"url":.., "s":bool}, ...] - lấy được (rỗng nếu payload có nhưng 0 trang =
+                       khóa/premium thật). `s`=True là trang bị TRÁO Ô (comix official
+                       chèn mỗi trang thứ 10): url trả bytes xáo, phải giải-xáo qua canvas
+                       của site — xem descramble_pages + [[comix-scramble-s-flag]].
           None       - KHÔNG bắt được payload sau `tries` lần (mạng/quảng cáo chèn) ->
                        người gọi rơi xuống bản khác / đánh dấu 'để sau', KHÔNG raise.
         """
@@ -570,7 +638,44 @@ class ComixSession:
                 continue
             if not u.startswith("http"):
                 u = base + "/" + u.lstrip("/")
-            out.append(u)
+            out.append({"url": u, "s": it.get("s") == 1})
+        return out
+
+    def descramble_pages(self, url_path, pairs, q=0.92, timeout_ms=8000):
+        """Giải-xáo các trang TRÁO Ô (cờ s:1) bằng chính thuật toán của site, trả
+        {idx: bytes webp/png sạch} (bỏ qua trang giải hụt -> người gọi coi là thiếu,
+        chạy lại bù). `pairs` = [(idx, url), ...]. Xem DESCRAMBLE_JS + [[comix-scramble-s-flag]].
+
+        Cần đang ở TRANG ĐỌC comix (import() same-origin + chunk secure.js đã nạp);
+        thường đúng vì fetch_pages vừa điều hướng tới đây. Browser chết -> BrowserGone
+        (để _resilient dựng lại rồi thử lại: lần sau page.url = about:blank nên tự goto)."""
+        if not pairs:
+            return {}
+        try:
+            cur = self.page.url or ""
+        except Exception:
+            cur = ""
+        if not cur.startswith(BASE + url_path):
+            self._goto(BASE + url_path)
+            time.sleep(1.5)                   # chờ SPA nạp chunk reader (secure.js)
+        items = [{"idx": i, "url": u} for i, u in pairs]
+        try:
+            res = self.page.evaluate(
+                DESCRAMBLE_JS, {"items": items, "q": q, "timeoutMs": timeout_ms})
+        except Exception as e:
+            if not self.alive():
+                raise BrowserGone(f"Chromium đã đóng khi giải-xáo: {e}") from e
+            raise
+        out = {}
+        if isinstance(res, dict) and not res.get("__error"):
+            for k, durl in res.items():
+                if durl and "," in durl:
+                    try:
+                        out[int(k)] = base64.b64decode(durl.split(",", 1)[1])
+                    except Exception:
+                        pass
+        elif isinstance(res, dict) and res.get("__error"):
+            print(f"\n    ! Giải-xáo lỗi: {res['__error']}", file=sys.stderr, flush=True)
         return out
 
 
@@ -967,6 +1072,75 @@ def _resilient(cs, call):
             cs.relaunch()
 
 
+def _repair_scramble_chapter(cs, folder, cands, side, args):
+    """Vá 1 chương ĐÃ tải bị TRÁO Ô (mỗi trang thứ 10 của bản Official). Trả (status,
+    n_fixed). status:
+      'noimg'  - folder trống -> để lượt tải thường lo (repair KHÔNG tải chương mới).
+      'clean'  - không dò thấy trang xáo -> bỏ NHANH, KHÔNG chạm mạng (đã sửa/hoặc sạch).
+      'novers' - có trang xáo nhưng không lấy được URL bản khớp (bản gỡ / lệch số trang).
+      'fixed'  - đã giải-xáo hết trang s:1 nghi ngờ, đóng lại .done.
+      'partial'- giải được một phần, còn sót (chạy lại để bù).
+    Xem [[comix-scramble-s-flag]]."""
+    if not _folder_has_images(folder):
+        return "noimg", 0
+    present = {}
+    for p in folder.iterdir():
+        if (p.is_file() and p.suffix.lower() in core.IMG_EXTS
+                and p.stem.lower() != "cover"):
+            m = re.match(r"(\d+)", p.stem)
+            if m:
+                present[int(m.group(1))] = p
+    if not present:
+        return "noimg", 0
+    # Dò offline: bội-10 trước (đúng bẫy comix -> chương hỏng dừng sớm), rồi phần còn lại.
+    order = sorted(present, key=lambda i: (i % 10 != 0, i))
+    if not any(core.looks_scrambled(present[i]) for i in order):
+        return "clean", 0
+    # Lấy URL: ưu tiên bản TRÙNG id sidecar (đúng thứ tự trang); else bản official; else best.
+    ver = None
+    if side and side.get("chapterId"):
+        ver = next((v for v in cands if v["id"] == side.get("chapterId")), None)
+    id_matched = ver is not None
+    if ver is None:
+        ver = next((v for v in cands if v.get("isOfficial")), None) \
+            or (cands[0] if cands else None)
+    if ver is None:
+        return "novers", 0
+    page_items = _resilient(cs, lambda: cs.fetch_pages(ver["url"], ver["id"]))
+    if not page_items:
+        return "novers", 0
+    # Không trùng id -> đòi khớp số trang để tránh lệch chỉ số (ghi đè nhầm trang).
+    if not id_matched and len(page_items) != len(present):
+        return "novers", 0
+    scr_pairs = [(i, it["url"]) for i, it in enumerate(page_items, 1)
+                 if it.get("s") and (i not in present or core.looks_scrambled(present[i]))]
+    if not scr_pairs:
+        return "clean", 0
+    got = _resilient(cs, lambda: cs.descramble_pages(ver["url"], scr_pairs))
+    nfix = 0
+    for i, _u in scr_pairs:
+        data = got.get(i)
+        if not data:
+            continue
+        old = _page_file(folder, i)
+        if old is not None and old.suffix.lower() != ".webp":
+            try:
+                old.unlink()
+            except OSError:
+                pass
+        (folder / f"{i:03d}.webp").write_bytes(data)
+        p = _fix_ext(folder / f"{i:03d}.webp")
+        _recompress_webp(p, getattr(args, "comix_q", RECOMPRESS_Q))
+        nfix += 1
+    still = [i for i, it in enumerate(page_items, 1)
+             if it.get("s") and _page_file(folder, i) is not None
+             and core.looks_scrambled(_page_file(folder, i))]
+    if still:
+        return "partial", nfix
+    _mark_done(folder)
+    return "fixed", nfix
+
+
 def run(args):
     try:
         import playwright  # noqa: F401 — dep tùy chọn, chỉ cần cho comix
@@ -1041,10 +1215,11 @@ def run(args):
             # đĩa -> nhắn Telegram X/Y + cần nâng cấp/tải NGAY, TRƯỚC khi tải ảnh. comix không
             # có peek rẻ nên báo cáo này phải chờ Chromium mở xong (không tức thì như site
             # thường). Chỉ ĐỌC ĐĨA (không thêm request). Lỗi ở đây KHÔNG được cản việc tải.
-            try:
-                _report_comix_plan(title, nums, by_num, out_root, args)
-            except Exception as e:
-                print(f"  (bỏ qua báo cáo sớm: {e})", file=sys.stderr, flush=True)
+            if not getattr(args, "repair_scramble", False):
+                try:
+                    _report_comix_plan(title, nums, by_num, out_root, args)
+                except Exception as e:
+                    print(f"  (bỏ qua báo cáo sớm: {e})", file=sys.stderr, flush=True)
 
             total = len(nums)
             active = 0
@@ -1052,6 +1227,9 @@ def run(args):
             incomplete, source_broken, unfetched = [], [], []
             n_full = n_skipped = n_locked = n_upgraded = 0
             img_ok = img_missing = img_broken = 0
+            repair_mode = getattr(args, "repair_scramble", False)
+            n_repaired = img_repaired = 0
+            repaired_partial, repaired_novers = [], []
 
             for idx, num in enumerate(nums, 1):
                 label = f"Chapter {core.fmt_num(num)}"
@@ -1060,6 +1238,41 @@ def run(args):
                 cands = candidates_for(by_num[num])
                 best = cands[0]
                 side = read_sidecar(folder)
+
+                # CHẾ ĐỘ SỬA TRÁO Ô (--repair-scramble): chỉ vá chương ĐÃ tải bị xáo,
+                # KHÔNG tải chương mới (dùng lệnh tải thường cho việc đó). Dò offline
+                # trước -> chương không dính thì bỏ nhanh, khỏi chạm mạng.
+                if repair_mode:
+                    status, nfix = _repair_scramble_chapter(cs, folder, cands, side, args)
+                    if status == "fixed":
+                        n_repaired += 1
+                        img_repaired += nfix
+                        cs.mark_progress()
+                        print(f"{prefix} — đã giải-xáo {nfix} trang tráo ô")
+                        if args.cbz:
+                            core.make_cbz(folder, skip_existing=False)
+                    elif status == "partial":
+                        repaired_partial.append(label)
+                        img_repaired += nfix
+                        cs.mark_progress()
+                        print(f"{prefix} — giải-xáo {nfix} trang, CÒN sót (chạy lại để bù)")
+                    elif status == "novers":
+                        repaired_novers.append(label)
+                        print(f"{prefix} — có trang xáo nhưng không lấy được URL bản "
+                              "khớp, bỏ qua")
+                    # Chỉ nghỉ khi có CHẠM MẠNG (fixed/partial/novers); 'clean'/'noimg'
+                    # bỏ nhanh (thuần đọc đĩa) nên khỏi nghỉ -> quét cả bộ rất nhanh.
+                    if status in ("fixed", "partial", "novers"):
+                        active += 1
+                        if active % 10 == 0:
+                            rest = random.uniform(60, 90)
+                            print(f"  (đang nghỉ {rest:.0f}s cho giống nhịp người đọc — "
+                                  "KHÔNG phải treo...)", flush=True)
+                            time.sleep(rest)
+                        else:
+                            time.sleep(random.uniform(0.7, 1.3) * args.delay)
+                    continue
+
                 done = (folder / ".done").exists() and not getattr(args, "recheck", False)
                 # Folder đã có ảnh nhưng KHÔNG mang sidecar comix = bản tải từ site KHÁC
                 # (Raven, Asura...) hoặc bản comix rất cũ. Coi là "bản ngoài/scan" để luật
@@ -1105,7 +1318,7 @@ def run(args):
                 # 4) Thử lần lượt ứng viên tới khi có ảnh. Chỉ ĐỘNG vào đĩa (dọn ảnh cũ +
                 # ghi sidecar) khi bản này thực sự lấy được ảnh — bản fetch hụt/0-trang
                 # KHÔNG được xoá nội dung đang có (tránh phá bản tải dở khi chỉ chập mạng).
-                chosen, urls, fetch_failed = None, [], False
+                chosen, page_items, fetch_failed = None, [], False
                 for ver in pool:
                     res = _resilient(cs, lambda v=ver: cs.fetch_pages(v["url"], v["id"]))
                     if res is None:              # bắt hụt (mạng/quảng cáo) -> thử bản khác
@@ -1122,7 +1335,7 @@ def run(args):
                             or (d_side is None and _folder_has_images(dest)):
                         _clear_images(dest)
                     write_sidecar(dest, ver)
-                    chosen, urls = ver, res
+                    chosen, page_items = ver, res
                     break
                 if not chosen:
                     # Không dừng cả bộ: fetch hụt -> 'để sau' (chạy lại bù); 0-trang thật -> khóa.
@@ -1151,24 +1364,39 @@ def run(args):
                 fail_streak = 0
 
                 tag = "Official" if chosen.get("isOfficial") else _group_name(chosen)
+                urls = [it["url"] for it in page_items]
+                # Trang TRÁO Ô (cờ s:1) tải thô sẽ ra ảnh xáo -> phải giải-xáo qua canvas
+                # của site; trang thường tải HTTP như cũ. Xem [[comix-scramble-s-flag]].
+                scr = {i for i, it in enumerate(page_items, 1) if it.get("s")}
                 pages = list(enumerate(urls, 1))
-                jobs = [(i, u) for i, u in pages if _page_file(dest, i) is None]
-                have = len(pages) - len(jobs)
+
+                def _page_ok(i, _scr=scr, _dest=dest):
+                    """Trang i đã ĐÚNG trên đĩa chưa? (trang tráo ô còn dấu xáo = CHƯA)."""
+                    f = _page_file(_dest, i)
+                    if f is None:
+                        return False
+                    if i in _scr and core.looks_scrambled(f):
+                        return False
+                    return True
+
+                http_jobs = [(i, u) for i, u in pages
+                             if i not in scr and _page_file(dest, i) is None]
+                scr_jobs = [(i, u) for i, u in pages if i in scr and not _page_ok(i)]
+                have = len([i for i, _ in pages if _page_ok(i)])
                 ok = done_ct = have
                 print(f"\r{prefix} [{tag}] — {done_ct}/{len(urls)} ảnh, đang tải...   ",
                       end="", flush=True)
-                if jobs:
+                if http_jobs:
                     # Vé mới nhất từ browser TRƯỚC khi tải (main thread) — bắt kịp ca
                     # cf_clearance hết hạn qua đêm / vừa xoay giữa phiên.
                     img_client.refresh_identity()
                     forbidden_retry = 0
                     while True:
-                        remaining = [(i, u) for i, u in jobs
+                        remaining = [(i, u) for i, u in http_jobs
                                      if _page_file(dest, i) is None]
                         if not remaining:
                             break
-                        done_ct = len(urls) - len(
-                            [i for i, _ in pages if _page_file(dest, i) is None])
+                        done_ct = have + (len(http_jobs) - len(remaining))
                         try:
                             with ThreadPoolExecutor(max_workers=args.workers) as pool_ex:
                                 futures = [pool_ex.submit(core.download_image, u,
@@ -1199,18 +1427,37 @@ def run(args):
                             print(f"\n{prefix} — 403 (vé Cloudflare?), đã làm mới vé từ "
                                   "browser, thử lại phần còn thiếu...", flush=True)
                             time.sleep(2.0)
+                if scr_jobs:
+                    # Trang tráo ô: giải-xáo bằng canvas của site rồi ghi bytes sạch.
+                    # Browser chết -> _resilient dựng lại & thử lại (tự goto lại trang đọc).
+                    print(f"\r{prefix} [{tag}] — giải-xáo {len(scr_jobs)} trang tráo ô "
+                          "(canvas site)...          ", end="", flush=True)
+                    got = _resilient(
+                        cs, lambda: cs.descramble_pages(chosen["url"], scr_jobs))
+                    for i, _u in scr_jobs:
+                        data = got.get(i)
+                        if not data:
+                            continue
+                        old = _page_file(dest, i)
+                        if old is not None and old.suffix.lower() != ".webp":
+                            try:
+                                old.unlink()
+                            except OSError:
+                                pass
+                        (dest / f"{i:03d}.webp").write_bytes(data)
+                if http_jobs or scr_jobs:
                     # URL không có đuôi -> sửa đuôi theo định dạng thật, rồi RE-NÉN webp
-                    # về q85 (comix nén nhẹ tay; xem RECOMPRESS_Q). Chỉ chạm ảnh MỚI tải
-                    # (trong jobs) -> chương đã có sẵn không bị đụng lại khi chạy tiếp.
-                    for i, _ in jobs:
+                    # về q85 (comix nén nhẹ tay; xem RECOMPRESS_Q). Chỉ chạm ảnh MỚI tải/
+                    # giải-xáo -> chương đã có sẵn không bị đụng lại khi chạy tiếp.
+                    for i, _ in http_jobs + scr_jobs:
                         p = dest / f"{i:03d}.webp"
                         if p.exists() and p.stat().st_size > 0:
                             p = _fix_ext(p)
                             _recompress_webp(p, getattr(args, "comix_q", RECOMPRESS_Q))
                 # ok/done chuẩn theo ĐĨA (retry có thể làm lệch bộ đếm cộng dồn)
-                ok = len([i for i, _ in pages if _page_file(dest, i) is not None])
+                ok = len([i for i, _ in pages if _page_ok(i)])
 
-                missing = [i for i, _ in pages if _page_file(dest, i) is None]
+                missing = [i for i, _ in pages if not _page_ok(i)]
                 broken = [i for i in missing
                           if core.is_known_broken(dest / f"{i:03d}.webp")]
                 retryable = [i for i in missing if i not in broken]
@@ -1296,6 +1543,23 @@ def run(args):
         print("Ảnh đã tải KHÔNG mất — chạy lại đúng lệnh này để tải tiếp chỗ dở "
               "(chương đã xong tự bỏ qua).", file=sys.stderr)
         sys.exit(2)
+
+    # ---- Tổng kết chế độ SỬA TRÁO Ô ----
+    if repair_mode:
+        print(f"\n===== SỬA TRÁO Ô: {title} — quét {total} chương =====")
+        print(f"   Đã sửa: {n_repaired} chương ({img_repaired} trang giải-xáo)")
+        if repaired_partial:
+            print(f"   Còn sót (chạy lại để bù): {len(repaired_partial)} — "
+                  + ", ".join(repaired_partial))
+        if repaired_novers:
+            print(f"   Không lấy được URL bản khớp: {len(repaired_novers)} — "
+                  + ", ".join(repaired_novers))
+        if not (n_repaired or repaired_partial or repaired_novers):
+            print("   ✓ Không chương nào còn ảnh tráo ô.")
+        else:
+            print("-> Chương 'còn sót' chạy lại '--repair-scramble' để bù nốt.")
+        print("\nHoàn tất.")
+        return
 
     # ---- Tổng kết cả bộ (format khớp engine chung) ----
     bits = [f"Đủ ảnh: {n_full}"]
