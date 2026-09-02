@@ -219,8 +219,10 @@ HELP_TEXT = (
     "/whoami — xem chat_id của bạn\n"
     "/help — danh sách lệnh\n\n"
     "Admin:\n"
-    "/tai <link> [chương] — tải truyện; thêm dải chương để chỉ tải phần đó\n"
+    "/tai <link> [chương] [nhóm] — tải truyện; thêm dải chương để chỉ tải phần đó\n"
     "     vd: /tai <link> 1-20  hoặc  /tai <link> 5,7,20-25  (bỏ trống = cả truyện)\n"
+    "     comix: thêm tên nhóm để GHIM đúng nguồn (vd /tai <link> 5 Hivetoon);\n"
+    "     chương đã ghim không bị thay bằng Official; bỏ ghim: /tai <link> 5 auto\n"
     "/repair <link comix> [chương] — vá trang bị TRÁO Ô (bản Official comix.to)\n"
     "     vd: /repair <link>  (cả bộ)  hoặc  /repair <link> 1  (thử 1 chương trước)\n"
     "/trangthai — xem truyện đang tải + hàng chờ\n"
@@ -513,7 +515,7 @@ class Supervisor:
         cmds = [
             {"command": "link", "description": "Lấy link đọc hiện tại"},
             {"command": "whoami", "description": "Xem chat_id của bạn"},
-            {"command": "tai", "description": "Tải truyện: /tai <link> [chương vd 1-20] (admin)"},
+            {"command": "tai", "description": "Tải truyện: /tai <link> [chương vd 1-20] [nhóm comix] (admin)"},
             {"command": "repair", "description": "Vá trang tráo ô comix: /repair <link> [chương] (admin)"},
             {"command": "trangthai", "description": "Xem tải đang chạy + hàng chờ (admin)"},
             {"command": "stop", "description": "Dừng tải + xoá hàng chờ của bạn (admin)"},
@@ -825,10 +827,14 @@ class Supervisor:
         if isinstance(raw, list):
             for j in raw:
                 if isinstance(j, dict) and j.get("url"):
+                    # Giữ ĐỦ trường quyết định lệnh (chapters/repair/group): trước đây
+                    # rơi cờ `repair` -> job /repair dở qua restart hồi sinh thành job tải.
                     out.append({"url": str(j["url"]), "cid": j.get("cid"),
                                 "state": "pending",
                                 "resumed": j.get("state") == "running",
-                                "chapters": j.get("chapters")})
+                                "chapters": j.get("chapters"),
+                                "repair": bool(j.get("repair")),
+                                "group": j.get("group")})
         return out
 
     def _kill_stray_downloaders(self):
@@ -867,26 +873,27 @@ class Supervisor:
                 self._save_jobs_locked()
             log(f"Nạp lại {len(loaded)} truyện trong hàng đợi từ phiên trước -> tải tiếp.")
 
-    def _enqueue_jobs(self, pairs, repair=False):
+    def _enqueue_jobs(self, pairs, repair=False, group=None):
         """Thêm [(url, cid[, chapters]), ...] vào hàng đợi tải. chapters = None -> tải cả
         truyện; hoặc chuỗi chọn chương '5,7,20-25' (như --chapters). repair=True -> job
         chạy comic_downloader `--repair-scramble` (vá trang tráo ô, KHÔNG tải chương mới).
-        Chống trùng theo (url, chapters, repair) nên job tải và job vá cùng truyện KHÔNG
-        đè nhau. Trả (added, dup). Dùng chung cho /tai, /repair và auto-check chương mới."""
+        group = tên nhóm GHIM cho comix (`--group`; 'auto' = bỏ ghim), None = luật mặc định.
+        Chống trùng theo (url, chapters, repair, group) nên job tải/vá/ghim cùng truyện
+        KHÔNG đè nhau. Trả (added, dup). Dùng chung cho /tai, /repair và auto-check."""
         added, dup = [], 0
         with self._dlq_lock:
-            have = {(j["url"], j.get("chapters"), bool(j.get("repair")))
+            have = {(j["url"], j.get("chapters"), bool(j.get("repair")), j.get("group"))
                     for j in self._jobs}
             for pair in pairs:
                 url, cid = pair[0], pair[1]
                 chapters = pair[2] if len(pair) > 2 else None
-                key = (url, chapters, repair)
+                key = (url, chapters, repair, group)
                 if key in have:
                     dup += 1
                 else:
                     self._jobs.append({"url": url, "cid": cid, "state": "pending",
                                        "resumed": False, "chapters": chapters,
-                                       "repair": repair})
+                                       "repair": repair, "group": group})
                     have.add(key)
                     added.append(url)
             if added:
@@ -901,31 +908,39 @@ class Supervisor:
             return
         words = raw.split()[1:]
         urls = [w for w in words if w.startswith("http")]
-        # Phần còn lại (không phải link) = chọn chương, vd "1-20" hoặc "5,7,20-25".
-        # Gộp mọi mẩu rồi bỏ khoảng trắng + gộp dấu phẩy thừa -> chịu được cả
-        # "5,7,20-25", "5, 7, 20-25" lẫn "5 7 20-25".
-        spec_raw = ",".join(w for w in words if not w.startswith("http"))
+        # Phần còn lại (không phải link): mẩu SỐ/phẩy/gạch = chọn chương ("1-20",
+        # "5,7,20-25", "5, 7, 20-25", "5 7 20-25"); mẩu CHỮ = tên nhóm GHIM cho comix
+        # (nhiều mẩu nối bằng dấu cách -> "Yen Press"; 'auto' = bỏ ghim). Tên nhóm
+        # không bao giờ thuần số nên 2 loại không lẫn nhau.
+        rest = [w for w in words if not w.startswith("http")]
+        spec_raw = ",".join(w for w in rest if re.fullmatch(r"[0-9.,\-]+", w))
         chapters = re.sub(r",+", ",", spec_raw.replace(" ", "")).strip(",") or None
+        group = " ".join(w for w in rest if not re.fullmatch(r"[0-9.,\-]+", w)) or None
         if not urls:
             tg_api(token, "sendMessage", {"chat_id": cid,
-                "text": "Gửi: /tai <link truyện> [chương] [link2 ...]\n"
+                "text": "Gửi: /tai <link truyện> [chương] [nhóm] [link2 ...]\n"
                         "Ví dụ:\n"
                         "  /tai https://... — tải cả truyện\n"
                         "  /tai https://... 1-20 — chỉ chương 1→20\n"
-                        "  /tai https://... 5,7,20-25 — chương lẻ + dải"})
+                        "  /tai https://... 5,7,20-25 — chương lẻ + dải\n"
+                        "  /tai https://comix.to/... 5 Hivetoon — GHIM nhóm (comix)\n"
+                        "  /tai https://comix.to/... 5 auto — bỏ ghim, về mặc định"})
             return
-        if chapters and not re.fullmatch(r"[0-9.,\-]+", chapters):
+        if group and not any("comix.to" in u for u in urls):
             tg_api(token, "sendMessage", {"chat_id": cid,
-                "text": f"⚠ Chọn chương không hợp lệ: “{chapters}”.\n"
-                        "Chỉ dùng số, dấu phẩy, gạch nối — vd 1-20 hoặc 5,7,20-25."})
+                "text": f"⚠ Ghim nhóm “{group}” chỉ dùng cho link comix.to.\n"
+                        "Site khác không có nhiều bản/chương — bỏ tên nhóm đi rồi gửi lại."})
             return
-        added, dup = self._enqueue_jobs([(u, cid, chapters) for u in urls])
+        added, dup = self._enqueue_jobs([(u, cid, chapters) for u in urls], group=group)
         parts = []
         scope = f"chương {chapters}" if chapters else "cả truyện"
+        if group:
+            scope += (", bỏ ghim nhóm" if group.lower() == "auto"
+                      else f", ghim nhóm [{group}]")
         if added:
             parts.append(f"📥 Đã thêm {len(added)} truyện vào hàng đợi ({scope}).")
         if dup:
-            parts.append(f"⏭ {dup} truyện đã có trong hàng đợi cùng dải chương (bỏ qua).")
+            parts.append(f"⏭ {dup} truyện đã có trong hàng đợi cùng dải chương/nhóm (bỏ qua).")
         parts.append("Gõ /trangthai để xem đang tải gì và còn chờ mấy truyện.")
         tg_api(token, "sendMessage", {"chat_id": cid, "text": "\n".join(parts),
             "disable_web_page_preview": "true"})
@@ -977,6 +992,8 @@ class Supervisor:
         lbl = cls._slug(job["url"])
         if job.get("chapters"):
             lbl = f"{lbl} (ch {job['chapters']})"
+        if job.get("group"):
+            lbl = f"{lbl} [{job['group']}]"  # ghim nhóm comix ('auto' = bỏ ghim)
         if job.get("repair"):
             lbl = "🧩 " + lbl                # job SỬA TRÁO Ô
         return lbl
@@ -1180,6 +1197,10 @@ class Supervisor:
             # thì im để khỏi lặp tin mỗi vòng.
             if token and cid is not None and job.get("net_retries", 0) == 0:
                 scope = f"\n(chỉ chương {job['chapters']})" if job.get("chapters") else ""
+                if job.get("group"):
+                    scope += ("\n(bỏ ghim nhóm — về luật mặc định)"
+                              if str(job["group"]).lower() == "auto"
+                              else f"\n(ghim nhóm [{job['group']}])")
                 if job.get("repair"):
                     head = "🧩 Bắt đầu SỬA TRÁO Ô:"
                 elif job.get("resumed"):
@@ -1216,6 +1237,8 @@ class Supervisor:
                         cmd += ["--chapters", job["chapters"]]
                     if job.get("repair"):                 # /repair -> vá trang tráo ô (comix)
                         cmd += ["--repair-scramble"]
+                    if job.get("group"):                  # ghim nhóm comix ('auto' = bỏ ghim)
+                        cmd += ["--group", str(job["group"])]
                     proc = subprocess.Popen(              # -u: không buffer -> tail real-time
                         cmd, cwd=BASE_DIR, creationflags=NO_WINDOW,
                         stdout=logf, stderr=subprocess.STDOUT)

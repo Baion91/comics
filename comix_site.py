@@ -34,6 +34,22 @@ Upgrade -> official (sidecar `.source.json` trong folder chương):
   - Chưa có "v" -> giữ nguyên, KHÔNG thay scan bằng scan (kể cả bản comix mới hơn).
   - Đang tải dở (chưa .done) -> tiếp đúng bản trong sidecar, tránh trộn ảnh 2 nhóm.
 
+GHIM NHÓM (`--group NHÓM`, bot `/tai <link> [chương] NHÓM`; user chốt 02/09/2026):
+  - Chỉ xét các bản của ĐÚNG nhóm đó (khớp tên không phân biệt hoa/thường/khoảng trắng,
+    gõ một phần cũng được nếu không mơ hồ — xem resolve_pin). KHÔNG rơi về nhóm khác;
+    chương không có bản nhóm đó -> báo + bỏ qua. Nhóm không có trên bộ -> thoát sớm kèm
+    danh sách nhóm có trên bộ (tin ❌ của bot in dòng này) để user gõ lại.
+  - Ghim ĐÈ cả 2 luật trên: đĩa đang Official (hoặc scan khác/bản ngoài) mà ghim nhóm
+    khác -> tải bản ghim vào .comix-tmp rồi tráo folder (đường upgrade sẵn có).
+  - Ghim BỀN theo chương: sidecar ghi thêm "pin": "<Nhóm>". Lượt sau KHÔNG ghim (kể cả
+    auto-check hằng ngày) coi chương đó vẫn ghim nhóm ấy: đủ ảnh -> bỏ qua (KHÔNG thay
+    bằng Official), dở -> tải tiếp đúng nhóm. Nếu không ghim bền thì auto-check đêm sau
+    sẽ thay lại Official, công ghim mất.
+  - Bỏ ghim: `--group auto` (bot: `/tai <link> <chương> auto`) -> xoá "pin" trong sidecar
+    rồi chạy luật mặc định ngay lượt đó (có Official thì thay). Đổi nguồn: ghim nhóm khác.
+  - Quyết định have/replace/fetch của 1 chương nằm ở `_chapter_plan()` — dùng CHUNG cho
+    vòng lặp tải và báo cáo sớm Telegram, sửa luật chỉ sửa 1 chỗ.
+
 File DẤU cấp truyện (Cách 1): cuối mỗi lần chạy, ghi `_COMIX_official_{off}-{total}.txt`
 ở gốc folder truyện (nhìn thấy trong Explorer, reader/check bỏ qua) để phân biệt folder
 comix với folder scan tải từ site khác -> user tự tay xoá folder scan trùng.
@@ -885,8 +901,10 @@ def _official_rank(ver):
     return OFFICIAL_GROUP_RANK.get(_group_name(ver).lower(), OFFICIAL_DEFAULT_RANK)
 
 
-def candidates_for(versions):
+def candidates_for(versions, pin=None):
     """Thứ tự ưu tiên tải:
+      0. pin=<nhóm> (GHIM) -> CHỈ các bản của nhóm đó, id mới nhất trước; KHÔNG rơi về
+         nhóm khác (rỗng = chương không có bản nhóm này). Các luật dưới KHÔNG áp.
       1. official — theo HẠNG NHÓM (OFFICIAL_GROUP_RANK), cùng hạng thì id mới nhất trước.
       2. scan CÓ tên nhóm (id mới nhất trước).
       3. scan KHÔNG có tên nhóm (id mới nhất trước) — chỉ dùng khi hết bản có nhóm.
@@ -901,6 +919,10 @@ def candidates_for(versions):
     bản 'no group' 6 tháng đè lên bản Square Ocean 10 tháng). Ưu tiên bản có nhóm cho chất
     lượng ổn định; bản không nhóm chỉ để DỰ PHÒNG (nếu cả số chương chỉ có bản không
     nhóm thì vẫn tải, KHÔNG bỏ chương — user chốt phương án 1)."""
+    if pin:
+        want = _norm_group(pin)
+        return sorted((v for v in versions if _norm_group(_group_name(v)) == want),
+                      key=lambda v: v["id"], reverse=True)
     off = sorted((v for v in versions if v.get("isOfficial")),
                  key=lambda v: (_official_rank(v), -v["id"]))
     scan = [v for v in versions if not v.get("isOfficial")]
@@ -916,6 +938,38 @@ def _group_name(ver):
     return (g.get("name") if isinstance(g, dict) else g) or "?"
 
 
+PIN_AUTO = "auto"   # --group auto = BỎ ghim (xoá "pin" sidecar, về luật mặc định)
+
+
+def _norm_group(name):
+    """'Yen Press' / 'yenpress' / 'YEN-PRESS' -> 'yenpress': so khớp tên nhóm KHÔNG phân
+    biệt hoa/thường, khoảng trắng, ký tự lạ (user gõ tay trên Telegram)."""
+    return re.sub(r"[^0-9a-z]+", "", str(name or "").lower())
+
+
+def resolve_pin(requested, by_num):
+    """Tên nhóm user gõ -> tên HIỂN THỊ chuẩn trên site (ghi sidecar/log). Khớp đúng (đã
+    chuẩn hoá) trước; không có thì khớp CHUỖI CON duy nhất ('hive' -> Hivetoon). Không
+    khớp / mơ hồ -> ValueError kèm danh sách nhóm có trên bộ (1 dòng — supervisor lấy dòng
+    log cuối làm tin ❌) để user gõ lại; KHÔNG tải nhầm nhóm."""
+    names = {}
+    for vers in by_num.values():
+        for v in vers:
+            g = _group_name(v)
+            if g != "?":
+                names.setdefault(_norm_group(g), g)
+    want = _norm_group(requested)
+    if want and want in names:
+        return names[want]
+    subs = [n for n in names if want and want in n]
+    if len(subs) == 1:
+        return names[subs[0]]
+    avail = ", ".join(sorted(names.values(), key=str.lower)) or "(không có nhóm nào)"
+    why = (f"mơ hồ — khớp {len(subs)} nhóm ({', '.join(names[n] for n in subs)})"
+           if subs else "không có trên bộ này")
+    raise ValueError(f"Nhóm '{requested}' {why}. Nhóm có trên bộ: {avail}")
+
+
 def read_sidecar(folder: Path):
     try:
         # utf-8-sig: tha cho file bị editor/PowerShell chèn BOM (json.loads chê BOM)
@@ -924,11 +978,18 @@ def read_sidecar(folder: Path):
         return None
 
 
-def write_sidecar(folder: Path, ver):
-    folder.mkdir(parents=True, exist_ok=True)
+def write_sidecar(folder: Path, ver, pin=None):
+    """pin = tên nhóm GHIM (chuẩn) -> ghi thêm "pin" để lượt sau không thay bằng Official."""
     data = {"chapterId": ver["id"], "groupId": ver.get("groupId"),
             "group": _group_name(ver), "isOfficial": bool(ver.get("isOfficial")),
             "at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
+    if pin:
+        data["pin"] = pin
+    _save_sidecar(folder, data)
+
+
+def _save_sidecar(folder: Path, data):
+    folder.mkdir(parents=True, exist_ok=True)
     (folder / SIDECAR).write_text(
         json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
 
@@ -1084,40 +1145,90 @@ def _folder_has_images(folder: Path) -> bool:
     return False
 
 
-def _report_comix_plan(title, nums, by_num, out_root, args):
+def _effective_pin(side, pin, unpin):
+    """Nhóm ghim ÁP CHO CHƯƠNG này: ghim của lệnh (--group) > ghim đã nhớ trong sidecar
+    (lượt trước tải theo ghim) > None. unpin (--group auto) -> bỏ qua ghim sidecar."""
+    if pin:
+        return pin
+    if side and side.get("pin") and not unpin:
+        return side["pin"]
+    return None
+
+
+def _chapter_plan(folder, cands, side, done, pin):
+    """QUYẾT ĐỊNH cho 1 chương -> 'have' (giữ nguyên, bỏ qua) | 'replace' (tải bản khác
+    vào .comix-tmp rồi tráo folder) | 'fetch' (tải mới / tải tiếp thẳng vào folder).
+    Dùng CHUNG cho vòng lặp tải (run) và báo cáo sớm (_report_comix_plan) -> 2 nơi không
+    bao giờ lệch luật; sửa luật chỉ sửa đây.
+      pin=None : luật mặc định — đĩa Official & done -> have; đĩa có nội dung CHƯA
+                 Official (gồm bản ngoài không sidecar) mà site có Official -> replace;
+                 done -> have; còn lại fetch. KHÔNG thay scan->scan.
+      pin=nhóm : chỉ so với NHÓM ghim — đĩa đã là bản nhóm đó & done -> have; đĩa có
+                 nội dung của bản KHÁC (kể cả Official) -> replace; còn lại fetch.
+    `cands` đã lọc theo pin (candidates_for). cands RỖNG khi ghim = site không có bản
+    nhóm đó: done -> have (giữ nguyên), else -> 'nopin' (caller báo + bỏ qua)."""
+    has_content = _folder_has_images(folder)
+    if pin:
+        if not cands:
+            return "have" if done else "nopin"
+        on_disk_pinned = bool(side) and _norm_group(side.get("group")) == _norm_group(pin)
+        if on_disk_pinned and done:
+            return "have"
+        if has_content and not on_disk_pinned:
+            return "replace"
+        return "fetch"
+    on_disk_official = bool(side) and bool(side.get("isOfficial"))
+    if on_disk_official and done:
+        return "have"
+    best = cands[0] if cands else {}
+    upgrade = has_content and not on_disk_official and bool(best.get("isOfficial"))
+    if done and not upgrade:
+        return "have"
+    return "replace" if upgrade else "fetch"
+
+
+def _report_comix_plan(title, nums, by_num, out_root, args, pin=None, unpin=False):
     """Nhắn Telegram BÁO CÁO SỚM cho comix: X/Y chương + danh sách cần nâng cấp/tải,
-    tính TỪ ĐĨA (không thêm request), TRƯỚC khi tải ảnh. Phân loại MIRROR đúng vòng lặp
-    chính (official-sẵn / đã-có / nâng-cấp-lên-Official / cần-tải) — sửa luật ở loop thì
-    nhớ sửa cả đây. 'Official' = bản tick 'v' (isOfficial). Best-effort, không raise ra."""
-    official_have, have_other, upgrade_list, need_list = [], [], [], []
+    tính TỪ ĐĨA (không thêm request), TRƯỚC khi tải ảnh. Phân loại qua `_chapter_plan`
+    (cùng hàm với vòng lặp tải) nên không lệch. 'Official' = bản tick 'v' (isOfficial).
+    Best-effort, không raise ra."""
+    official_have, have_other, upgrade_list, repin_list, need_list, nopin_list = \
+        [], [], [], [], [], []
     recheck = getattr(args, "recheck", False)
     for num in nums:
         folder = out_root / f"Chapter {core.fmt_num(num)}"
-        cands = candidates_for(by_num.get(num) or [])
-        best = cands[0] if cands else {}
         side = read_sidecar(folder)
+        eff_pin = _effective_pin(side, pin, unpin)
+        cands = candidates_for(by_num.get(num) or [], eff_pin)
         done = (folder / ".done").exists() and not recheck
-        on_disk_official = bool(side) and side.get("isOfficial")
-        if on_disk_official and done:
-            official_have.append(num)
-            continue
-        upgrade = (_folder_has_images(folder) and not on_disk_official
-                   and bool(best.get("isOfficial")))
-        if done and not upgrade:
-            have_other.append(num)
-        elif upgrade:
-            upgrade_list.append(num)
+        plan = _chapter_plan(folder, cands, side, done, eff_pin)
+        if plan == "have":
+            (official_have if (side and side.get("isOfficial")) else have_other).append(num)
+        elif plan == "replace":
+            (repin_list if eff_pin else upgrade_list).append(num)
+        elif plan == "nopin":
+            nopin_list.append(num)
         else:
             need_list.append(num)
     have_total = len(official_have) + len(have_other)
-    lines = [f"📘 {title} — comix",
-             f"• Trên site: {len(nums)} chương",
-             f"• Đã có sẵn: {have_total} (Official {len(official_have)})",
-             f"• Cần nâng cấp → Official: {len(upgrade_list)}"
-             + (f" — ch. {core.compact_chapters(upgrade_list)}" if upgrade_list else ""),
-             f"• Cần tải mới/tải tiếp: {len(need_list)}"
-             + (f" — ch. {core.compact_chapters(need_list)}" if need_list else "")]
-    lines.append("→ Bắt đầu tải..." if (upgrade_list or need_list)
+    lines = [f"📘 {title} — comix"]
+    if pin:
+        lines.append(f"• Ghim nhóm: [{pin}] — chỉ tải bản của nhóm này")
+    elif unpin:
+        lines.append("• Bỏ ghim nhóm (auto) — về luật mặc định")
+    lines += [f"• Trên site: {len(nums)} chương",
+              f"• Đã có sẵn: {have_total} (Official {len(official_have)})",
+              f"• Cần nâng cấp → Official: {len(upgrade_list)}"
+              + (f" — ch. {core.compact_chapters(upgrade_list)}" if upgrade_list else "")]
+    if repin_list:
+        lines.append(f"• Cần thay bằng bản ghim: {len(repin_list)}"
+                     f" — ch. {core.compact_chapters(repin_list)}")
+    lines.append(f"• Cần tải mới/tải tiếp: {len(need_list)}"
+                 + (f" — ch. {core.compact_chapters(need_list)}" if need_list else ""))
+    if nopin_list:
+        lines.append(f"• Không có bản nhóm ghim (bỏ qua): {len(nopin_list)}"
+                     f" — ch. {core.compact_chapters(nopin_list)}")
+    lines.append("→ Bắt đầu tải..." if (upgrade_list or repin_list or need_list)
                  else "→ Không có gì cần tải (đã đủ).")
     _notify_telegram("\n".join(lines))
 
@@ -1302,6 +1413,22 @@ def run(args):
             print(f"Tổng số chương tìm thấy: {len(nums)} "
                   f"({sum(len(v) for v in by_num.values())} bản upload)")
 
+            # GHIM NHÓM (--group): đổi tên user gõ -> tên chuẩn trên site; không có trên bộ
+            # -> thoát 1 (dòng cuối log = tin ❌ của bot, kèm danh sách nhóm để gõ lại).
+            pin_name, unpin = None, False
+            group_arg = (getattr(args, "group", None) or "").strip()
+            if group_arg.lower() == PIN_AUTO:
+                unpin = True
+                print("Bỏ ghim nhóm (auto): chương nào đang ghim sẽ về luật mặc định.")
+            elif group_arg:
+                try:
+                    pin_name = resolve_pin(group_arg, by_num)
+                except ValueError as e:
+                    print(f"!!! {e}", file=sys.stderr)
+                    sys.exit(1)
+                print(f"Ghim nhóm: [{pin_name}] — chỉ tải bản của nhóm này "
+                      "(không rơi về nhóm khác).")
+
             if args.chapters:
                 wanted = core.parse_selection(args.chapters)
                 nums = [n for n in nums if n in wanted]
@@ -1345,7 +1472,8 @@ def run(args):
             # thường). Chỉ ĐỌC ĐĨA (không thêm request). Lỗi ở đây KHÔNG được cản việc tải.
             if not getattr(args, "repair_scramble", False):
                 try:
-                    _report_comix_plan(title, nums, by_num, out_root, args)
+                    _report_comix_plan(title, nums, by_num, out_root, args,
+                                       pin_name, unpin)
                 except Exception as e:
                     print(f"  (bỏ qua báo cáo sớm: {e})", file=sys.stderr, flush=True)
 
@@ -1353,7 +1481,8 @@ def run(args):
             active = 0
             fail_streak = 0   # số chương LIÊN TIẾP hụt ảnh (browser còn sống) -> cầu dao
             incomplete, source_broken, unfetched = [], [], []
-            n_full = n_skipped = n_locked = n_upgraded = 0
+            n_full = n_skipped = n_locked = n_upgraded = n_repinned = 0
+            nopin = []        # chương ghim nhóm mà site không có bản nhóm đó (bỏ qua)
             img_ok = img_missing = img_broken = 0
             repair_mode = getattr(args, "repair_scramble", False)
             n_repaired = img_repaired = 0
@@ -1363,9 +1492,16 @@ def run(args):
                 label = f"Chapter {core.fmt_num(num)}"
                 prefix = f"[{idx}/{total}] {label}"
                 folder = out_root / label   # tên CỐ ĐỊNH (không title) để tráo bản an toàn
-                cands = candidates_for(by_num[num])
-                best = cands[0]
                 side = read_sidecar(folder)
+                # --group auto: xoá ghim đã nhớ trong sidecar -> chương về luật mặc định.
+                if unpin and side and side.get("pin"):
+                    print(f"{prefix} — bỏ ghim [{side['pin']}]")
+                    side.pop("pin", None)
+                    _save_sidecar(folder, side)
+                # Ghim áp cho chương này: của lệnh, hoặc đã nhớ trong sidecar lượt trước
+                # (để auto-check hằng ngày KHÔNG thay lại bằng Official).
+                eff_pin = _effective_pin(side, pin_name, unpin)
+                cands = candidates_for(by_num[num], eff_pin)
 
                 # CHẾ ĐỘ SỬA TRÁO Ô (--repair-scramble): chỉ vá chương ĐÃ tải bị xáo,
                 # KHÔNG tải chương mới (dùng lệnh tải thường cho việc đó). Dò offline
@@ -1413,33 +1549,34 @@ def run(args):
                 # Dungeon Reset: 266 chương Raven .done, không sidecar, trước đây bị skip.
                 on_disk_official = bool(side) and side.get("isOfficial")
 
-                # 1) Trên đĩa đã là bản Official -> skip vĩnh viễn
-                if on_disk_official and done:
-                    print(f"{prefix} — đã có bản Official (bỏ qua)")
+                # 1)+2) QUYẾT ĐỊNH qua _chapter_plan (chung với báo cáo sớm): 'have' = giữ
+                # nguyên (Official sẵn / đã xong / đã đúng bản ghim); 'replace' = đĩa có bản
+                # khác -> tải vào chỗ tạm rồi tráo (Official thay scan/bản ngoài, hoặc bản
+                # ghim thay bất kỳ); 'fetch' = tải mới/tiếp; 'nopin' = ghim mà site không có.
+                plan = _chapter_plan(folder, cands, side, done, eff_pin)
+                if plan == "have":
+                    if eff_pin:
+                        why = f"đã có bản ghim [{eff_pin}] (bỏ qua)"
+                    elif on_disk_official:
+                        why = "đã có bản Official (bỏ qua)"
+                    else:
+                        why = "đã xong trước đó (bỏ qua, khỏi quét mạng)"
+                    print(f"{prefix} — {why}")
                     n_skipped += 1
                     if args.cbz:
                         core.make_cbz(folder, skip_existing=True)
                     continue
-
-                # Upgrade khi: đĩa đang có nội dung CHƯA phải Official (gồm cả bản ngoài
-                # không sidecar) và comix nay có bản Official. KHÔNG bao giờ thay scan->scan.
-                has_content = _folder_has_images(folder)
-                upgrade = has_content and not on_disk_official \
-                    and bool(best.get("isOfficial"))
-
-                # 2) Đã đủ ảnh + không phải ca upgrade -> giữ nguyên (kể cả bản ngoài;
-                # không thay scan->scan dù bản scan comix có mới hơn)
-                if done and not upgrade:
-                    print(f"{prefix} — đã xong trước đó (bỏ qua, khỏi quét mạng)")
-                    n_skipped += 1
-                    if args.cbz:
-                        core.make_cbz(folder, skip_existing=True)
+                if plan == "nopin":
+                    print(f"{prefix} — site không có bản nhóm [{eff_pin}], bỏ qua "
+                          "(giữ nguyên trên đĩa)")
+                    nopin.append(label)
                     continue
+                upgrade = plan == "replace"
 
                 # 3) Chọn nơi tải + thứ tự ứng viên
                 if upgrade:
-                    dest = tmp_root / label      # tải bản official vào chỗ tạm, xong mới tráo
-                    pool = cands                 # best là official
+                    dest = tmp_root / label      # tải bản mới vào chỗ tạm, xong mới tráo
+                    pool = cands                 # đầu danh sách = Official / bản ghim
                 else:
                     dest = folder
                     if side:   # tải dở -> ưu tiên tiếp ĐÚNG bản cũ, tránh trộn ảnh 2 nhóm
@@ -1467,7 +1604,7 @@ def run(args):
                     if (d_side and d_side.get("chapterId") != ver["id"]) \
                             or (d_side is None and _folder_has_images(dest)):
                         _clear_images(dest)
-                    write_sidecar(dest, ver)
+                    write_sidecar(dest, ver, eff_pin)   # ghim -> nhớ trong sidecar
                     chosen, page_items = ver, res
                     break
                 if not chosen:
@@ -1497,6 +1634,9 @@ def run(args):
                 fail_streak = 0
 
                 tag = "Official" if chosen.get("isOfficial") else _group_name(chosen)
+                if eff_pin:      # bản ghim: hiện tên nhóm (Official cũng ghi rõ nhóm nào)
+                    tag = f"ghim {_group_name(chosen)}" \
+                        + (" Official" if chosen.get("isOfficial") else "")
                 urls = [it["url"] for it in page_items]
                 # Trang TRÁO Ô (cờ s:1) tải thô sẽ ra ảnh xáo -> phải giải-xáo qua canvas
                 # của site; trang thường tải HTTP như cũ. Xem [[comix-scramble-s-flag]].
@@ -1618,11 +1758,15 @@ def run(args):
                                 old_cbz.unlink()
                             except OSError:
                                 pass
-                        n_upgraded += 1
+                        if eff_pin:
+                            n_repinned += 1
+                        else:
+                            n_upgraded += 1
+                        new_tag = tag if eff_pin else "Official"
                         print(f"\r{prefix} — DA THAY [{old_group}] bằng bản "
-                              f"Official ({len(urls)} ảnh)          ")
+                              f"{new_tag} ({len(urls)} ảnh)          ")
                         core.append_log(f"{title} / {label}: thay [{old_group}] "
-                                        f"bằng bản Official")
+                                        f"bằng bản {new_tag}")
                     else:
                         n_full += 1
                         print(f"\r{prefix} [{tag}] — xong {ok}/{len(urls)} ảnh"
@@ -1698,6 +1842,10 @@ def run(args):
     bits = [f"Đủ ảnh: {n_full}"]
     if n_upgraded:
         bits.append(f"Đã thay bằng Official: {n_upgraded}")
+    if n_repinned:
+        bits.append(f"Đã thay bằng bản ghim [{pin_name}]: {n_repinned}")
+    if nopin:
+        bits.append(f"Không có bản nhóm ghim: {len(nopin)}")
     if n_skipped:
         bits.append(f"Đã xong trước: {n_skipped}")
     if incomplete:
@@ -1727,4 +1875,9 @@ def run(args):
               "(mạng/quảng cáo chèn — KHÔNG phải khóa):")
         print("   " + ", ".join(unfetched))
         print("-> Chạy lại đúng lệnh vừa rồi để tự tải bù các chương này.")
+    if nopin:
+        print(f"\n! {len(nopin)} chương site KHÔNG có bản nhóm ghim (giữ nguyên trên đĩa):")
+        print("   " + ", ".join(nopin))
+        print("-> Muốn tải nhóm khác cho các chương này: /tai <link> <chương> <Nhóm khác>; "
+              "về luật mặc định: ... auto")
     print("\nHoàn tất.")

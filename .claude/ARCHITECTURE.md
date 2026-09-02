@@ -71,6 +71,23 @@ cách chạy thật + decode thử ảnh.
     raw/batch đè lên bản nhóm scan cũ hơn nhưng chỉn chu hơn (vd Dai ch.345-349); cả số
     chương chỉ có bản không nhóm thì vẫn tải, không bỏ (user chốt 19/08). Xem
     `candidates_for()`.
+    **GHIM NHÓM (02/09/2026)** — `--group NHÓM` (bot `/tai <link> [chương] NHÓM`; token
+    chữ trong lệnh = nhóm, token số = chương; nhiều token chữ nối dấu cách → "Yen Press"):
+    `resolve_pin()` đổi tên gõ → tên chuẩn trên site (chuẩn hoá `_norm_group`: bỏ hoa/
+    thường/khoảng trắng/ký tự lạ; khớp đúng trước, không có thì chuỗi con DUY NHẤT; sai/mơ
+    hồ → `exit 1` kèm danh sách nhóm có trên bộ — dòng log cuối = tin ❌ của bot).
+    `candidates_for(versions, pin)` chỉ trả bản của nhóm đó (id mới nhất trước), KHÔNG rơi
+    về nhóm khác. Ghim BỀN theo chương: sidecar ghi `"pin"`; `_effective_pin()` = ghim của
+    lệnh > ghim sidecar > None, nên lượt sau không ghim (kể cả auto-check hằng ngày) vẫn
+    coi chương đó ghim nhóm ấy → KHÔNG thay lại bằng Official (nếu không bền, auto-check
+    đêm sau thay lại Tapas, công ghim mất). `--group auto` = xoá `pin` sidecar rồi luật mặc
+    định ngay lượt đó. QUYẾT ĐỊNH 1 chương gom về `_chapter_plan(folder, cands, side, done,
+    pin)` → `have`/`replace`/`fetch`/`nopin`, dùng CHUNG cho vòng lặp `run()` và báo cáo sớm
+    `_report_comix_plan()` (trước đây 2 nơi chép tay cùng luật, dễ lệch). Ghim đè cả 2 luật
+    "Official trên đĩa = skip vĩnh viễn" và "không thay scan→scan": đĩa có bản khác → `replace`
+    qua đường tráo folder sẵn có. Bot: job có trường `group` (khoá dedup
+    `(url, chapters, repair, group)`, nhãn `[Nhóm]`, nối `--group`); `_load_jobs` nay khôi
+    phục đủ `repair` + `group` (trước rơi `repair` → job vá dở qua restart thành job tải).
     Upgrade→Official: điều kiện `has_content AND not on_disk_official AND
     best.isOfficial` — "chưa phải official" GỒM cả chương tải từ SITE KHÁC (folder có
     ảnh + `.done` nhưng KHÔNG có sidecar `.source.json`; sidecar chỉ do comix tạo),

@@ -61,6 +61,20 @@ Một tool cho MỌI site, tự nhận site theo link (hiện hỗ trợ **Asura
 > không bao giờ tải lại). Nếu bot nhắn "bị Cloudflare chặn" → ra màn hình server tick
 > "Verify you are human" trong cửa sổ Chromium là tool tự chạy tiếp.
 >
+> **Ghim nhóm (chọn cố định nguồn) — `--group <Nhóm>` / bot `/tai <link> [chương] <Nhóm>`:**
+> muốn tải đúng 1 nguồn (vd có Official Tapas nhưng thích bản Hivetoon) thì thêm tên nhóm
+> như hiện trên comix.to: `python comic_downloader.py <link> --chapters 5 --group Hivetoon`
+> hoặc `/tai <link> 5 Hivetoon`. Gõ **không cần đúng hoa/thường/khoảng trắng** (`hivetoon`,
+> `Yen Press`/`yenpress`), gõ **một phần** cũng nhận nếu không mơ hồ (`hive`); gõ sai thì tool
+> dừng và **liệt kê các nhóm có trên bộ** để gõ lại, không tải nhầm. Ghim **chỉ xét bản của
+> nhóm đó** (không rơi về nhóm khác; chương không có bản nhóm đó thì báo + bỏ qua) và **đè**
+> luật mặc định: đĩa đang Official/scan khác cũng bị thay bằng bản ghim (tải vào chỗ tạm rồi
+> tráo folder, an toàn). Ghim được **nhớ theo chương** (`"pin"` trong `.source.json`), nên lượt
+> sau chạy **không** ghim (kể cả auto-check hằng ngày) **không thay lại bằng Official** — chương
+> chưa đủ thì tải tiếp đúng nhóm. **Bỏ ghim:** `--group auto` / `/tai <link> 5 auto` → xoá ghim
+> và chương đó về luật mặc định ngay (có Official thì thay). **Đổi nguồn:** ghim nhóm khác.
+> Để trống tên nhóm = luật mặc định như cũ. Chỉ áp dụng cho comix.to.
+>
 > ⚠️ **Cửa sổ Chromium đứng im ở trang trắng (about:blank)?** Trước đây nếu còn 1 cửa sổ
 > Chromium comix **mồ côi** (từ lần chạy trước) thì lần mở sau bị treo. **Đã sửa (14/08)**:
 > mỗi lần chạy comix tool **tự giết Chromium comix cũ + xoá khoá profile** trước khi mở, và có
@@ -424,7 +438,8 @@ khi đăng nhập Windows, tự tạo link đọc từ xa và báo qua Telegram.
     (chỉ restart reader, **giữ nguyên link**). Sửa `supervisor.py` thì phải dùng `cap-nhat.bat`.
 - **Lệnh Telegram bot** (gõ **`/help`** để xem đủ; mỗi lệnh là **1 từ liền**):
   - `/link` link hiện tại · `/whoami` xem chat_id của bạn · `/help` danh sách lệnh.
-  - **Admin**: `/tai <link>` tải truyện (xếp hàng đợi, báo bắt đầu/xong) · `/update` cập
+  - **Admin**: `/tai <link> [chương] [nhóm]` tải truyện (xếp hàng đợi, báo bắt đầu/xong; `nhóm`
+    = ghim nguồn comix, vd `/tai <link> 5 Hivetoon`, `auto` = bỏ ghim — xem mục Comix ở trên) · `/update` cập
     nhật code · `/adminclaim` (người đầu tiên → admin gốc) · `/adminlist` ·
     `/adminadd <id>` · `/adminremove <id>`.
   - **Huỷ tải** (admin): `/stop` dừng truyện đang tải **+ xoá hàng chờ của bạn** ·

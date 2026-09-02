@@ -146,6 +146,11 @@ def main(default_provider=None):
     ap.add_argument("--comix-q", dest="comix_q", type=int, default=85,
                     help="comix.to: re-nén ảnh tải về mức chất lượng WebP này (mặc định "
                          "85 — nhẹ đi ~nửa mà không mất nét nhìn thấy; 0 = TẮT, giữ byte gốc)")
+    ap.add_argument("--group", metavar="NHÓM",
+                    help="comix.to: GHIM nhóm — chỉ tải bản của đúng nhóm này (vd Hivetoon, "
+                         "Tapas; không phân biệt hoa/thường, gõ một phần cũng được nếu không "
+                         "mơ hồ). Chương tải theo ghim được nhớ trong sidecar nên lượt sau "
+                         "KHÔNG tự thay bằng Official. 'auto' = BỎ ghim, về luật mặc định")
     args = ap.parse_args()
     core.RETRY_BROKEN = args.retry_broken
 
