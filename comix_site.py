@@ -1365,15 +1365,20 @@ def _repair_scramble_chapter(cs, img_client, folder, cands, side, args):
         p = _fix_ext(folder / f"{i:03d}.webp")
         _recompress_webp(p, getattr(args, "comix_q", RECOMPRESS_Q))
         nfix += 1
-    # CÒN SÓT = trang s:1 THIẾU HẲN hoặc còn dấu xáo. Trước đây chỉ đếm file đang có ->
-    # trang thiếu lọt lưới -> "fixed" với 0 trang rồi đóng .done sai (chương 1, 02/09).
+    # CÒN SÓT = trang s:1 THIẾU HẲN, hoặc CÓ thử vá lượt này mà giải-xáo KHÔNG trả ra
+    # bytes (got). KHÔNG soi lại looks_scrambled trên ảnh vừa giải-xáo: detector dương
+    # tính giả trên webtoon dải dài (ảnh sạch vẫn ~4-8 -> "partial" mãi, không đóng .done;
+    # ca Farmer of Spirits ch2/ch3 02/09). Trang s:1 KHÔNG nằm trong scr_pairs = ở
+    # discovery đã sạch. Xem [[comix-scramble-s-flag]].
+    attempted = {i for i, _ in scr_pairs}
     still = []
     for i, it in enumerate(page_items, 1):
         if not it.get("s"):
             continue
-        f = _page_file(folder, i)
-        if f is None or core.looks_scrambled(f):
-            still.append(i)
+        if _page_file(folder, i) is None:
+            still.append(i)                       # thiếu hẳn file
+        elif i in attempted and not got.get(i):
+            still.append(i)                       # có thử vá nhưng giải-xáo hụt
     if still:
         return "partial", nfix
     _mark_done(folder)
@@ -1700,6 +1705,7 @@ def run(args):
                             print(f"\n{prefix} — 403 (vé Cloudflare?), đã làm mới vé từ "
                                   "browser, thử lại phần còn thiếu...", flush=True)
                             time.sleep(2.0)
+                got = {}     # {idx: bytes} — trang tráo ô giải-xáo được lượt này
                 if scr_jobs:
                     # Trang tráo ô: giải-xáo bằng canvas của site rồi ghi bytes sạch.
                     # Browser chết -> _resilient dựng lại & thử lại (tự goto lại trang đọc).
@@ -1727,10 +1733,27 @@ def run(args):
                         if p.exists() and p.stat().st_size > 0:
                             p = _fix_ext(p)
                             _recompress_webp(p, getattr(args, "comix_q", RECOMPRESS_Q))
-                # ok/done chuẩn theo ĐĨA (retry có thể làm lệch bộ đếm cộng dồn)
-                ok = len([i for i, _ in pages if _page_ok(i)])
+                # ok/done chuẩn theo ĐĨA (retry có thể làm lệch bộ đếm cộng dồn). Trang
+                # TRÁO Ô: nghiệm thu bằng TÍN HIỆU THẬT "giải-xáo có trả ra bytes chưa"
+                # (got), KHÔNG soi lại looks_scrambled trên ảnh vừa giải-xáo — detector
+                # (năng lượng đường nối) DƯƠNG TÍNH GIẢ trên webtoon dải dài: ảnh sạch vẫn
+                # ~4-22 vì rãnh giữa khung tranh rơi trúng lưới chia (đo 02/09: Farmer of
+                # Spirits ch2 t10=8.09, ch3 t30=4.67 tuy ảnh liền mạch; Solo Leveling 181
+                # trang scan sạch >=4.0). Trang s:1 CÓ trong scr_jobs mà got không trả bytes
+                # = giải-xáo hụt -> chưa xong; s:1 KHÔNG trong scr_jobs = đã sạch từ discovery.
+                # Xem [[comix-scramble-s-flag]].
+                scr_tried = {i for i, _ in scr_jobs}
 
-                missing = [i for i, _ in pages if not _page_ok(i)]
+                def _done_ok(i, _tried=scr_tried, _got=got, _dest=dest):
+                    if _page_file(_dest, i) is None:
+                        return False
+                    if i in _tried and not _got.get(i):
+                        return False
+                    return True
+
+                ok = len([i for i, _ in pages if _done_ok(i)])
+
+                missing = [i for i, _ in pages if not _done_ok(i)]
                 broken = [i for i in missing
                           if core.is_known_broken(dest / f"{i:03d}.webp")]
                 retryable = [i for i in missing if i not in broken]

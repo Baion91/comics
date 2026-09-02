@@ -171,18 +171,29 @@ cách chạy thật + decode thử ảnh.
     ngắt**, và kiểm chứng offline được (đã dựng lại trang 10 ch.1 sạch bằng PIL). KHÔNG reverse
     permutation trong `secure.js` (obfuscate control-flow, dễ gãy) — chỉ QUAN SÁT drawImage.
     Lưu ý: bản xáo cũ trên đĩa có thể khác permutation hiện tại (token đổi theo thời gian) nên
-    KHÔNG giải được từ file cũ → repair tải lại bytes mới rồi mới xếp. **Guard**:
-    `comics_core.looks_scrambled()` (đo "năng lượng đường nối" tại biên
-    ô bằng PIL, ngưỡng 4.0 — sạch ~1-2 / xáo ~9-22; không numpy) coi trang `s:1` còn dấu xáo là
-    "CHƯA đúng" → không đánh `.done` → tự thử lại lần sau (giải-xáo hụt KHÔNG bao giờ bị nhận
-    nhầm là xong). **Sửa kho cũ**: `--repair-scramble` (chỉ comix) — dò offline từng chương
+    KHÔNG giải được từ file cũ → repair tải lại bytes mới rồi mới xếp. **Nghiệm thu "trang
+    xáo đã xong chưa" = TÍN HIỆU THẬT, KHÔNG dùng detector** (sửa 02/09/2026): cổng cũ soi
+    lại `looks_scrambled()` trên ảnh VỪA giải-xáo → detector DƯƠNG TÍNH GIẢ trên webtoon dải
+    dài (rãnh giữa khung tranh rơi trúng lưới chia n∈{4,5,6,8,10} → điểm cao dù ảnh sạch: đo
+    được 181 trang scan sạch Solo Leveling ≥4.0, cao nhất 42.2; Farmer of Spirits ch2 t10=8.09,
+    ch3 t30=4.67 tuy ảnh liền mạch) → chương không bao giờ đóng `.done`, bot báo "thiếu trang
+    10/30" mãi dù file có sẵn trên đĩa. Nay: trang `s:1` coi là XONG khi **giải-xáo lượt này
+    trả ra bytes** (`got[i]`); trang `s:1` KHÔNG nằm trong danh sách cần giải-xáo (`scr_jobs`/
+    `scr_pairs`) = đã sạch ở bước phát hiện. Đường tải (`_done_ok` trong `run()`) và `/repair`
+    (`still` trong `_repair_scramble_chapter`) dùng chung nguyên tắc này → đóng `.done` đúng,
+    giải-xáo HỤT (got không có bytes) vẫn bị bắt là "còn sót". `looks_scrambled()` vẫn dùng ở
+    **bước PHÁT HIỆN** (tìm file CŨ còn xáo cần vá: discovery `/repair`, `--recheck`, audit
+    `check_library`) — nơi không có tín hiệu nào khác; dương-tính-giả ở đó chỉ tốn công quét/
+    giải-xáo lại 1 chương sạch (chậm + nén lại nhẹ), KHÔNG hỏng dữ liệu, và giờ tự đóng `.done`.
+    **Sửa kho cũ**: `--repair-scramble` (chỉ comix) — dò offline từng chương
     (bỏ NHANH chương không dính, không chạm mạng), chương còn ảnh xáo thì lấy payload bản ĐANG
     có trên đĩa (khớp `chapterId` sidecar, hoặc đòi khớp số trang) rồi giải-xáo lại ĐÚNG trang
     `s:1`, ghi đè tại chỗ; KHÔNG tải chương mới. Kích hoạt khi có trang TRÔNG xáo **hoặc có
     KHOẢNG TRỐNG số trang** (ca trang `s:1` giải-xáo hụt nên thiếu hẳn file — không có gì để
-    dò); "còn sót" đếm cả trang `s:1` **thiếu** lẫn còn xáo, CHỈ đóng `.done` khi hết sót
-    (bản đầu chỉ đếm file đang có → "Đã sửa 1 chương (0 trang)" rồi đóng `.done` sai, làm
-    `/tai` bỏ qua chương 1 — sự cố 02/09). Lý do phải có repair riêng:
+    dò); "còn sót" = trang `s:1` **thiếu hẳn file** hoặc **đã thử vá mà `got` không trả bytes**
+    (giải-xáo hụt), CHỈ đóng `.done` khi hết sót (bản 02/09 sáng chỉ đếm file đang có → "Đã sửa
+    1 chương (0 trang)" rồi đóng `.done` sai; bản 02/09 chiều lại soi `looks_scrambled` → dương
+    tính giả giữ "partial" mãi). Lý do phải có repair riêng:
     chương xáo cũ đã mang `.done` (file webp hợp lệ, `is_known_broken` chỉ tra sổ URL-hỏng nên
     không bắt được) → chạy `/tai` thường (kể cả `--recheck`) sẽ BỎ QUA/không tải lại. Xem
     memory `comix-scramble-s-flag`. **Bot `/repair <link…> [chương]`** (`supervisor.py`):
