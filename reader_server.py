@@ -1632,6 +1632,42 @@ def js(obj):
     return json.dumps(obj, ensure_ascii=False).replace("</", "<\\/")
 
 
+def _page_ver(ch_dir, fname):
+    """mtime_ns của 1 trang — chính là phần ?v= trong URL ảnh (xem img_url)."""
+    try:
+        return os.stat(os.path.join(ch_dir, fname)).st_mtime_ns
+    except OSError:
+        return 0
+
+
+def pages_version(ch_dir, files):
+    """Chữ ký RẺ của danh sách ảnh 1 chương (tên + mtime, chỉ stat, không mở ảnh).
+    Đổi khi thêm/xoá/THAY file (vd repair tráo ô ghi đè 010.webp) -> client so với
+    D.pv để biết HTML đang cầm (có thể là bản SW cache cũ) đã lệch đĩa chưa."""
+    h = hashlib.sha1()
+    for f in files:
+        h.update(f"{f}:{_page_ver(ch_dir, f)}|".encode("utf-8", "surrogatepass"))
+    return h.hexdigest()[:12]
+
+
+def chapter_pages(s, rel):
+    """Payload /api/pages/<sid>/<rel>: {version, pages:[{n,url,w,h}]} — nguồn SỐNG để
+    trang đọc tự vá src/aspect-ratio tại chỗ khi ảnh trên đĩa đổi (02/09: ảnh tráo ô
+    được repair thay nhưng HTML trong SW cache vẫn trỏ ?v= cũ -> ảnh cũ). url y hệt
+    img_url() của html_reader (?v=mtime) để cache SW/HTTP khớp khoá."""
+    sid = s["id"]
+    ch_dir = os.path.join(s["path"], *rel.split("/"))
+    files = list_images(ch_dir)
+    pages = []
+    for f in files:
+        v = _page_ver(ch_dir, f)
+        base = u("img", sid, *rel.split("/"), f)
+        wh = img_dims(os.path.join(ch_dir, f))
+        pages.append({"n": f, "url": f"{base}?v={v}" if v else base,
+                      "w": wh[0] if wh else 0, "h": wh[1] if wh else 0})
+    return {"version": pages_version(ch_dir, files), "pages": pages}
+
+
 def html_reader(s, rel, user=None):
     sid = s["id"]
     info = s["byrel"][rel]
@@ -1688,7 +1724,8 @@ def html_reader(s, rel, user=None):
             fname = unit[1]
             wh = img_dims(os.path.join(ch_dir, fname))
             ar = f' style="aspect-ratio:{wh[0]}/{wh[1]}"' if wh else ""
-            imgs.append(f'<img{src_attr(img_url(fname))} decoding="async"{ar} alt="">')
+            imgs.append(f'<img{src_attr(img_url(fname))} data-f="{attr(fname)}" '
+                        f'decoding="async"{ar} alt="">')
             # nút ghép với trang kế (chỉ giữa 2 trang đơn, chỉ hiện ở chế độ ghép)
             nxt = units[ui + 1] if ui + 1 < len(units) else None
             if nxt and nxt[0] == "img":
@@ -1707,8 +1744,10 @@ def html_reader(s, rel, user=None):
                 ar, lpct, rpct = "", 50.0, 50.0
             imgs.append(
                 f'<div class="spread" style="{ar}">'
-                f'<img{src_attr(img_url(left))} decoding="async" style="width:{lpct:.3f}%" alt="">'
-                f'<img{src_attr(img_url(right))} decoding="async" style="width:{rpct:.3f}%" alt="">'
+                f'<img{src_attr(img_url(left))} data-f="{attr(left)}" decoding="async" '
+                f'style="width:{lpct:.3f}%" alt="">'
+                f'<img{src_attr(img_url(right))} data-f="{attr(right)}" decoding="async" '
+                f'style="width:{rpct:.3f}%" alt="">'
                 f'<div class="sctl"><button data-act="flip" data-a="{attr(left)}">⇄ Swap L/R</button>'
                 f'<button data-act="split" data-a="{attr(left)}">Split</button></div></div>')
 
@@ -1748,7 +1787,10 @@ def html_reader(s, rel, user=None):
             "prev": prev_url, "next": next_url,
             "y": cur["y"] if cur else 0,
             "ts": (cur.get("ts") or 0) if cur else 0,
-            "uk": user_key(user)}
+            "uk": user_key(user),
+            # chữ ký danh sách ảnh lúc render -> syncPages() (reader.js) so với
+            # /api/pages để vá ảnh tại chỗ khi HTML này là bản SW cache cũ.
+            "pv": pages_version(ch_dir, files)}
     body = (
         f'<header id="topbar" class="bar hide">'
         f'<a class="iconbtn home" href="/" title="Library">{HOME_SVG}</a>'
@@ -2679,6 +2721,49 @@ READER_JS = """
     });
     next();
   })();
+  // --- Đồng bộ danh sách ảnh từ nguồn SỐNG (/api/pages, no-store). HTML này có thể
+  // là bản SW cache / bfcache CŨ trỏ ?v= cũ (02/09: repair thay ảnh tráo ô nhưng
+  // reader vẫn hiện ảnh cũ dù mở lại nhiều lần). So version với D.pv; lệch thì vá
+  // TẠI CHỖ: ảnh chờ nạp -> đổi im._url (bộ nạp đọc lúc load); ảnh đã/đang tải ->
+  // gán src mới (tải lại ngay); cập nhật aspect-ratio (đơn + spread). Không reload.
+  function syncPages(){
+    if(!D.sid||!D.rel) return;
+    var api='/api/pages/'+encodeURIComponent(D.sid)+'/'
+            +D.rel.split('/').map(encodeURIComponent).join('/');
+    fetch(api,{credentials:'same-origin'})
+      .then(function(r){return r.ok?r.json():null;})
+      .then(function(res){
+        if(!res||!res.version||!Array.isArray(res.pages)||res.version===D.pv) return;
+        var byName={}, dims={};
+        [].slice.call(document.querySelectorAll('#strip img[data-f]'))
+          .forEach(function(im){byName[im.dataset.f]=im;});
+        res.pages.forEach(function(p){
+          if(p.w&&p.h) dims[p.n]=[p.w,p.h];
+          var im=byName[p.n]; if(!im||!p.url) return;
+          var cur=im._url||im.getAttribute('src')||'';
+          if(cur===p.url) return;
+          im._url=p.url;
+          if(p.w&&p.h&&!im.closest('.spread')) im.style.aspectRatio=p.w+'/'+p.h;
+          if(im.getAttribute('src')||im.classList.contains('perr')){
+            im.classList.remove('perr');
+            im.src=p.url;                       // đã/đang tải hoặc từng lỗi -> tải bản mới ngay
+          }
+        });
+        [].slice.call(document.querySelectorAll('#strip .spread')).forEach(function(sp){
+          var ims=sp.querySelectorAll('img[data-f]'); if(ims.length!==2) return;
+          var a=dims[ims[0].dataset.f], b=dims[ims[1].dataset.f]; if(!a||!b) return;
+          var rl=a[0]/a[1], rr=b[0]/b[1];
+          sp.style.aspectRatio=(rl+rr).toFixed(4);
+          ims[0].style.width=(rl/(rl+rr)*100).toFixed(3)+'%';
+          ims[1].style.width=(rr/(rl+rr)*100).toFixed(3)+'%';
+        });
+        D.pv=res.version;
+      }).catch(function(){});
+  }
+  addEventListener('pageshow',function(){ syncPages(); });   // load thường + bfcache
+  document.addEventListener('visibilitychange',function(){
+    if(document.visibilityState==='visible') syncPages();
+  });
   // --- Prefetch trang chương KẾ (và trước) vào cache SW khi rảnh -> bấm Next/Prev
   // gần như tức thì (SW trả HTML từ cache, khỏi round-trip qua tunnel). Việc render
   // trước cũng WARM luôn cache kích thước ảnh (_dim_cache) phía server -> hết cảnh
@@ -2776,11 +2861,11 @@ def brand_src():
 _SW_PRECACHE = ([static_url(n) for n in STATIC_ASSETS]
                 + ["/manifest.webmanifest", "/logo", "/icon-180.png"])
 
-# Đổi khi logic SW đổi hoặc bất kỳ asset nào đổi -> SW mới, dọn cache cũ.
-SW_VERSION = "v2-" + hashlib.sha1(
-    ("|".join(_SW_PRECACHE)).encode()).hexdigest()[:10]
+# SW_VERSION tính SAU template: hash danh sách asset + CHÍNH mã SW (xem cuối _SW_TEMPLATE).
+# Trước đây chỉ hash asset -> sửa LOGIC SW mà không đổi asset thì ETag /sw.js giữ nguyên
+# -> trình duyệt nhận 304 -> giữ SW cũ mãi (dính khi thêm e.waitUntil 02/09).
 
-SW_JS = ("""
+_SW_TEMPLATE = ("""
 const VER = '__VER__';
 const STATIC_CACHE = 'toony-static-' + VER;
 const PAGE_CACHE   = 'toony-pages-' + VER;
@@ -2805,8 +2890,14 @@ self.addEventListener('activate', (e) => {
 
 // Hàng đợi prefetch trang series (giới hạn luồng để không ngốn băng thông /
 // tranh kết nối với ảnh đang tải). Trang gửi URL qua postMessage.
-let pfQ = [], pfActive = 0;
+let pfQ = [], pfActive = 0, pfWaiters = [];
 const PF_MAX = 2;
+// Báo "hàng đợi đã cạn" cho các promise đang chờ (để e.waitUntil giữ SW sống tới lúc đó).
+function pfSettle() {
+  if (pfQ.length || pfActive) return;
+  const w = pfWaiters; pfWaiters = [];
+  w.forEach((r) => r());
+}
 function pumpPrefetch() {
   while (pfActive < PF_MAX && pfQ.length) {
     const url = pfQ.shift();
@@ -2817,8 +2908,11 @@ function pumpPrefetch() {
         const res = await fetch(url, {credentials: 'same-origin'});
         if (res && res.ok) await cache.put(url, res.clone());
       } catch (e) {}
-    }).finally(() => { pfActive--; pumpPrefetch(); });
+    }).finally(() => { pfActive--; pumpPrefetch(); pfSettle(); });
   }
+  // Trả promise resolve khi cạn hàng đợi -> message handler bọc e.waitUntil (iOS tắt
+  // SW rất sớm; không giữ sống thì prefetch bị cắt giữa chừng).
+  return new Promise((r) => { pfWaiters.push(r); pfSettle(); });
 }
 
 self.addEventListener('message', (e) => {
@@ -2840,7 +2934,7 @@ self.addEventListener('message', (e) => {
       .then(() => { if (e.ports && e.ports[0]) e.ports[0].postMessage({ok: true}); }));
   } else if (d.type === 'prefetch' && Array.isArray(d.urls)) {
     for (const u of d.urls) if (pfQ.indexOf(u) < 0) pfQ.push(u);
-    pumpPrefetch();
+    e.waitUntil(pumpPrefetch());
   }
 });
 
@@ -2868,7 +2962,8 @@ self.addEventListener('fetch', (e) => {
       const hit = await cache.match(req);
       if (hit) return hit;
       const res = await fetch(req);
-      if (res && res.ok) cache.put(req, res.clone());
+      // waitUntil: giữ SW sống tới khi put xong (iOS tắt SW ngay sau respondWith).
+      if (res && res.ok) e.waitUntil(cache.put(req, res.clone()).catch(() => {}));
       return res;
     })());
     return;
@@ -2882,8 +2977,18 @@ self.addEventListener('fetch', (e) => {
       const hit = await cache.match(req);
       if (hit) {
         // Có bản cache -> trả ngay, revalidate NGẦM (nuốt lỗi mạng, khỏi vỡ điều hướng).
-        fetch(req).then((res) => { if (res && res.ok) cache.put(req, res.clone()); })
-                  .catch(() => {});
+        // PHẢI bọc e.waitUntil: không có nó, iOS Safari tắt SW ngay khi respondWith
+        // xong -> fetch/put bị hủy -> PAGE_CACHE KHÔNG BAO GIỜ cập nhật (02/09: mở lại
+        // cả chục lần vẫn HTML cũ -> ảnh tráo ô cũ). Desktop Chrome giữ SW sống thêm
+        // vài giây nên không lộ.
+        // Revalidate bằng Request MỚI theo URL, KHÔNG tái dùng navigation Request `req`:
+        // fetch(req) (mode navigate / redirect manual / signal gắn điều hướng) rớt
+        // "TypeError: Failed to fetch" lúc được lúc không (đo bằng diagnostic 02/09) ->
+        // .catch nuốt -> cache không đổi. cache:'no-store' để khỏi dính HTTP cache/304.
+        e.waitUntil(
+          fetch(req.url, {credentials: 'same-origin', cache: 'no-store'})
+            .then((res) => { if (res && res.ok) return cache.put(req.url, res.clone()); })
+            .catch(() => {}));
         return hit;
       }
       // KHÔNG có cache: phải ra mạng. Mạng lỗi (vd link tunnel đã đổi/chết) mà TRẢ VỀ
@@ -2891,7 +2996,7 @@ self.addEventListener('fetch', (e) => {
       // trang). Vì vậy LUÔN trả 1 Response: thành công -> res; lỗi -> trang báo tử tế.
       try {
         const res = await fetch(req);
-        if (res && res.ok) cache.put(req, res.clone());
+        if (res && res.ok) e.waitUntil(cache.put(req, res.clone()).catch(() => {}));
         return res;
       } catch (err) {
         return new Response(
@@ -2911,8 +3016,14 @@ self.addEventListener('fetch', (e) => {
     return;
   }
 });
-""".replace("__VER__", SW_VERSION)
-   .replace("__PRECACHE__", json.dumps(_SW_PRECACHE)))
+""")
+
+# Đổi khi logic SW đổi HOẶC bất kỳ asset nào đổi -> tên cache mới, SW mới dọn cache cũ,
+# ETag /sw.js đổi -> mọi client cập nhật (không còn phải tự bump tiền tố).
+SW_VERSION = "v3-" + hashlib.sha1(
+    ("|".join(_SW_PRECACHE) + "\n" + _SW_TEMPLATE).encode("utf-8")).hexdigest()[:10]
+SW_JS = (_SW_TEMPLATE.replace("__VER__", SW_VERSION)
+         .replace("__PRECACHE__", json.dumps(_SW_PRECACHE)))
 
 
 # Đăng ký SW (nhúng inline vào mọi trang, rất nhẹ). Chạy sau 'load' để không
@@ -3186,6 +3297,15 @@ class Handler(BaseHTTPRequestHandler):
         # vá tại chỗ khi hiển thị (pageshow/visibilitychange) — xuyên qua bfcache +
         # SW cache mà không phải tải lại cả trang. 'version' = chữ ký của CHÍNH payload
         # nên đổi đúng khi có field đổi (bất kể do thêm/xoá chương hay admin sửa meta).
+        # Danh sách ảnh SỐNG của 1 chương (no-store) — trang đọc gọi lúc pageshow/
+        # visibilitychange, so 'version' với D.pv rồi vá src/aspect-ratio tại chỗ.
+        if len(segs) >= 4 and segs[0] == "api" and segs[1] == "pages":
+            s = lib.get(segs[2])
+            rel = "/".join(segs[3:])
+            if not s or rel not in s["byrel"]:
+                return self.send_json({"error": "not found"}, 404)
+            return self.send_json(chapter_pages(s, rel))
+
         if segs == ["api", "library-meta"]:
             meta = {}
             for sid, s in lib.items():

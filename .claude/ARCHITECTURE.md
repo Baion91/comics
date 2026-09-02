@@ -703,6 +703,28 @@ cách chạy thật + decode thử ảnh.
   bản `?v=` cũ trong `IMG_CACHE`: rác nhỏ, chỉ sinh khi THAY ảnh (không phải khi tải chương mới), browser tự
   evict theo quota. *Lưu ý*: `mtime` đổi khi git-sync ghi lại file dù nội dung y hệt → client tải lại 1 lần (phí
   nhẹ, không sai) — chấp nhận vì `/cover` cũng dùng `mtime`.
+  **⑧b SWR phải `e.waitUntil` + trang đọc tự đồng bộ danh sách ảnh** (02/09, trị **"repair thay ảnh
+  tráo ô nhưng app mở lại cả chục lần vẫn ảnh cũ"**): nhánh navigate SWR trước đây `fetch(req).then(put)`
+  "fire-and-forget" KHÔNG bọc `e.waitUntil` → theo spec, trình duyệt được tắt SW ngay khi `respondWith`
+  xong; **iOS Safari tắt rất sớm** → revalidate bị hủy → `PAGE_CACHE` KHÔNG BAO GIỜ cập nhật → HTML cũ
+  → `?v=` cũ → `IMG_CACHE` trả bytes cũ (desktop Chrome giữ SW sống thêm vài giây nên dev không thấy;
+  đây cũng là gốc chung của 3 lần "SW giữ HTML cũ" 22/08, 25/08, 29/08). *Fix (1)* — ba việc, đo bằng
+  diagnostic tạm ghi vào cache `toony-dbg` trên dev 8099: **(a)** revalidate navigate phải `fetch(req.url,
+  {credentials:'same-origin', cache:'no-store'})` — TÁI DÙNG navigation Request `fetch(req)` rớt
+  `TypeError: Failed to fetch` lúc được lúc không (mode navigate / redirect manual / signal gắn điều
+  hướng) → `.catch` nuốt → cache đứng yên ngay cả trên Chromium (đây là gốc SÂU nhất, không chỉ iOS);
+  **(b)** bọc `e.waitUntil` cho revalidate, `cache.put` nhánh miss/ảnh, và `pumpPrefetch()` (trả promise
+  "cạn hàng đợi") trong message handler — iOS tắt SW sớm; **(c)** `SW_VERSION` = sha1(danh sách asset +
+  CHÍNH `_SW_TEMPLATE`) — trước chỉ hash asset nên sửa logic SW không đổi ETag `/sw.js` → client nhận
+  304 → giữ SW cũ mãi (dính ngay khi thử deploy (a)/(b): bản dbg không bao giờ được cài). Nay đổi mã SW
+  là ETag + tên cache đổi → SW mới cài, dọn `PAGE_CACHE` kẹt. *Fix (2) — "mở là thấy ngay", không cần lần 2*:
+  `GET /api/pages/<sid>/<rel>` (`no-store`, chỉ `stat`) trả `{version, pages:[{n,url,w,h}]}` (`version`
+  = sha1 tên+mtime, `url` y hệt `img_url()`); `html_reader` nhúng `D.pv` + gắn `data-f` cho mọi `<img>`;
+  `reader.js` `syncPages()` chạy ở `pageshow` (load + bfcache) và `visibilitychange`, lệch version thì
+  vá TẠI CHỖ: ảnh chờ nạp → đổi `im._url` (bộ nạp tuần tự đọc `_url` lúc load, đã xoá `data-src`), ảnh
+  đã/đang tải/lỗi → gán `src` mới, cập nhật `aspect-ratio` (đơn + spread). Cùng khuôn `syncCounts`/
+  `syncReading`. Kiểm ở dev 8099: touch mtime 1 file → `pageshow` → `D.pv` + `src` đổi đúng, ảnh khác
+  không đụng. Rác `?v=` cũ trong `IMG_CACHE` vẫn để browser evict (chưa dọn).
   **⑨ Navigation LUÔN trả 1 Response — không bao giờ null** (24/08, trị **"FetchEvent.respondWith received
   an error: Returned response is null"** trên iPhone): handler `navigate` cũ `return hit||net` với
   `net=fetch().catch(()=>hit)` → khi KHÔNG có cache VÀ mạng lỗi (điển hình: link quick-tunnel đã đổi/chết)
