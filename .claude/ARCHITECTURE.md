@@ -137,9 +137,17 @@ cách chạy thật + decode thử ảnh.
     (dò động qua Performance API → bền khi build đổi hash), ép `requestAnimationFrame` ĐỒNG BỘ,
     **chặn `CanvasRenderingContext2D.drawImage`** trong lúc gọi `vs(url).apply(canvas)` để GHI
     LẠI mọi lệnh vẽ (lưới ô: 1 lệnh nền + N lệnh chép ô `sx,sy,sw,sh→dx,dy,dw,dh`; vd trang
-    940×1388 = 5×5 ô 188×277). Rồi Python **tải LẠI chính ảnh xáo đó** bằng `img_client`
-    (byte ỔN ĐỊNH theo URL — đã xác minh 2 fetch trùng hash) và `_unscramble_ops()` xếp lại
-    bằng PIL (crop→(resize nếu khác cỡ)→paste theo thứ tự). **Vì sao KHÔNG toDataURL**: setup
+    940×1388 = 5×5 ô 188×277). ĐỒNG THỜI **tee `window.fetch`** để bắt ĐÚNG bytes ảnh xáo mà
+    `vs` nhận (trả base64 kèm ops), rồi `_unscramble_ops()` xếp lại bằng PIL trên chính bytes
+    đó (crop→(resize nếu khác cỡ)→paste theo thứ tự). **KHÔNG tải lại bằng `img_client`**: CDN
+    trả BIẾN THỂ XÁO KHÁC theo client — cùng URL, browser nhận 116 798 B (sha 4f6d…) còn
+    requests nhận 116 598 B (sha 4073…) → bản đồ ô lệch ảnh (đo p20 ch.1, 02/09; p10 trùng
+    chỉ là may). Biến thể ổn định theo client (2 fetch no-store trùng hash). **Điều kiện bắt
+    buộc**: `_route_filter` phải MỞ `*.wowpic*.store` cho resource type `fetch`/`xhr` (vẫn
+    chặn `image` của thẻ `<img>` để không tốn băng thông) — vì `vs` phải tự tải ảnh trong
+    browser thì `apply()` mới vẽ; filter cũ chặn hết → `descramble_ops` trả rỗng IM LẶNG =
+    gốc lỗi "0 trang" của cả bản canvas 01/09 lẫn bản ops lần đầu (tái hiện được ở dev bằng
+    chính `ComixSession`; mọi test trên Browser pane không có filter nên "chạy được" giả). **Vì sao KHÔNG toDataURL**: setup
     này (cả server lẫn dev) đọc pixel canvas ra RỖNG (114 bytes) dù màn hình thấy sạch — nghi
     chống-scrape chặn readback (reader chỉ hiển thị, không cần đọc lại); ghi tham số drawImage
     thì KHÔNG cần compositing/đọc canvas nên **chạy được cả khi server không màn hình / RDP
@@ -153,7 +161,11 @@ cách chạy thật + decode thử ảnh.
     nhầm là xong). **Sửa kho cũ**: `--repair-scramble` (chỉ comix) — dò offline từng chương
     (bỏ NHANH chương không dính, không chạm mạng), chương còn ảnh xáo thì lấy payload bản ĐANG
     có trên đĩa (khớp `chapterId` sidecar, hoặc đòi khớp số trang) rồi giải-xáo lại ĐÚNG trang
-    `s:1`, ghi đè tại chỗ + đóng lại `.done`; KHÔNG tải chương mới. Lý do phải có repair riêng:
+    `s:1`, ghi đè tại chỗ; KHÔNG tải chương mới. Kích hoạt khi có trang TRÔNG xáo **hoặc có
+    KHOẢNG TRỐNG số trang** (ca trang `s:1` giải-xáo hụt nên thiếu hẳn file — không có gì để
+    dò); "còn sót" đếm cả trang `s:1` **thiếu** lẫn còn xáo, CHỈ đóng `.done` khi hết sót
+    (bản đầu chỉ đếm file đang có → "Đã sửa 1 chương (0 trang)" rồi đóng `.done` sai, làm
+    `/tai` bỏ qua chương 1 — sự cố 02/09). Lý do phải có repair riêng:
     chương xáo cũ đã mang `.done` (file webp hợp lệ, `is_known_broken` chỉ tra sổ URL-hỏng nên
     không bắt được) → chạy `/tai` thường (kể cả `--recheck`) sẽ BỎ QUA/không tải lại. Xem
     memory `comix-scramble-s-flag`. **Bot `/repair <link…> [chương]`** (`supervisor.py`):

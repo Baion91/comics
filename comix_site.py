@@ -57,6 +57,7 @@ Playwright là DEP TÙY CHỌN — chỉ import khi tải comix; thiếu thì in
     pip install playwright && python -m playwright install chromium
 """
 
+import base64
 import io
 import json
 import os
@@ -128,11 +129,13 @@ HOOK_JS = """
 # chunk secure-*.js xuất hàm `vs` (export 't'); vs(url) trả object có .apply(canvas) — nó
 # tải ảnh xáo rồi VẼ CÁC Ô ĐÃ SẮP LẠI lên canvas bằng nhiều lệnh drawImage (lưới ô, vd
 # 5×5 ô 188×277). Ta KHÔNG toDataURL (setup này chặn đọc pixel canvas -> ra rỗng, nghi
-# chống-scrape) mà CHẶN drawImage để GHI LẠI BẢN ĐỒ Ô (sx,sy,sw,sh -> dx,dy,dw,dh); rồi
-# tải lại chính ảnh xáo đó (byte ỔN ĐỊNH theo URL) và xếp lại bằng PIL ở Python. Ghi tham
-# số hàm KHÔNG cần compositing/đọc canvas nên chạy được cả khi server không màn hình / RDP
-# ngắt. Ép requestAnimationFrame chạy đồng bộ để apply vẽ ngay trong lúc evaluate.
-# Trả {idx: {w,h,ops:[{argc,a:[...]}]}} — null nếu ghi hụt. Xem [[comix-scramble-s-flag]].
+# chống-scrape) mà CHẶN drawImage để GHI LẠI BẢN ĐỒ Ô (sx,sy,sw,sh -> dx,dy,dw,dh), ĐỒNG
+# THỜI tee window.fetch để BẮT ĐÚNG BYTES ảnh xáo mà vs nhận (CDN trả BIẾN THỂ XÁO KHÁC
+# NHAU theo client: browser vs requests cùng URL khác hash -> tải lại bằng img_client là
+# lệch bản đồ; đã đo 02/09). Python xếp lại bằng PIL trên chính bytes đó. Ghi tham số hàm
+# KHÔNG cần compositing/đọc canvas nên chạy được cả khi server không màn hình / RDP ngắt.
+# Ép requestAnimationFrame chạy đồng bộ để apply vẽ ngay trong lúc evaluate. Cần
+# _route_filter mở wowpic cho fetch/xhr. Trả {idx: {w,h,ops:[{argc,a}],b64}} — null nếu hụt.
 DESCRAMBLE_JS = r"""
 async ({items, timeoutMs}) => {
   const sleep = ms => new Promise(r => setTimeout(r, ms));
@@ -150,6 +153,13 @@ async ({items, timeoutMs}) => {
   const proto = CanvasRenderingContext2D.prototype;
   const origDraw = proto.drawImage;
   const origRAF = window.requestAnimationFrame;
+  const origFetch = window.fetch;
+  const isCdn = u => /wowpic\d*\.store/.test(String(u || ''));
+  const toB64 = buf => {
+    const u8 = new Uint8Array(buf); let s = '';
+    for (let i = 0; i < u8.length; i += 0x8000) s += String.fromCharCode.apply(null, u8.subarray(i, i + 0x8000));
+    return btoa(s);
+  };
   const out = {};
   try {
     let depth = 0;   // rAF đồng bộ (có chặn đệ quy) -> apply vẽ NGAY, khỏi chờ khung hình
@@ -160,13 +170,24 @@ async ({items, timeoutMs}) => {
     for (const it of items) {
       let rec = null;
       for (const fn of fns) {
+        // TEE fetch: giữ lại bytes ảnh xáo mà vs nhận (clone response, không đụng luồng gốc)
+        let captured = null;
+        window.fetch = async function (input, init) {
+          const resp = await origFetch.apply(this, arguments);
+          try {
+            const u = (typeof input === 'string') ? input : (input && input.url) || '';
+            if (isCdn(u) && resp && resp.ok) captured = await resp.clone().arrayBuffer();
+          } catch (e) {}
+          return resp;
+        };
         let obj = null;
         try {
           obj = await Promise.race([
             fn(it.url, new AbortController().signal),
             new Promise((_, rej) => setTimeout(() => rej(new Error('vs timeout')), timeoutMs)),
           ]);
-        } catch (e) { continue; }
+        } catch (e) { window.fetch = origFetch; continue; }
+        window.fetch = origFetch;
         if (!obj || typeof obj.apply !== 'function') continue;
         const ops = [];
         proto.drawImage = function (img, ...a) {   // a: [dx,dy]|[dx,dy,dw,dh]|[sx,sy,sw,sh,dx,dy,dw,dh]
@@ -182,13 +203,17 @@ async ({items, timeoutMs}) => {
         } finally {
           proto.drawImage = origDraw;
         }
-        if (ops.length >= 1) { rec = {w: c ? c.width : 0, h: c ? c.height : 0, ops: ops}; break; }
+        if (ops.length >= 1 && captured && captured.byteLength > 0) {
+          rec = {w: c ? c.width : 0, h: c ? c.height : 0, ops: ops, b64: toB64(captured)};
+          break;
+        }
       }
-      out[String(it.idx)] = rec;   // null nếu không ghi được lệnh drawImage nào
+      out[String(it.idx)] = rec;   // null nếu không ghi được lệnh drawImage / không bắt được bytes
     }
   } finally {
     proto.drawImage = origDraw;
     window.requestAnimationFrame = origRAF;
+    window.fetch = origFetch;
   }
   return out;
 };
@@ -436,6 +461,15 @@ class ComixSession:
             host = ""
         ok = (host == "comix.to" or host.endswith(".comix.to")
               or host.endswith(".cloudflare.com") or host == "cloudflare.com")
+        # CDN ảnh wowpic*.store: CHỈ mở cho fetch/xhr. Hàm giải-xáo `vs` của site phải TỰ
+        # tải ảnh xáo trong browser thì apply() mới vẽ -> mới ghi được bản đồ ô (chặn là
+        # descramble_ops trả rỗng im lặng — đúng gốc lỗi "0 trang" 02/09). Thẻ <img> của
+        # reader là type 'image' -> vẫn chặn để không tốn băng thông tải cả trang.
+        if not ok and re.search(r"(^|\.)wowpic\d*\.store$", host):
+            try:
+                ok = route.request.resource_type in ("fetch", "xhr")
+            except Exception:
+                ok = False
         try:
             route.continue_() if ok else route.abort()
         except Exception:
@@ -684,31 +718,29 @@ class ComixSession:
                     pass
         return out
 
-    def descramble_pages(self, url_path, pairs, img_client, timeout_ms=12000):
+    def descramble_pages(self, url_path, pairs, img_client=None, timeout_ms=12000):
         """Giải-xáo các trang TRÁO Ô (cờ s:1), trả {idx: bytes webp SẠCH}. Cách làm:
-        (1) GHI bản đồ ô qua browser (descramble_ops — không đọc canvas), (2) TẢI LẠI
-        chính ảnh xáo đó bằng `img_client` (byte ổn định theo URL), (3) xếp lại bằng PIL
-        (_unscramble_ops). Trang nào ghi hụt / tải hụt -> bỏ (người gọi coi là thiếu, chạy
-        lại bù). `pairs` = [(idx, url), ...]. Xem [[comix-scramble-s-flag]]."""
+        (1) browser GHI bản đồ ô + BẮT ĐÚNG bytes ảnh xáo mà vs nhận (descramble_ops —
+        không đọc canvas), (2) xếp lại bằng PIL (_unscramble_ops) trên chính bytes đó.
+        KHÔNG tải lại bằng img_client: CDN trả biến thể xáo KHÁC theo client (browser vs
+        requests cùng URL khác hash) -> lệch bản đồ (đo 02/09). `img_client` giữ trong
+        chữ ký để tương thích, không dùng. Trang ghi hụt -> bỏ (người gọi coi là thiếu,
+        chạy lại bù). `pairs` = [(idx, url), ...]. Xem [[comix-scramble-s-flag]]."""
         if not pairs:
             return {}
         recs = self.descramble_ops(url_path, pairs, timeout_ms=timeout_ms)
-        url_by_idx = {i: u for i, u in pairs}
         out = {}
         for idx, rec in recs.items():
-            url = url_by_idx.get(idx)
-            if not url:
-                continue
             try:
-                resp = img_client.get(url)
-                data = getattr(resp, "content", None)
-                if not data:
+                b64 = rec.get("b64")
+                if not b64:
                     continue
+                data = base64.b64decode(b64)
                 clean = _unscramble_ops(data, rec.get("w"), rec.get("h"), rec["ops"])
                 if clean:
                     out[idx] = clean
             except Exception as e:
-                print(f"\n    ! Giải-xáo trang {idx:03d} hụt (tải/xếp): {e}",
+                print(f"\n    ! Giải-xáo trang {idx:03d} hụt (giải mã/xếp): {e}",
                       file=sys.stderr, flush=True)
         return out
 
@@ -1180,8 +1212,11 @@ def _repair_scramble_chapter(cs, img_client, folder, cands, side, args):
     if not present:
         return "noimg", 0
     # Dò offline: bội-10 trước (đúng bẫy comix -> chương hỏng dừng sớm), rồi phần còn lại.
+    # KÍCH HOẠT khi (a) có trang trông bị xáo, HOẶC (b) có KHOẢNG TRỐNG số trang — ca trang
+    # s:1 giải-xáo hụt nên THIẾU HẲN file (không có gì để dò), vd chương 1 kẹt 02/09.
     order = sorted(present, key=lambda i: (i % 10 != 0, i))
-    if not any(core.looks_scrambled(present[i]) for i in order):
+    has_gap = bool(set(range(1, max(present) + 1)) - set(present))
+    if not has_gap and not any(core.looks_scrambled(present[i]) for i in order):
         return "clean", 0
     # Lấy URL: ưu tiên bản TRÙNG id sidecar (đúng thứ tự trang); else bản official; else best.
     ver = None
@@ -1219,9 +1254,15 @@ def _repair_scramble_chapter(cs, img_client, folder, cands, side, args):
         p = _fix_ext(folder / f"{i:03d}.webp")
         _recompress_webp(p, getattr(args, "comix_q", RECOMPRESS_Q))
         nfix += 1
-    still = [i for i, it in enumerate(page_items, 1)
-             if it.get("s") and _page_file(folder, i) is not None
-             and core.looks_scrambled(_page_file(folder, i))]
+    # CÒN SÓT = trang s:1 THIẾU HẲN hoặc còn dấu xáo. Trước đây chỉ đếm file đang có ->
+    # trang thiếu lọt lưới -> "fixed" với 0 trang rồi đóng .done sai (chương 1, 02/09).
+    still = []
+    for i, it in enumerate(page_items, 1):
+        if not it.get("s"):
+            continue
+        f = _page_file(folder, i)
+        if f is None or core.looks_scrambled(f):
+            still.append(i)
     if still:
         return "partial", nfix
     _mark_done(folder)
