@@ -625,9 +625,126 @@ class NetTruyenProvider:
         return u if u.startswith("http") else self.BASE + u
 
 
+class ZetTruyenProvider:
+    """zettruyen1.com (ZetTruyen) - danh sách chương qua API JSON, ảnh nhúng SẴN trong
+    HTML trang đọc (SSR). Cloudflare có mặt nhưng KHÔNG challenge GET thường (như NetTruyen).
+
+    Danh sách chương KHÔNG nằm trong HTML trang series (chỉ có nút First/Latest) — trang
+    dùng `window.comicData.apiUrl` gọi AJAX. Endpoint JSON PHÂN TRANG:
+        GET /api/comics/{slug}/chapters?per_page=100&page=N
+        -> {"success":true,"data":{"chapters":[{chapter_num, chapter_slug, ...}],
+                                    "total","current_page","per_page","last_page"}}
+    per_page tối đa ~100 (500 -> 404). Lặp tới `last_page` gom hết. `chapter_num` là int cho
+    chương nguyên, float cho chương lẻ; `chapter_slug` = "chapter-391" | "chapter-331-2".
+
+    ⚠️ URL trang đọc chương LẺ dùng DẤU CHẤM: chương 331.2 -> /chuong-331.2 (ĐÚNG 8 ảnh);
+    /chuong-331-2 lại rơi về chương 331 nguyên (SAI). Nên số cho URL = đuôi chapter_slug
+    đổi '-' -> '.': "chapter-331-2" -> "331.2"; "chapter-391" -> "391".
+
+    Ảnh mỗi chương: HTML trang đọc nhúng SẴN trong `<div class="chapter-images-container">`
+    các thẻ `<img src='https://cdnN.zetimage.com/{slug}/{num}/{page}.jpg' ... onerror=...>`
+    theo đúng thứ tự trang. ⚠️ HOST CDN ĐỔI THEO CHƯƠNG (thấy cdn1/cdn3/cdn4) -> lấy ảnh
+    HOST-AGNOSTIC (khớp *.zetimage.com), KHÔNG hard-code host. Mỗi ảnh xuất hiện 2 lần
+    (src + onerror cùng URL) -> dedup giữ thứ tự.
+
+    ⚠️ Đuôi URL là .jpg nhưng BYTES thật là WebP/PNG (đổi theo chương/CDN), content-type
+    image/jpeg. Engine đặt tên file theo đuôi URL (001.jpg) nhưng kiểm ảnh dựa NỘI DUNG
+    (magic bytes + Pillow) nên vẫn "ok"; reader trả image/jpeg còn trình duyệt render theo
+    content-sniffing. Không đụng core, chấp nhận lệch đuôi (cosmetic).
+
+    ⚠️ CDN cdn*.zetimage.com CHỐNG HOTLINK: thiếu Referer -> 403; có Referer đúng DOMAIN site
+    (www/non-www đều được) -> 200. `run()` gắn `referer` vào session TRƯỚC khi tải ảnh/bìa.
+    (Danh sách chương qua API KHÔNG cần Referer -> check_updates.py peek được bình thường.)
+
+    ⚠️ Site có số trong domain (zettruyen1) -> nhiều khả năng đổi như TruyenQQ. Khi đổi:
+    thêm domain mới vào `domains`, đổi BASE + referer sang domain HIỆN HÀNH (CDN kiểm referer
+    theo domain đó). Tên hiển thị có dấu từ `<h1 class="comic-title-content">`.
+    """
+
+    name = "zettruyen"
+    BASE = "https://www.zettruyen1.com"
+    API = "https://www.zettruyen1.com/api/comics"
+    domains = ["zettruyen1.com"]              # resolver đã cắt "www." — chỉ cần domain trần
+    referer = "https://www.zettruyen1.com/"   # CDN đòi hotlink; ĐỔI theo BASE khi rotate domain
+
+    def __init__(self):
+        self._html_cache = {}  # đỡ tải lại trang series (title + cover dùng chung)
+
+    def _series_html(self, slug: str) -> str:
+        if slug not in self._html_cache:
+            self._html_cache[slug] = get_text(f"{self.BASE}/truyen-tranh/{slug}") or ""
+        return self._html_cache[slug]
+
+    def series_slug(self, text: str) -> str:
+        text = re.split(r"[?#]", text.strip())[0].rstrip("/")  # bỏ query/fragment
+        m = re.search(r"/truyen-tranh/([^/]+)", text)          # segment đầu (loại /chuong-N)
+        return m.group(1) if m else text.rsplit("/", 1)[-1]
+
+    def title_from_slug(self, slug: str) -> str:
+        html = self._series_html(slug)
+        m = re.search(r'<h1[^>]*class="comic-title-content"[^>]*>([^<]+)</h1>', html, re.I)
+        if m:
+            return m.group(1).strip()
+        # dự phòng: bỏ đuôi id số nếu có rồi làm tên hiển thị từ slug
+        name = re.sub(r"-\d+$", "", slug)
+        return name.replace("-", " ").replace("_", " ").title()
+
+    def list_chapters(self, slug: str):
+        seen = {}  # number -> Chapter (dedup theo số chương)
+        page, last = 1, 1
+        while page <= last:
+            data = get_json(f"{self.API}/{slug}/chapters?per_page=100&page={page}")
+            if not data or not data.get("success"):
+                break
+            d = data.get("data") or {}
+            last = d.get("last_page", page) or page
+            for c in d.get("chapters") or []:
+                # đuôi chapter_slug đổi '-' -> '.' = số dùng cho URL trang đọc (331-2 -> 331.2)
+                tail = str(c.get("chapter_slug") or "").removeprefix("chapter-")
+                if not tail:                       # dự phòng khi thiếu slug
+                    tail = str(c.get("chapter_num", ""))
+                numstr = tail.replace("-", ".")
+                try:
+                    num = float(numstr)
+                except ValueError:
+                    continue                       # nhãn phi-số hiếm gặp -> bỏ
+                ref = f"{self.BASE}/truyen-tranh/{slug}/chuong-{numstr}"
+                seen[num] = Chapter(num, "", ref)
+            page += 1
+        return [seen[n] for n in sorted(seen)]
+
+    def chapter_images(self, chapter):
+        html = get_text(chapter.ref)
+        if not html:
+            return []
+        i = html.find("chapter-images-container")  # bó về khối ảnh, tránh thumbnail/ads ngoài
+        area = html[i:] if i != -1 else html
+        seen, out = set(), []   # giữ nguyên thứ tự xuất hiện, bỏ trùng (onerror lặp mỗi URL)
+        for u in re.findall(r"src=['\"](https?://[^'\"]*zetimage\.com/[^'\"]+)['\"]", area):
+            low = u.split("?", 1)[0].lower()
+            if "/thumb/" in low:
+                continue          # bỏ bìa truyện gợi ý (cdn*.zetimage.com/thumb/{slug}.jpg)
+            if not low.endswith((".jpg", ".jpeg", ".png", ".webp")):
+                continue
+            if not re.search(r"/[0-9.]+/\d+\.[a-z]+$", low):
+                continue          # đòi đúng dạng /{num}/{page}.ext -> loại banner/logo lỡ có
+            if u not in seen:
+                seen.add(u)
+                out.append(u)
+        return out
+
+    def cover_url(self, slug: str):
+        html = self._series_html(slug)
+        m = re.search(r'<meta property="og:image" content="([^"]+)"', html)
+        if not m:
+            return None
+        u = m.group(1)
+        return u if u.startswith("http") else self.BASE + u
+
+
 # --- Đăng ký: thêm site mới = thêm 1 dòng vào đây -------------------------------
 PROVIDERS = [AsuraProvider(), RavenProvider(), DilibProvider(), MangaDexProvider(),
-             TruyenQQProvider(), ACGNProvider(), NetTruyenProvider()]
+             TruyenQQProvider(), ACGNProvider(), NetTruyenProvider(), ZetTruyenProvider()]
 
 by_name = {p.name: p for p in PROVIDERS}                 # tra theo cờ --site
 REGISTRY = {d: p for p in PROVIDERS for d in p.domains}  # tra theo domain của URL

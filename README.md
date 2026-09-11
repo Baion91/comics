@@ -25,7 +25,7 @@ Các script trong thư mục này, mỗi cái một việc:
 ## 1. Tải truyện — `comic_downloader.py` (hoặc bấm `Tai truyen.bat`)
 
 Một tool cho MỌI site, tự nhận site theo link (hiện hỗ trợ **Asura**, **Raven**, **Dilib**,
-**MangaDex**, **TruyenQQ**, **Comix**, **ACGN**).
+**MangaDex**, **TruyenQQ**, **Comix**, **ACGN**, **NetTruyen**, **ZetTruyen**).
 
 > **Raven Scans đã đổi `ravenscans.org` → `ravenscans.net`** (và đổi cấu trúc URL chương) —
 > dùng link `.net` mới; link `.org` cũ vẫn được nhận.
@@ -40,6 +40,13 @@ Một tool cho MỌI site, tự nhận site theo link (hiện hỗ trợ **Asura
 > nên tool tự gửi kèm Referer — không cần làm gì thêm. ⚠️ Site này **đổi tên miền liên tục**
 > (truyenqq.com → ...to → ...ko → ...); nếu link cũ không nhận nữa thì dùng **domain hiện hành**,
 > hoặc báo để thêm domain mới vào provider.
+
+> **ZetTruyen** (zettruyen1.com — truyện tiếng Việt): dán link trang truyện
+> `https://www.zettruyen1.com/truyen-tranh/{slug}` (dán link 1 chương cũng được). Site HTML tĩnh
+> nên tải thẳng, không cần mở trình duyệt; ảnh trên CDN `zetimage.com` **chống hotlink** nên tool
+> tự gửi kèm Referer — không cần làm gì thêm. Lưu ý ảnh có đuôi `.jpg` nhưng nhiều chương thực chất
+> là WebP/PNG — tool kiểm theo nội dung nên vẫn tải & đọc bình thường. ⚠️ Domain có số
+> (zettruyen**1**) nên **dễ đổi** như TruyenQQ; link cũ không nhận nữa thì báo để thêm domain mới.
 
 > **ACGN** (comic.acgn.cc, 動漫戲說 — truyện tiếng Trung phồn thể): dán link trang truyện
 > `https://comic.acgn.cc/manhua-{slug}.htm` **hoặc** link 1 tập `https://comic.acgn.cc/view-{id}.htm`

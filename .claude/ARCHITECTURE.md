@@ -40,7 +40,21 @@ cách chạy thật + decode thử ảnh.
     SUB-PATH `/truyen-tranh/{slug}/chuong-N`, ảnh nhúng `<img class="lozad" data-src="…">`
     CDN `images.truyenonline.cc` KHÔNG đòi Referer → referer=None; tên có dấu từ
     `<h1 class="title-detail">`; regex số chương dùng `[0-9]` thuần để không nuốt dấu `\`
-    của blob `__NEXT_DATA__`; chỉ nhận `nettruyen.id`, clone họ nettruyen backend/CDN KHÁC).
+    của blob `__NEXT_DATA__`; chỉ nhận `nettruyen.id`, clone họ nettruyen backend/CDN KHÁC),
+    **ZetTruyenProvider** (`zettruyen1.com`, LAI: danh sách chương qua API JSON PHÂN TRANG
+    `/api/comics/{slug}/chapters?per_page=100&page=N` [trang series chỉ có nút First/Latest,
+    `window.comicData.apiUrl` mới có list; per_page tối đa ~100, lặp tới `last_page`], nhưng
+    ẢNH nhúng SẴN trong HTML trang đọc `<div class="chapter-images-container">`. Cloudflare
+    KHÔNG challenge GET thường (như NetTruyen). Chương lẻ: `chapter_slug` "chapter-331-2" →
+    URL trang đọc `/chuong-331.2` (đổi '-'→'.'; DÙNG DẤU CHẤM — `/chuong-331-2` rơi về chương
+    331 nguyên, SAI). ⚠️ HOST CDN ĐỔI THEO CHƯƠNG (cdn1/cdn3/cdn4.zetimage.com) → lấy ảnh
+    HOST-AGNOSTIC + đòi dạng `/{num}/{page}.ext`, dedup vì `onerror` lặp mỗi URL. ⚠️ Đuôi URL
+    `.jpg` nhưng BYTES thật là WebP/PNG/JPEG lẫn lộn theo chương — file lưu `NNN.jpg` nhưng
+    engine kiểm ảnh dựa NỘI DUNG nên OK, reader/browser content-sniff render; chấp nhận lệch
+    đuôi (không đụng core). ⚠️ CDN cdn*.zetimage.com CHỐNG HOTLINK → referer=`{BASE}/` (kiểm
+    theo domain site; API list KHÔNG cần referer nên check_updates peek được). Tên có dấu từ
+    `<h1 class="comic-title-content">`. Domain có số (zettruyen1) → dễ đổi như TruyenQQ: đổi
+    thì thêm `domains` + đổi BASE/referer sang domain hiện hành).
   - `comic_downloader.py` — CLI mỏng: `resolve_provider()` tự nhận site theo domain
     của URL (hoặc cờ `--site`), rồi gọi qua `dispatch()`: provider thường → `core.run`;
     provider có `custom_run` (hiện chỉ comix) → loop riêng. Cờ giữ y hệt bản cũ
