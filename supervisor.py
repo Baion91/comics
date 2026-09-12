@@ -51,6 +51,7 @@ DL_LOG_MAX = 2_000_000    # cắt log khi vượt ~2MB
 # ra CHECK_RESULT_FILE để supervisor đọc lại (KHÔNG parse stdout — _request có thể in 429/503).
 WATCHLIST_FILE = os.path.join(META_DIR, "watchlist.json")
 CHECK_SCRIPT = os.path.join(BASE_DIR, "check_updates.py")
+PROVIDER_ADMIN = os.path.join(BASE_DIR, "provider_admin.py")   # xem/sửa domain provider
 CHECK_RESULT_FILE = os.path.join(META_DIR, "watch-check-result.json")
 CHECK_TIMEOUT = 1500      # giây tối đa cho 1 lần quét cả watchlist
 
@@ -223,9 +224,12 @@ HELP_TEXT = (
     "     vd: /tai <link> 1-20  hoặc  /tai <link> 5,7,20-25  (bỏ trống = cả truyện)\n"
     "     comix: thêm tên nhóm để GHIM đúng nguồn (vd /tai <link> 5 Hivetoon);\n"
     "     chương đã ghim không bị thay bằng Official; bỏ ghim: /tai <link> 5 auto\n"
+    "     GHÉP vào folder có sẵn (tải bù từ nguồn khác): /tai <link> 380-390 into:\"Tên folder\"\n"
+    "        (xem kế hoạch rồi bấm ✅ xác nhận; chương .done được giữ, không tạo folder trùng)\n"
     "/repair <link comix> [chương] — vá trang bị TRÁO Ô (bản Official comix.to)\n"
     "     vd: /repair <link>  (cả bộ)  hoặc  /repair <link> 1  (thử 1 chương trước)\n"
     "/trangthai — xem truyện đang tải + hàng chờ\n"
+    "/provider — xem provider + domain; sửa (admin): /provider add|set|del|clear <name> …\n"
     "/stop — dừng truyện đang tải + xoá hàng chờ (của bạn)\n"
     "/killnow — chỉ dừng truyện đang tải (của bạn)\n"
     "/clearq — chỉ xoá hàng chờ (của bạn)\n"
@@ -294,6 +298,8 @@ class Supervisor:
         self._dl_logpos = 0         # offset đầu log của job đang chạy — /trangthai đọc tiến độ
         self._wl_lock = threading.Lock()   # bảo vệ ghi watchlist.json (supervisor = writer duy nhất)
         self._checking = False             # đang chạy 1 lần auto-check -> chặn chạy chồng
+        self._pending = {}                 # id -> {url,dest,chapters,cid,ts}: chờ bấm nút xác nhận GHÉP
+        self._pending_lock = threading.Lock()
 
     def reader_url(self):
         return f"http://127.0.0.1:{self.reader_port}"
@@ -518,6 +524,7 @@ class Supervisor:
             {"command": "tai", "description": "Tải truyện: /tai <link> [chương vd 1-20] [nhóm comix] (admin)"},
             {"command": "repair", "description": "Vá trang tráo ô comix: /repair <link> [chương] (admin)"},
             {"command": "trangthai", "description": "Xem tải đang chạy + hàng chờ (admin)"},
+            {"command": "provider", "description": "Xem/sửa domain provider: /provider [add|set|del <name>...]"},
             {"command": "stop", "description": "Dừng tải + xoá hàng chờ của bạn (admin)"},
             {"command": "killnow", "description": "Chỉ dừng truyện đang tải của bạn (admin)"},
             {"command": "clearq", "description": "Chỉ xoá hàng chờ của bạn (admin)"},
@@ -558,6 +565,10 @@ class Supervisor:
                     log(f"! Lỗi xử lý lệnh Telegram: {e}")   # 1 lệnh lỗi KHÔNG làm chết bot
 
     def _process_update(self, token, upd):
+        cb = upd.get("callback_query")
+        if cb:                                  # bấm nút inline (xác nhận GHÉP folder)
+            self.handle_callback(token, cb)
+            return
         msg = upd.get("message") or upd.get("channel_post") or {}
         chat = msg.get("chat") or {}
         cid = chat.get("id")
@@ -600,6 +611,8 @@ class Supervisor:
             self.handle_admin(token, cid, "remove", raw)
         elif text.startswith("/trangthai"):
             self.handle_status(token, cid)
+        elif text.startswith("/provider"):
+            self.handle_provider(token, cid, raw)
         elif text.startswith("/tai"):
             self.handle_tai(token, cid, raw)
         elif text.startswith("/repair"):
@@ -834,7 +847,8 @@ class Supervisor:
                                 "resumed": j.get("state") == "running",
                                 "chapters": j.get("chapters"),
                                 "repair": bool(j.get("repair")),
-                                "group": j.get("group")})
+                                "group": j.get("group"),
+                                "dest": j.get("dest")})
         return out
 
     def _kill_stray_downloaders(self):
@@ -873,27 +887,29 @@ class Supervisor:
                 self._save_jobs_locked()
             log(f"Nạp lại {len(loaded)} truyện trong hàng đợi từ phiên trước -> tải tiếp.")
 
-    def _enqueue_jobs(self, pairs, repair=False, group=None):
+    def _enqueue_jobs(self, pairs, repair=False, group=None, dest=None):
         """Thêm [(url, cid[, chapters]), ...] vào hàng đợi tải. chapters = None -> tải cả
         truyện; hoặc chuỗi chọn chương '5,7,20-25' (như --chapters). repair=True -> job
         chạy comic_downloader `--repair-scramble` (vá trang tráo ô, KHÔNG tải chương mới).
         group = tên nhóm GHIM cho comix (`--group`; 'auto' = bỏ ghim), None = luật mặc định.
-        Chống trùng theo (url, chapters, repair, group) nên job tải/vá/ghim cùng truyện
-        KHÔNG đè nhau. Trả (added, dup). Dùng chung cho /tai, /repair và auto-check."""
+        dest = tên folder GHÉP vào (`--dest-name`; tải bù từ provider khác vào folder có sẵn),
+        None = tạo folder theo tên truyện như thường. Chống trùng theo (url, chapters, repair,
+        group, dest) nên job tải/vá/ghim/ghép cùng truyện KHÔNG đè nhau. Trả (added, dup).
+        Dùng chung cho /tai, /repair, auto-check và xác nhận GHÉP."""
         added, dup = [], 0
         with self._dlq_lock:
-            have = {(j["url"], j.get("chapters"), bool(j.get("repair")), j.get("group"))
-                    for j in self._jobs}
+            have = {(j["url"], j.get("chapters"), bool(j.get("repair")), j.get("group"),
+                     j.get("dest")) for j in self._jobs}
             for pair in pairs:
                 url, cid = pair[0], pair[1]
                 chapters = pair[2] if len(pair) > 2 else None
-                key = (url, chapters, repair, group)
+                key = (url, chapters, repair, group, dest)
                 if key in have:
                     dup += 1
                 else:
                     self._jobs.append({"url": url, "cid": cid, "state": "pending",
                                        "resumed": False, "chapters": chapters,
-                                       "repair": repair, "group": group})
+                                       "repair": repair, "group": group, "dest": dest})
                     have.add(key)
                     added.append(url)
             if added:
@@ -906,7 +922,12 @@ class Supervisor:
         if not self._is_admin(cid):
             tg_api(token, "sendMessage", {"chat_id": cid, "text": "⛔ Bạn không phải admin."})
             return
-        words = raw.split()[1:]
+        # Tách into:"Tên folder" (GHÉP vào folder có sẵn) TRƯỚC khi parse — kẻo tên folder
+        # bị nhầm thành tên nhóm/chương. Chấp nhận có ngoặc kép (tên có dấu cách) hoặc không.
+        mdest = re.search(r'into:"([^"]+)"', raw) or re.search(r'into:(\S+)', raw)
+        dest = mdest.group(1).strip() if mdest else None
+        body = (raw[:mdest.start()] + raw[mdest.end():]) if mdest else raw
+        words = body.split()[1:]
         urls = [w for w in words if w.startswith("http")]
         # Phần còn lại (không phải link): mẩu SỐ/phẩy/gạch = chọn chương ("1-20",
         # "5,7,20-25", "5, 7, 20-25", "5 7 20-25"); mẩu CHỮ = tên nhóm GHIM cho comix
@@ -924,7 +945,27 @@ class Supervisor:
                         "  /tai https://... 1-20 — chỉ chương 1→20\n"
                         "  /tai https://... 5,7,20-25 — chương lẻ + dải\n"
                         "  /tai https://comix.to/... 5 Hivetoon — GHIM nhóm (comix)\n"
-                        "  /tai https://comix.to/... 5 auto — bỏ ghim, về mặc định"})
+                        "  /tai https://comix.to/... 5 auto — bỏ ghim, về mặc định\n"
+                        "  /tai https://... 380-390 into:\"Tên folder\" — GHÉP vào folder có sẵn"})
+            return
+        # GHÉP vào folder có sẵn (tải bù từ provider khác) -> đi luồng PREVIEW + nút xác nhận,
+        # KHÔNG enqueue thẳng (để người bấm ✅ nhìn kế hoạch trước, tránh trùng/lệch số chương).
+        if dest:
+            if len(urls) != 1:
+                tg_api(token, "sendMessage", {"chat_id": cid,
+                    "text": "⚠ Ghép (into:) chỉ nhận ĐÚNG 1 link nguồn."})
+                return
+            if "comix.to" in urls[0]:
+                tg_api(token, "sendMessage", {"chat_id": cid,
+                    "text": "⚠ Ghép (into:) chưa hỗ trợ nguồn comix.to (chạy loop Chromium riêng)."})
+                return
+            if group:
+                tg_api(token, "sendMessage", {"chat_id": cid,
+                    "text": "⚠ into: (ghép folder) không đi cùng ghim nhóm comix. Bỏ 1 trong 2."})
+                return
+            tg_api(token, "sendMessage", {"chat_id": cid,
+                "text": f"⏳ Đang lập kế hoạch ghép vào “{dest}”…"})
+            self._run_bg(self._merge_preview, token, cid, urls[0], dest, chapters)
             return
         if group and not any("comix.to" in u for u in urls):
             tg_api(token, "sendMessage", {"chat_id": cid,
@@ -944,6 +985,109 @@ class Supervisor:
         parts.append("Gõ /trangthai để xem đang tải gì và còn chờ mấy truyện.")
         tg_api(token, "sendMessage", {"chat_id": cid, "text": "\n".join(parts),
             "disable_web_page_preview": "true"})
+
+    # --- GHÉP vào folder có sẵn: preview (dry-run) -> nút xác nhận -> enqueue -------
+    PENDING_TTL = 600   # giây: nút xác nhận GHÉP hết hạn sau 10'
+
+    def _prune_pending(self):
+        """Dọn pending quá hạn (gọi trong _pending_lock)."""
+        now = time.time()
+        for k in [k for k, v in self._pending.items() if now - v["ts"] > self.PENDING_TTL]:
+            self._pending.pop(k, None)
+
+    def _merge_preview(self, token, cid, url, dest, chapters):
+        """Chạy downloader --dry-run (nền), đọc PLAN_JSON, gửi tin preview kèm nút inline."""
+        cmd = [sys.executable, os.path.join(BASE_DIR, "comic_downloader.py"), url,
+               "--dest-name", dest, "--dry-run"]
+        if chapters:
+            cmd += ["--chapters", chapters]
+        try:
+            r = subprocess.run(cmd, cwd=BASE_DIR, creationflags=NO_WINDOW, timeout=180,
+                               capture_output=True, text=True, encoding="utf-8", errors="replace")
+            out = (r.stdout or "") + "\n" + (r.stderr or "")
+        except Exception as e:
+            tg_api(token, "sendMessage", {"chat_id": cid, "text": f"⚠ Lỗi lập kế hoạch: {e}"})
+            return
+        m = re.search(r"PLAN_JSON:(\{.*\})", out)
+        if not m:
+            tg_api(token, "sendMessage", {"chat_id": cid,
+                "text": "⚠ Không lập được kế hoạch (URL sai / site lỗi / provider chưa hỗ trợ?).\n"
+                        + out.strip()[-500:], "disable_web_page_preview": "true"})
+            return
+        try:
+            p = json.loads(m.group(1))
+        except ValueError:
+            tg_api(token, "sendMessage", {"chat_id": cid, "text": "⚠ Kế hoạch lỗi định dạng."})
+            return
+        L = [f"🔀 GHÉP vào folder: “{dest}”",
+             f"Nguồn: {self._slug(url)}" + (f" · chương {chapters}" if chapters else ""), ""]
+        L.append(f"• Đã đủ (bỏ qua): {p['done']}")
+        L.append(f"• Tải MỚI (vắng hẳn): {p['add_new']}"
+                 + (f" — {p['add_new_str']}" if p['add_new'] else ""))
+        if p["explicit"]:
+            L.append(f"• Tải LẠI TRỌN, GHI ĐÈ: {p['overwrite']}"
+                     + (f" — {p['overwrite_str']}" if p['overwrite'] else ""))
+        elif p["partial_skip"]:
+            L.append(f"• Có ảnh chưa .done → bỏ qua (thêm chọn chương để ghi đè): "
+                     f"{p['partial_skip']} — {p['partial_skip_str']}")
+        if p["missing_src"]:
+            L.append(f"• Nguồn KHÔNG có → vẫn thiếu: {p['missing_src']} — {p['missing_src_str']}")
+        will = p["add_new"] + p["overwrite"]
+        if will == 0:
+            L.append("\nKhông có gì để tải (mọi chương đã đủ hoặc bị bỏ qua an toàn).")
+            tg_api(token, "sendMessage", {"chat_id": cid, "text": "\n".join(L),
+                                          "disable_web_page_preview": "true"})
+            return
+        L.append(f"\nBấm ✅ để tải {will} chương vào folder này.")
+        pid = os.urandom(4).hex()
+        with self._pending_lock:
+            self._prune_pending()
+            self._pending[pid] = {"url": url, "dest": dest, "chapters": chapters,
+                                  "cid": cid, "ts": time.time()}
+        kb = {"inline_keyboard": [[
+            {"text": "✅ Xác nhận tải", "callback_data": f"mrg:ok:{pid}"},
+            {"text": "❌ Huỷ", "callback_data": f"mrg:no:{pid}"}]]}
+        tg_api(token, "sendMessage", {"chat_id": cid, "text": "\n".join(L),
+            "reply_markup": json.dumps(kb), "disable_web_page_preview": "true"})
+
+    def handle_callback(self, token, cb):
+        """Xử lý bấm nút inline (callback_query). Hiện chỉ có nút xác nhận/huỷ GHÉP folder."""
+        cbid = cb.get("id")
+        data = cb.get("data") or ""
+        msg = cb.get("message") or {}
+        cid = (msg.get("chat") or {}).get("id")
+        mid = msg.get("message_id")
+        tg_api(token, "answerCallbackQuery", {"callback_query_id": cbid})   # tắt spinner
+        if not data.startswith("mrg:") or cid is None:
+            return
+        try:
+            _, action, pid = data.split(":", 2)
+        except ValueError:
+            return
+        if not self._is_admin(cid):
+            tg_api(token, "editMessageText", {"chat_id": cid, "message_id": mid,
+                "text": "⛔ Cần quyền admin để xác nhận."})
+            return
+        with self._pending_lock:
+            self._prune_pending()
+            pend = self._pending.pop(pid, None)
+        if not pend:
+            tg_api(token, "editMessageText", {"chat_id": cid, "message_id": mid,
+                "text": "⌛ Phiên xác nhận đã hết hạn hoặc đã xử lý. Gửi lại lệnh nếu cần."})
+            return
+        if action == "no":
+            tg_api(token, "editMessageText", {"chat_id": cid, "message_id": mid,
+                "text": f"❌ Đã huỷ ghép vào “{pend['dest']}”."})
+            return
+        added, dup = self._enqueue_jobs([(pend["url"], cid, pend["chapters"])],
+                                        dest=pend["dest"])
+        if added:
+            txt = (f"✅ Đã thêm vào hàng đợi: ghép vào “{pend['dest']}”"
+                   + (f" (chương {pend['chapters']})" if pend["chapters"] else "")
+                   + ".\nGõ /trangthai để theo dõi.")
+        else:
+            txt = "⏭ Job ghép này đã có trong hàng đợi."
+        tg_api(token, "editMessageText", {"chat_id": cid, "message_id": mid, "text": txt})
 
     def handle_repair(self, token, cid, raw):
         """/repair <link comix> [chương] — VÁ trang TRÁO Ô (bản Official comix.to đã tải):
@@ -994,9 +1138,33 @@ class Supervisor:
             lbl = f"{lbl} (ch {job['chapters']})"
         if job.get("group"):
             lbl = f"{lbl} [{job['group']}]"  # ghim nhóm comix ('auto' = bỏ ghim)
+        if job.get("dest"):
+            lbl = f"{lbl} → 🔀“{job['dest']}”"  # GHÉP vào folder có sẵn
         if job.get("repair"):
             lbl = "🧩 " + lbl                # job SỬA TRÁO Ô
         return lbl
+
+    def handle_provider(self, token, cid, raw):
+        """/provider [list|add|set|del|clear ...] — xem/sửa DOMAIN của provider.
+        'list' (mặc định) mở cho mọi người; các lệnh sửa cần admin. Chạy provider_admin.py
+        (subprocess, import providers) rồi chuyển thẳng stdout — supervisor không import
+        providers. Có hiệu lực NGAY cho job tải/kiểm kế tiếp (tiến trình con nạp lại)."""
+        words = raw.split()
+        sub = words[1].lower() if len(words) > 1 else "list"
+        if sub != "list" and not self._is_admin(cid):
+            tg_api(token, "sendMessage", {"chat_id": cid,
+                "text": "⛔ Sửa domain provider cần quyền admin (xem thì gõ /provider)."})
+            return
+        try:
+            r = subprocess.run([sys.executable, PROVIDER_ADMIN, *words[1:]],
+                               cwd=BASE_DIR, creationflags=NO_WINDOW, timeout=30,
+                               capture_output=True, text=True, encoding="utf-8",
+                               errors="replace")
+            out = (r.stdout or "").strip() or (r.stderr or "").strip() or "(không có kết quả)"
+        except Exception as e:
+            out = f"⚠ Lỗi chạy provider_admin: {e}"
+        tg_api(token, "sendMessage", {"chat_id": cid, "text": out[:3900],
+                                      "disable_web_page_preview": "true"})
 
     def handle_status(self, token, cid):
         """/trangthai — ảnh chụp hàng đợi: truyện đang tải (kèm tiến độ đọc từ log)
@@ -1239,6 +1407,8 @@ class Supervisor:
                         cmd += ["--repair-scramble"]
                     if job.get("group"):                  # ghim nhóm comix ('auto' = bỏ ghim)
                         cmd += ["--group", str(job["group"])]
+                    if job.get("dest"):                   # GHÉP vào folder có sẵn (tải bù nguồn khác)
+                        cmd += ["--dest-name", str(job["dest"])]
                     proc = subprocess.Popen(              # -u: không buffer -> tail real-time
                         cmd, cwd=BASE_DIR, creationflags=NO_WINDOW,
                         stdout=logf, stderr=subprocess.STDOUT)

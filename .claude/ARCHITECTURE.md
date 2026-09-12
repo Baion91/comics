@@ -227,6 +227,30 @@ cách chạy thật + decode thử ảnh.
     Echo không dấu + `chcp 65001` (Python tự in tiếng Việt utf-8).
   - Thêm site mới: viết 1 provider + 1 dòng `PROVIDERS`. Đổi domain: thêm domain vào
     `domains` (giữ cũ); đổi host API/CDN thì sửa hằng `API`/`BASE` trong provider đó.
+  - **Override domain qua bot (KHÔNG sửa code, 12/09/2026)** — cho ca site xoay tên miền
+    (TruyenQQ): `providers.py` đọc `.reader-meta/provider-domains.json` lúc IMPORT
+    (`_apply_overrides`, TRƯỚC khi dựng `REGISTRY`) → nối `domains_add`, đổi `BASE`/`referer`
+    lên INSTANCE. Mọi tiến trình con (downloader, check_updates) tự áp bản mới ở lần chạy kế →
+    **KHÔNG cần restart supervisor** (supervisor stdlib-only, không import providers). `provider_admin.py`
+    = CLI ghi file đó + xem trạng thái hiệu lực (import providers): `list|add|set|del|clear`;
+    validate tên provider (chặn comix — browser, domain cố định), xoá được domain THÊM nhưng
+    KHÔNG xoá domain gốc trong code. ⚠️ Chỉ thêm domain là đủ để NHẬN link; site chống-hotlink
+    (TruyenQQ/Zet) còn phải set `base`+`referer` sang domain mới thì ảnh mới tải (CDN kiểm referer
+    theo domain); site đã bật Cloudflare "Verify you are human" (challenge) thì thêm domain VÔ ÍCH
+    (requests-trần không qua). Bot: `/provider` (list mở cho mọi người; add/set/del/clear cần admin)
+    chạy `provider_admin.py` (subprocess) rồi relay stdout.
+  - **GHÉP tải bù vào folder có sẵn (`--dest-name`, 12/09/2026)** — tải chương thiếu từ provider
+    KHÁC vào ĐÚNG folder truyện đang có (reader định danh = tên folder = sid → giữ bookmark/tiến-
+    trình/`series-meta`) thay vì tạo folder trùng. `core.run` khi có `args.dest_name`: `base_title` =
+    dest-name (bỏ `title_from_slug` → khỏi 1 request), ép tên chương chỉ `Chapter N` (bỏ title, qua
+    `_merge_folder`) để SỐ chương ↔ folder là 1:1 xuyên provider, và KHÔNG tải/đè bìa. An toàn 3 tầng
+    (`_classify_merge`): (1) chương `.done` → bỏ qua tuyệt đối; (2) vắng hẳn → tải mới; (3) có ảnh
+    CHƯA `.done` → CHỈ xoá-sạch-rồi-tải-trọn khi có `--chapters` chỉ định (chủ đích, `explicit`),
+    KHÔNG chọn chương thì chỉ BÁO & bỏ qua (tránh nuốt folder cũ thiếu dấu `.done`; user chốt: tầng-3
+    "tải lại trọn từ nguồn mới"). Giới hạn thật: tool KHÔNG bảo chứng "Chapter N của B = cùng nội dung
+    với A" (numbering cross-provider) — preview để mắt người kiểm. `--dry-run` = in kế hoạch (buckets)
+    + 1 dòng `PLAN_JSON:{…}` rồi thoát, KHÔNG chạm mạng per-chương (bot đọc để làm bước xác nhận). Chưa
+    hỗ trợ nguồn comix (custom_run bỏ qua dest-name/dry-run — bot chặn `into:` cho comix.to).
   - Nhiều session song song cùng sửa project — luôn đọc lại file trước khi sửa đè.
 - `check_library.py` — tool quét ảnh ĐÃ tải (offline, **đa luồng**), dùng chung lõi
   kiểm tra với downloader. Nhận đường dẫn tùy chọn (cả `downloads/` / 1 bộ / 1 chương);
@@ -386,6 +410,16 @@ cách chạy thật + decode thử ảnh.
   Lệnh `/watchlist /watch /unwatch /checknow` (admin). Supervisor là NGƯỜI GHI DUY NHẤT
   `watchlist.json` (khoá `_wl_lock`, `_update_watchlist` đọc-sửa-ghi nguyên khối). enqueue auto đặt
   `cid` = `added_by` của truyện (người thêm nhận tin bắt đầu/xong tải). `_checking` chặn chạy chồng.
+  **Lệnh `/provider` + GHÉP folder qua nút inline (12/09/2026)**: (1) `/provider [list|add|set|del|clear …]`
+  (`handle_provider`) shell ra `provider_admin.py` rồi relay stdout — xem/sửa domain provider (xem mục
+  providers.py "Override domain qua bot"); list mở, sửa cần admin. (2) `/tai <link> [chương] into:"Tên folder"`
+  = GHÉP tải bù vào folder có sẵn: `handle_tai` tách `into:"…"` (regex, TRƯỚC parse chương/nhóm) → nếu có
+  dest thì đi luồng PREVIEW: `_merge_preview` (chạy nền) gọi `comic_downloader.py … --dest-name --dry-run`,
+  đọc `PLAN_JSON`, gửi tin kèm **nút inline** [✅/❌] (`reply_markup`), lưu `_pending[pid]` (TTL 10'). (3)
+  `_process_update` nay xử lý `callback_query` (nút bấm) → `handle_callback`: `answerCallbackQuery` tắt spinner,
+  kiểm admin, pop pending, bấm ✅ → `_enqueue_jobs(dest=…)` (job thêm trường `dest`, dedup key gồm dest,
+  cmd `+= --dest-name`, `_load_jobs` khôi phục dest, `_job_label` hiện 🔀). Chặn `into:` cho comix (mở Chromium)
+  + nhiều link + đi kèm ghim nhóm. Xem "GHÉP tải bù vào folder có sẵn" ở mục providers/core.
 - `check_updates.py` — **dò chương mới cho watchlist, chạy dạng SUBPROCESS** (supervisor gọi; KHÔNG
   import vào supervisor để giữ nó stdlib-only + cô lập lỗi provider/mạng). Đọc `watchlist.json`, với
   mỗi truyện `resolve_provider` (bản riêng, trả None thay vì `sys.exit` khi site lạ) → `list_chapters`

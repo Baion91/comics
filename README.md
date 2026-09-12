@@ -449,6 +449,17 @@ khi đăng nhập Windows, tự tạo link đọc từ xa và báo qua Telegram.
     = ghim nguồn comix, vd `/tai <link> 5 Hivetoon`, `auto` = bỏ ghim — xem mục Comix ở trên) · `/update` cập
     nhật code · `/adminclaim` (người đầu tiên → admin gốc) · `/adminlist` ·
     `/adminadd <id>` · `/adminremove <id>`.
+  - **Xem/sửa provider** — `/provider` xem danh sách provider + domain (mở cho mọi người). Sửa (admin)
+    khi site đổi tên miền, KHÔNG cần đụng code: `/provider add <name> <domain> [base] [referer]` ·
+    `/provider set <name> base|referer <url>` · `/provider del <name> <domain>` · `/provider clear <name>`.
+    Có hiệu lực NGAY cho lần tải kế. ⚠️ Site chống-hotlink (TruyenQQ/Zet) nhớ set kèm **base+referer**
+    sang domain mới; site bật Cloudflare "Verify you are human" thì thêm domain cũng không tải được.
+  - **Tải bù vào folder có sẵn** (admin) — `/tai <link nguồn khác> <chương> into:"Tên folder"`: tải
+    chương thiếu từ provider KHÁC vào ĐÚNG folder truyện đang có (giữ bookmark/tiến-trình, **không tạo
+    truyện trùng** trên reader). Bot in **kế hoạch** (đã đủ / tải mới / ghi đè / nguồn thiếu) kèm 2 nút
+    **✅ Xác nhận / ❌ Huỷ** — bấm ✅ mới tải. Chương `.done` được giữ; chương có ảnh nhưng dở chỉ tải-lại-
+    trọn khi bạn **chỉ định chương cụ thể** (không thì bỏ qua cho an toàn). Lưu ý: 2 provider phải đánh
+    **cùng số chương** thì mới khớp — kế hoạch cho bạn xem trước để kiểm.
   - **Huỷ tải** (admin): `/stop` dừng truyện đang tải **+ xoá hàng chờ của bạn** ·
     `/killnow` **chỉ** dừng truyện đang tải · `/clearq` **chỉ** xoá hàng chờ · `/stopall`
     dừng tất cả + xoá **sạch** hàng chờ (của mọi người). `/stop`/`/killnow`/`/clearq` chỉ

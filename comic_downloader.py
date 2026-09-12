@@ -132,6 +132,15 @@ def main(default_provider=None):
                          "TRÁO Ô (bản Official chèn mỗi trang thứ 10). KHÔNG tải chương "
                          "mới; chương không dính bỏ qua nhanh (không chạm mạng)")
     ap.add_argument("--out", default="downloads", help="Thư mục lưu (mặc định: downloads)")
+    ap.add_argument("--dest-name", dest="dest_name", metavar="FOLDER",
+                    help="GHÉP vào folder truyện CÓ SẴN tên này (tải bù chương thiếu từ "
+                         "provider khác vào đúng folder cũ, giữ bookmark/tiến-trình — thay "
+                         "vì tạo folder trùng). Ép tên chương 'Chapter N' (bỏ title) để khớp. "
+                         "Chương .done bỏ qua; chương có ảnh chưa .done chỉ ghi đè khi có "
+                         "--chapters; vắng hẳn thì tải mới")
+    ap.add_argument("--dry-run", dest="dry_run", action="store_true",
+                    help="Chỉ IN kế hoạch ghép (dùng với --dest-name), KHÔNG tải — cho bước "
+                         "xác nhận của bot")
     ap.add_argument("--from", dest="c_from", type=float, help="Từ chương số ...")
     ap.add_argument("--to", dest="c_to", type=float, help="Đến chương số ...")
     ap.add_argument("--chapters", help="Chọn chương cụ thể, vd: 5,7,20-25")

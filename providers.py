@@ -18,9 +18,17 @@ THÊM SITE MỚI: viết 1 class như dưới rồi thêm vào PROVIDERS. Không
 """
 
 import json
+import os
 import re
 
 from comics_core import Chapter, get_json, get_text
+
+# File override domain/base/referer do người dùng thêm qua bot (KHÔNG cần sửa code +
+# push khi site xoay tên miền — vd TruyenQQ). Nằm trong .reader-meta/ (gitignore) nên
+# git reset --hard của cap-nhat.bat không đụng. provider_admin.py là NGƯỜI GHI; ở đây
+# chỉ ĐỌC lúc import -> mọi tiến trình con (downloader, check_updates) tự áp bản mới.
+OVERRIDE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                             ".reader-meta", "provider-domains.json")
 
 
 class AsuraProvider:
@@ -746,5 +754,37 @@ class ZetTruyenProvider:
 PROVIDERS = [AsuraProvider(), RavenProvider(), DilibProvider(), MangaDexProvider(),
              TruyenQQProvider(), ACGNProvider(), NetTruyenProvider(), ZetTruyenProvider()]
 
+
+def load_overrides() -> dict:
+    """Đọc file override; trả {} nếu không có/hỏng. Dùng chung cho apply + provider_admin."""
+    try:
+        with open(OVERRIDE_FILE, encoding="utf-8") as f:
+            cfg = json.load(f)
+        return cfg if isinstance(cfg, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _apply_overrides(providers):
+    """Áp override lên INSTANCE trước khi dựng REGISTRY: nối domain, đổi BASE/referer.
+    Cho phép đổi domain khi site xoay tên miền mà KHÔNG phải sửa code + push + /update.
+    Định dạng: { "<name>": {"domains_add":[...], "base":"https://...", "referer":"..."} }.
+    LƯU Ý: chỉ thêm domain là ĐỦ để nhận URL; site chống-hotlink (TruyenQQ/Zet) còn cần
+    set 'base'+'referer' sang domain mới thì ảnh mới tải được (CDN kiểm referer theo domain)."""
+    cfg = load_overrides()
+    for p in providers:
+        o = cfg.get(p.name)
+        if not isinstance(o, dict):
+            continue
+        if o.get("base"):
+            p.BASE = o["base"]
+        if "referer" in o:                 # cho phép referer: null (bỏ referer)
+            p.referer = o["referer"] or None
+        add = [d.lower() for d in (o.get("domains_add") or []) if d]
+        if add:
+            p.domains = list(dict.fromkeys([*p.domains, *add]))
+
+
+_apply_overrides(PROVIDERS)               # áp TRƯỚC khi dựng REGISTRY (gồm cả domain thêm)
 by_name = {p.name: p for p in PROVIDERS}                 # tra theo cờ --site
 REGISTRY = {d: p for p in PROVIDERS for d in p.domains}  # tra theo domain của URL

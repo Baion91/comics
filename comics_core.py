@@ -847,6 +847,68 @@ def _mark_done(folder: Path):
         pass
 
 
+# --- GHÉP vào folder có sẵn (tải bù từ provider KHÁC) — dùng cho --dest-name ------
+# Reader định danh truyện = TÊN FOLDER (sid). Muốn tải bù chương thiếu từ nguồn khác vào
+# ĐÚNG folder cũ (giữ bookmark/tiến-trình/thứ tự) thay vì tạo folder trùng: ép base_title =
+# --dest-name, và ép tên chương chỉ "Chapter N" (bỏ title) để SỐ chương ↔ folder là 1:1
+# xuyên provider. An toàn 3 tầng: (1) .done -> bỏ qua tuyệt đối; (2) vắng hẳn -> tải mới;
+# (3) có ảnh chưa .done -> CHỈ ghi đè khi có --chapters chỉ định (chủ đích), không thì báo &
+# bỏ qua (tránh nuốt folder cũ thiếu dấu .done). --dry-run in kế hoạch, KHÔNG tải.
+
+def _merge_folder(out_root: Path, c, merge: bool) -> Path:
+    """Đường dẫn folder chương. Merge mode: chỉ 'Chapter N' (bỏ title) để khớp folder cũ."""
+    label = f"Chapter {fmt_num(c.number)}"
+    fname = label if merge else f"{label}{' - ' + c.title if c.title else ''}"
+    return out_root / safe_name(fname)
+
+
+def _classify_merge(folder: Path, merge: bool, explicit: bool) -> str:
+    """'done' (.done -> bỏ qua) | 'add' (vắng hẳn/rỗng -> tải mới) | 'overwrite' (có ảnh
+    chưa .done + có --chapters -> xoá & tải trọn) | 'partial_skip' (có ảnh chưa .done,
+    không chọn chương -> báo & bỏ qua). Chế độ THƯỜNG (merge=False) chỉ ra 'done'/'add'
+    (partial để engine tự bù trang như cũ)."""
+    if (folder / ".done").exists():
+        return "done"
+    if merge and folder.exists() and list_images(folder):
+        return "overwrite" if explicit else "partial_skip"
+    return "add"
+
+
+def _print_merge_plan(chapters, out_root: Path, base_title: str, args, merge: bool):
+    """--dry-run: phân loại các chương đã lọc rồi in kế hoạch + 1 dòng PLAN_JSON cho bot đọc.
+    KHÔNG chạm mạng per-chương (chỉ soi folder trên đĩa). Dùng CHUNG bộ phân loại với vòng
+    tải -> preview = đúng cái sẽ chạy."""
+    explicit = bool(args.chapters)
+    buckets = {"done": [], "add": [], "overwrite": [], "partial_skip": []}
+    for c in chapters:
+        buckets[_classify_merge(_merge_folder(out_root, c, merge), merge, explicit)].append(c.number)
+    missing_src = []
+    if explicit:   # chương YÊU CẦU mà nguồn mới KHÔNG có -> vẫn thiếu (báo để tìm nguồn khác)
+        have = {c.number for c in chapters}
+        missing_src = sorted(n for n in parse_selection(args.chapters) if n not in have)
+    plan = {
+        "dest": base_title, "explicit": explicit,
+        "done": len(buckets["done"]), "add_new": len(buckets["add"]),
+        "overwrite": len(buckets["overwrite"]), "partial_skip": len(buckets["partial_skip"]),
+        "missing_src": len(missing_src),
+        "add_new_str": compact_chapters(buckets["add"]),
+        "overwrite_str": compact_chapters(buckets["overwrite"]),
+        "partial_skip_str": compact_chapters(buckets["partial_skip"]),
+        "missing_src_str": compact_chapters(missing_src),
+    }
+    print(f"\n===== KẾ HOẠCH GHÉP vào: {base_title} =====")
+    print(f"   Đã đủ (.done, bỏ qua): {plan['done']}")
+    print(f"   Tải MỚI (vắng hẳn): {plan['add_new']}   {plan['add_new_str']}")
+    if explicit:
+        print(f"   Tải LẠI TRỌN, GHI ĐÈ: {plan['overwrite']}   {plan['overwrite_str']}")
+    elif plan["partial_skip"]:
+        print(f"   Có ảnh chưa .done (BỎ QUA — chọn chương cụ thể để ghi đè): "
+              f"{plan['partial_skip']}   {plan['partial_skip_str']}")
+    if missing_src:
+        print(f"   Nguồn mới KHÔNG có (vẫn thiếu): {plan['missing_src']}   {plan['missing_src_str']}")
+    print("PLAN_JSON:" + json.dumps(plan, ensure_ascii=False))
+
+
 def run(provider, args):
     """Vòng lặp tải chung cho mọi site. `provider` cấp phần khác biệt của site."""
     reap_decode_crash()   # phiên trước chết giữa lúc giải mã? ghi lại ảnh thủ phạm rồi dọn cờ
@@ -857,8 +919,12 @@ def run(provider, args):
         session.headers.pop("Referer", None)
 
     slug = provider.series_slug(args.series)
-    base_title = safe_name(provider.title_from_slug(slug))
-    print(f"Site: {provider.name}  |  Truyện: {slug}")
+    dest_name = getattr(args, "dest_name", None)
+    merge = bool(dest_name)   # GHÉP vào folder có sẵn (tải bù từ provider khác)
+    # merge -> tên folder = --dest-name (giữ nguyên, không title_from_slug -> khỏi 1 request)
+    base_title = safe_name(dest_name) if merge else safe_name(provider.title_from_slug(slug))
+    print(f"Site: {provider.name}  |  Truyện: {slug}"
+          + (f"  |  GHÉP vào: {base_title}" if merge else ""))
 
     chapters = provider.list_chapters(slug)
     if not chapters:
@@ -880,10 +946,19 @@ def run(provider, args):
         sys.exit(1)
 
     out_root = Path(args.out) / base_title
+
+    # --dry-run: chỉ IN kế hoạch ghép rồi thoát (bot dùng cho bước xác nhận). KHÔNG mkdir /
+    # tải cover / chạm mạng per-chương.
+    if getattr(args, "dry_run", False):
+        _print_merge_plan(chapters, out_root, base_title, args, merge)
+        return
+
     out_root.mkdir(parents=True, exist_ok=True)
-    cover = provider.cover_url(slug)
-    if cover:
-        download_cover(cover, out_root)
+    # Merge: KHÔNG tải/đè bìa (folder cũ đã có bìa, có thể do người dùng tự đặt).
+    if not merge:
+        cover = provider.cover_url(slug)
+        if cover:
+            download_cover(cover, out_root)
     print(f"Sẽ tải {len(chapters)} chương vào: {out_root.resolve()}\n")
 
     total = len(chapters)
@@ -893,6 +968,9 @@ def run(provider, args):
     n_full = 0     # chương ĐỦ ẢNH sau lượt này (tải mới xong, hoặc đã đủ sẵn)
     n_skipped = 0  # chương .done -> bỏ qua từ lượt trước (khỏi quét mạng)
     n_locked = 0   # chương KHÔNG có ảnh (khóa/premium/xóa nguồn)
+    n_partial_skip = 0  # merge: chương có ảnh chưa .done, không chọn chương -> bỏ qua (an toàn)
+    n_overwrite = 0     # merge: chương có ảnh chưa .done, có --chapters -> xoá & tải lại trọn
+    explicit = bool(args.chapters)   # có chọn chương cụ thể -> mới cho GHI ĐÈ khi merge
     img_ok = 0        # tổng ẢNH tốt (có trên đĩa) của các chương quét lượt này
     img_missing = 0   # tổng ẢNH còn thiếu (tải lại là bù được)
     img_broken = 0    # tổng ẢNH hỏng tại nguồn (tải lại vô ích)
@@ -900,7 +978,7 @@ def run(provider, args):
         for idx, c in enumerate(chapters, 1):
             label = f"Chapter {fmt_num(c.number)}"
             prefix = f"[{idx}/{total}] {label}"  # vị trí chương / tổng số sẽ tải
-            folder = out_root / safe_name(f"{label}{' - ' + c.title if c.title else ''}")
+            folder = _merge_folder(out_root, c, merge)  # merge: ép 'Chapter N' để khớp folder cũ
             folder.mkdir(exist_ok=True)
 
             # Chương đã đánh dấu .done từ lần trước -> BỎ QUA, không gọi mạng lấy
@@ -911,6 +989,26 @@ def run(provider, args):
                 if args.cbz:
                     make_cbz(folder, skip_existing=True)
                 continue
+
+            # Merge: folder CÓ ảnh nhưng CHƯA .done (nghi dở, hoặc thư viện cũ thiếu dấu).
+            if merge and list_images(folder):
+                if not explicit:
+                    # không chọn chương -> KHÔNG tự ghi đè (tránh nuốt folder cũ), chỉ báo
+                    print(f"{prefix} — có ảnh nhưng chưa .done → BỎ QUA "
+                          f"(chọn chương cụ thể để tải lại trọn)")
+                    n_partial_skip += 1
+                    continue
+                # có --chapters (chủ đích) -> xoá SẠCH rồi tải TRỌN từ nguồn mới (không trộn nguồn)
+                removed = 0
+                for f in folder.iterdir():
+                    if f.is_file():
+                        try:
+                            f.unlink()
+                            removed += 1
+                        except OSError:
+                            pass
+                print(f"{prefix} — GHI ĐÈ: xoá {removed} file cũ, tải lại trọn từ nguồn mới")
+                n_overwrite += 1
 
             urls = provider.chapter_images(c)
             if not urls:
@@ -1010,6 +1108,10 @@ def run(provider, args):
     bits = [f"Đủ ảnh: {n_full}"]
     if n_skipped:
         bits.append(f"Đã xong trước: {n_skipped}")
+    if n_overwrite:
+        bits.append(f"Ghi đè (tải lại trọn): {n_overwrite}")
+    if n_partial_skip:
+        bits.append(f"Có ảnh chưa .done, bỏ qua: {n_partial_skip}")
     if incomplete:
         bits.append(f"Thiếu trang: {len(incomplete)} (tải lại là bù được)")
     if source_broken:
