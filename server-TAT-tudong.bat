@@ -18,12 +18,14 @@ type nul > "%~dp0.reader-meta\toony-paused.flag"
 echo Da dat co PAUSE (watchdog se khong hoi sinh supervisor).
 echo.
 
+rem --- KHONG dung dau ngoac trong echo nam trong khoi if: dau dong ngoac se DONG khoi -> loi
+rem     cu phap, ca file dung ngang ngay sau khi dat co pause - loi cu, sua 25/09. ---
 set "PIDFILE=%~dp0.reader-meta\supervisor.pid"
 if exist "%PIDFILE%" (
   set /p SPID=<"%PIDFILE%"
   if not "!SPID!"=="" (
     taskkill /PID !SPID! /T /F >nul 2>&1
-    echo Da dung supervisor (PID !SPID!) va cac tien trinh con.
+    echo Da dung supervisor PID !SPID! va cac tien trinh con.
   )
   del "%PIDFILE%" >nul 2>&1
 ) else (

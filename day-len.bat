@@ -21,7 +21,7 @@ git add -A
 git commit -m "%MSG%"
 if errorlevel 1 (
   echo.
-  echo (Khong co thay doi nao de commit - co the code da day roi.)
+  echo Khong co thay doi nao de commit - co the code da day roi.
 )
 
 echo.

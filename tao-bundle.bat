@@ -30,7 +30,7 @@ if %ERRORLEVEL% GEQ 8 (
   echo Xong. Ban sach o: %DEST%
   echo   -^> Nen (zip^) thu muc do lai roi mang sang server (khong con .exe nen
   echo      Drive/khac se khong bao malware nua^).
-  echo   -^> Tren server: giai nen, chay get-cloudflared.bat (tai cloudflared),
+  echo   -^> Tren server: giai nen, chay get-cloudflared.bat ^(tai cloudflared^),
   echo      cai thu vien, dien token vao notify-config, roi server-BAT-tudong.bat.
 )
 echo.

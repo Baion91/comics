@@ -41,7 +41,7 @@ rem     curl co the KHONG co tren Windows Server cu -> dung lam du phong. ---
 powershell -NoProfile -Command "try{[Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12;Invoke-WebRequest -UseBasicParsing -Uri '%URL%' -OutFile '%DEST%'}catch{exit 1}"
 if not exist "%DEST%" (
   echo.
-  echo !!! PowerShell that bai. Thu bang curl (neu co)...
+  echo !!! PowerShell that bai. Thu bang curl neu co...
   curl -L -o "%DEST%" "%URL%" 2>nul
 )
 if not exist "%DEST%" (
@@ -49,7 +49,7 @@ if not exist "%DEST%" (
   echo !!! Khong tai duoc Autologon. Tai tay tai dia chi:
   echo     %URL%
   echo   roi luu thanh Autologon64.exe vao thu muc .reader-meta\ va chay lai file nay.
-  echo   (Hoac tai ban .../Autologon.zip roi giai nen lay Autologon64.exe.)
+  echo   Hoac tai ban .../Autologon.zip roi giai nen lay Autologon64.exe.
   echo.
   pause
   exit /b 1

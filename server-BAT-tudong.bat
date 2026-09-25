@@ -52,11 +52,12 @@ echo Da go task cu "ToonyServer" (neu co) - watchdog se lo ca viec bat sau reboo
 rem --- WATCHDOG: moi 2 phut kiem supervisor con song khong; chet -> bat lai. /it = chay
 rem     trong PHIEN DANG NHAP -> supervisor + Chromium comix o session tuong tac (tick duoc).
 rem     Ton trong co .reader-meta\toony-paused.flag (co co -> khong hoi sinh).
-rem     KHONG truyen thu muc goc: watchdog.ps1 tu lay $PSScriptRoot. (Ban cu truyen
-rem     -Base "%~dp0" -> '\' cuoi nuot dau nhay -> watchdog exit 1 cam, chua tung hoi sinh.) ---
+rem     Chay watchdog.pyw bang PYTHONW (khong console) -> KHONG con cua so PowerShell xanh/tim
+rem     bat len moi 2 phut nhu ban watchdog.ps1 cu. watchdog.pyw tu lay thu muc goc tu vi tri
+rem     cua no (ban cu truyen -Base "%~dp0" -> '\' cuoi nuot dau nhay -> exit 1 cam). ---
 set "WD_OK=0"
 schtasks /create /tn "ToonyWatchdog" /sc MINUTE /mo 2 /it /rl LIMITED /f ^
-  /tr "powershell -NoProfile -ExecutionPolicy Bypass -File \"%~dp0watchdog.ps1\" -Pyw \"%PYW%\""
+  /tr "\"%PYW%\" \"%~dp0watchdog.pyw\""
 if errorlevel 1 (
   echo !!! Khong dang ky duoc Task "ToonyWatchdog" - se bat supervisor truc tiep, KHONG co hoi sinh.
 ) else (

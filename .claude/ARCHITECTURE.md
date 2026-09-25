@@ -397,7 +397,7 @@ cách chạy thật + decode thử ảnh.
   onlogon CHỈ start-1-lần, supervisor sập giữa phiên không ai bật lại (reader con vẫn phục vụ →
   healthchecks báo "down" mà web vẫn chạy, không "up"). KHÔNG chuyển Windows Service Session 0 vì
   comix cần desktop tick Cloudflare. Thay bằng: (1) supervisor chạy ẩn pythonw; (2) task `ToonyWatchdog`
-  (`schtasks /sc MINUTE /mo 2 /it`) chạy `watchdog.ps1` mỗi 2' — quét CommandLine `supervisor.py`, chết
+  (`schtasks /sc MINUTE /mo 2 /it`) chạy `watchdog.ps1` [25/09: thay bằng `watchdog.pyw`] mỗi 2' — quét CommandLine `supervisor.py`, chết
   thì `Start-Process` pythonw bật lại (trong phiên đăng nhập → Chromium comix vẫn hiện), tôn trọng cờ
   `.reader-meta/toony-paused.flag`; (3) `server-TAT-tudong.bat` ĐẶT cờ pause + xoá cả 2 task → tắt sạch
   không bị watchdog cãi (để đồng nghiệp tắt máy test). Chi tiết & lý do: memory `supervisor-keepalive-huong-a`.
@@ -416,6 +416,17 @@ cách chạy thật + decode thử ảnh.
   RIÊNG, sống tiếp khi task (vài giây) kết thúc → không dính giới hạn 72h (đã test task thật ở dev). Đánh
   đổi: sau reboot supervisor lên chậm ≤2'. Deploy phải bằng `cap-nhat.bat` trên server (KHÔNG sửa
   `cap-nhat.bat` trong commit đổi bat/ps1: cmd đọc bat từng khúc, bị `reset --hard` ghi đè giữa chừng = chạy rác).
+  **[25/09 vòng 2] Watchdog viết lại bằng Python — `watchdog.pyw` chạy bằng `pythonw.exe`** (xoá `watchdog.ps1`):
+  task /it chạy `powershell.exe` thì MỖI 2' Windows bật 1 cửa sổ console PowerShell (nền xanh tím #012456)
+  rồi tắt → cướp focus người dùng máy server + cắt ngang lúc tick Cloudflare. `pythonw` là GUI-subsystem → không
+  console; powershell con (đếm supervisor qua CIM) gọi với `CREATE_NO_WINDOW`. Task action = `"<pythonw>"
+  "<gốc>\watchdog.pyw"` (gốc lấy từ `__file__`). Bật supervisor bằng `Popen` `DETACHED_PROCESS |
+  CREATE_NEW_PROCESS_GROUP` (+ thử `CREATE_BREAKAWAY_FROM_JOB`, job cấm thì bỏ cờ đó). Giữ nguyên: cờ pause, quét
+  lỗi → KHÔNG bật (exit 2), log mọi nhánh (xoay >1MB). Cùng đợt: `server-TAT` CHƯA TỪNG chạy trọn — `echo ... (PID
+  !SPID!) ...` trong khối `if` → `)` đóng khối → "va was unexpected", file dừng ngay SAU khi đặt cờ pause
+  (supervisor còn sống, cờ nằm lại → watchdog thôi hồi sinh). Luật: **không để `(`/`)` trần trong echo nằm trong
+  khối `if`/`for`** (bỏ ngoặc hoặc `^(`/`^)`; đừng đặt `rem` có ngoặc trong khối). Đã sửa cả `server-AUTOLOGIN`
+  (lỗi ở lần chạy đầu khi chưa có Autologon64.exe), `day-len`/`tao-bundle` (mất chữ).
   **Auto-check chương mới** (`watch_loop`, 14/08/2026): mỗi ngày 1 lần lúc `check_hour:check_min`
   (mặc định 03:00 giờ server; bù nếu server tắt lúc đến hẹn — dò `last_run` trong watchlist so ngày
   hôm nay) chạy `check_updates.py` (subprocess) → `_apply_check_results`: cập nhật watchlist

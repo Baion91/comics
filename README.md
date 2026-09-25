@@ -420,7 +420,7 @@ khi đăng nhập Windows, tự tạo link đọc từ xa và báo qua Telegram.
   bấm lại an toàn; cuối file in `OK: dang co 1 supervisor chay.`) / `server-TAT-tudong.bat` (tắt hết
   + gỡ đăng ký, watchdog KHÔNG bật lại). Supervisor chạy ẨN — xem log ở
   `.reader-meta\supervisor-log.txt`, lịch sử watchdog bật lại ở `.reader-meta\watchdog-log.txt`.
-  Sửa `supervisor.py`/các file `.bat`/`watchdog.ps1` thì cập nhật bằng **`cap-nhat.bat` trên server**
+  Sửa `supervisor.py`/các file `.bat`/`watchdog.pyw` thì cập nhật bằng **`cap-nhat.bat` trên server**
   (`/update` qua bot chỉ khởi động lại reader, và khi bot chết thì `/update` cũng không chạy).
 - **Tự lên sau reboot mà KHÔNG cần gõ mật khẩu** (Phương án A, từ 12/08): watchdog chỉ chạy khi
   có người đăng nhập Windows (cần phiên desktop cho Chromium của comix). Muốn sau reboot (vd Windows Update) server tự lên không
