@@ -401,6 +401,21 @@ cách chạy thật + decode thử ảnh.
   thì `Start-Process` pythonw bật lại (trong phiên đăng nhập → Chromium comix vẫn hiện), tôn trọng cờ
   `.reader-meta/toony-paused.flag`; (3) `server-TAT-tudong.bat` ĐẶT cờ pause + xoá cả 2 task → tắt sạch
   không bị watchdog cãi (để đồng nghiệp tắt máy test). Chi tiết & lý do: memory `supervisor-keepalive-huong-a`.
+  **[25/09/2026] Watchdog = NƠI DUY NHẤT bật supervisor; BỎ task `ToonyServer`.** Sự cố 21→24/09: Windows
+  Update reboot → `ToonyServer` (onlogon) bật supervisor → `schtasks /create` mặc định **"Stop the task if it
+  runs longer than 72 hours"** → đúng 72h sau Task Scheduler GIẾT supervisor (`Last Result 267014` =
+  `0x41306` SCHED_S_TASK_TERMINATED; con reader/cloudflared KHÔNG chết theo → link cũ vẫn đọc được, bot câm,
+  healthchecks down). Watchdog lẽ ra cứu nhưng **chưa từng chạy đúng**: `server-BAT` truyền `-Base "%~dp0"`,
+  `%~dp0` có `\` cuối → task lưu `-Base "...\"` → PowerShell `-File` hiểu `\"` là dấu nháy thường → `$Base`
+  dư `"` → `Test-Path` sai → `exit 1` câm. Sửa: (1) `watchdog.ps1` lấy gốc từ `$PSScriptRoot` (`-Base` còn
+  nhận nhưng BỎ QUA, để task kiểu cũ không vấp lúc chuyển đổi); ghi `watchdog-log.txt` cả nhánh LỖI (xoay
+  >1MB); quét CIM lỗi → KHÔNG bật bừa (tránh 2 bản); `-Pyw` sai → dò `.venv`/PATH. (2) `server-BAT` xoá
+  `ToonyServer`, KHÔNG `start` supervisor nữa mà `schtasks /run /tn ToonyWatchdog` (chỉ lùi về `start` khi
+  đăng ký/`/run` hỏng); đặt cờ pause TẠM trong lúc dọn+đăng ký để nhịp watchdog không bật chen; cuối file
+  đếm supervisor (in OK / 0 / nhiều bản); bỏ goto/label (file LF). Supervisor do watchdog bật là tiến trình
+  RIÊNG, sống tiếp khi task (vài giây) kết thúc → không dính giới hạn 72h (đã test task thật ở dev). Đánh
+  đổi: sau reboot supervisor lên chậm ≤2'. Deploy phải bằng `cap-nhat.bat` trên server (KHÔNG sửa
+  `cap-nhat.bat` trong commit đổi bat/ps1: cmd đọc bat từng khúc, bị `reset --hard` ghi đè giữa chừng = chạy rác).
   **Auto-check chương mới** (`watch_loop`, 14/08/2026): mỗi ngày 1 lần lúc `check_hour:check_min`
   (mặc định 03:00 giờ server; bù nếu server tắt lúc đến hẹn — dò `last_run` trong watchlist so ngày
   hôm nay) chạy `check_updates.py` (subprocess) → `_apply_check_results`: cập nhật watchlist
@@ -439,7 +454,9 @@ cách chạy thật + decode thử ảnh.
   {ch}" ngay sau khi quét xong danh sách, TRƯỚC khi tải ảnh (chỉ đọc đĩa, phân loại MIRROR vòng lặp
   chính; "Official" = bản tick "v"). `core.compact_chapters` là helper dùng chung (khác `compact_ints`
   thuần-int: in số chương không đuôi `.0`, xử lý chương lẻ).
-- **Auto-start / sống qua reboot** (Phương án A, 12/08/2026): `server-BAT-tudong.bat` đăng ký task
+- **Auto-start / sống qua reboot** (Phương án A, 12/08/2026 — **[25/09] ĐÃ BỎ task `ToonyServer`**, giờ
+  task `ToonyWatchdog` (/it, mỗi 2') bật supervisor sau khi đăng nhập; xem mục Heartbeat/Hướng A. Phần
+  dưới là lịch sử): `server-BAT-tudong.bat` đăng ký task
   Windows `ToonyServer` (`schtasks /sc onlogon`) chạy `supervisor.py` khi ĐĂNG NHẬP — bằng **đường
   dẫn TUYỆT ĐỐI** tới `python.exe` (task onlogon không có PATH → tên trần `python`/`pythonw` lỗi
   `0x80070002`; suy `python.exe` từ `pythonw.exe` đã resolve để cùng thư mục). **[CẬP NHẬT 24/08]**

@@ -415,17 +415,21 @@ python reader_server.py --port 8081
 Ngoài chạy tay ở trên, bộ này dựng được thành **server đọc chung** (vd máy khác) tự bật
 khi đăng nhập Windows, tự tạo link đọc từ xa và báo qua Telegram.
 
-- **Bật/tắt trên server**: `server-BAT-tudong.bat` (đăng ký chạy-khi-đăng-nhập + bật ngay
-  reader + cloudflared + Telegram; **tự kill tiến trình cũ** nên bấm lại an toàn) /
-  `server-TAT-tudong.bat` (tắt hết + gỡ đăng ký).
-- **Tự lên sau reboot mà KHÔNG cần gõ mật khẩu** (Phương án A, từ 12/08): task chạy-khi-đăng-nhập
-  chỉ lên khi có người đăng nhập Windows. Muốn sau reboot (vd Windows Update) server tự lên không
+- **Bật/tắt trên server**: `server-BAT-tudong.bat` (đăng ký task **`ToonyWatchdog`** mỗi 2 phút
+  bật/hồi sinh supervisor + bật ngay reader + cloudflared + Telegram; **tự kill tiến trình cũ** nên
+  bấm lại an toàn; cuối file in `OK: dang co 1 supervisor chay.`) / `server-TAT-tudong.bat` (tắt hết
+  + gỡ đăng ký, watchdog KHÔNG bật lại). Supervisor chạy ẨN — xem log ở
+  `.reader-meta\supervisor-log.txt`, lịch sử watchdog bật lại ở `.reader-meta\watchdog-log.txt`.
+  Sửa `supervisor.py`/các file `.bat`/`watchdog.ps1` thì cập nhật bằng **`cap-nhat.bat` trên server**
+  (`/update` qua bot chỉ khởi động lại reader, và khi bot chết thì `/update` cũng không chạy).
+- **Tự lên sau reboot mà KHÔNG cần gõ mật khẩu** (Phương án A, từ 12/08): watchdog chỉ chạy khi
+  có người đăng nhập Windows (cần phiên desktop cho Chromium của comix). Muốn sau reboot (vd Windows Update) server tự lên không
   cần thao tác: chạy **`server-AUTOLOGIN.bat`** một lần (quyền Admin) để bật Windows **tự đăng nhập**
   (dùng Sysinternals Autologon, mật khẩu mã hoá vào LSA — không lưu plaintext). Sau đó reboot là
-  Windows tự đăng nhập → task tự chạy → **hiện cửa sổ log** + báo link Telegram.
+  Windows tự đăng nhập → trong ~2 phút watchdog bật supervisor (chạy ẩn) → báo link Telegram.
   - **Lưu ý dùng phương án A**: server gắn với phiên đăng nhập → muốn chuyển tài khoản mà vẫn giữ
-    server chạy thì bấm **Switch user** (ĐỪNG **Sign out** — sign out sẽ tắt server). Cửa sổ log là
-    `python.exe`: đừng đóng/Ctrl-C (sẽ tắt server); tắt sạch bằng `server-TAT-tudong.bat`. Đánh đổi:
+    server chạy thì bấm **Switch user** (ĐỪNG **Sign out** — sign out sẽ tắt server). Tắt sạch bằng
+    `server-TAT-tudong.bat` (kill tay sẽ bị watchdog bật lại trong ~2 phút). Đánh đổi:
     desktop tự mở khoá sau reboot. Muốn tắt autologon: mở lại Autologon → **Disable**.
 - **Link đọc từ xa**: cloudflared quick-tunnel tự tạo link `…trycloudflare.com` và gửi qua
   **Telegram bot** cho ai đã nhắn bot. Link **đổi mỗi lần server/tunnel khởi động lại**.

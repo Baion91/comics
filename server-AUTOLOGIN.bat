@@ -7,7 +7,7 @@ cd /d "%~dp0"
 echo ============================================================
 echo  PHUONG AN A: BAT WINDOWS TU DANG NHAP (autologon)
 echo  Muc dich: sau khi reboot, Windows TU dang nhap tai khoan nay
-echo            -^> task "ToonyServer" tu chay -^> server tu len,
+echo            -^> task "ToonyWatchdog" bat supervisor trong ~2 phut,
 echo            KHONG can ai go mat khau.
 echo  Cong cu: Sysinternals Autologon (ma hoa mat khau vao LSA
 echo           secret, KHONG luu plaintext nhu netplwiz/registry tay).
@@ -64,10 +64,10 @@ start "" "%DEST%"
 echo.
 echo ------------------------------------------------------------
 echo  SAU KHI BAM ENABLE XONG, kiem theo thu tu:
-echo   1) Da chay server-BAT-tudong.bat MOT lan (de co task "ToonyServer").
-echo      Kiem: schtasks /query /tn "ToonyServer" /v /fo LIST  (State=Ready)
-echo   2) Reboot thu -^> KHONG dung gi -^> cho ~1-2 phut.
-echo   3) Windows tu dang nhap -^> hien cua so log "ToonyServer" +
+echo   1) Da chay server-BAT-tudong.bat MOT lan (de co task "ToonyWatchdog").
+echo      Kiem: schtasks /query /tn "ToonyWatchdog" /v /fo LIST  (Status=Ready)
+echo   2) Reboot thu -^> KHONG dung gi -^> cho ~2-3 phut.
+echo   3) Windows tu dang nhap -^> watchdog bat supervisor (chay AN) +
 echo      Telegram nhan link moi + heartbeat xanh + /trangthai tra loi.
 echo ------------------------------------------------------------
 echo.

@@ -1,9 +1,15 @@
-# Handoff — cập nhật lần cuối: 2026-09-12 (bot: /provider quản-lý-domain + GHÉP tải bù `/tai … into:"folder"` nút inline; provider ZetTruyen; comix GHIM NHÓM + tráo ô)
+# Handoff — cập nhật lần cuối: 2026-09-25 (supervisor chết 24/09: bỏ task ToonyServer bị giết sau 72h + sửa watchdog chưa từng hồi sinh được)
 
 > Kiến trúc ổn định (reader, provider, comix, supervisor, mạng…) nằm ở `.claude/ARCHITECTURE.md`.
 > File này chỉ ghi TRẠNG THÁI hiện tại + việc đang dở.
 
 ## Đang làm / dở dang
+- **[25/09] Supervisor chết 24/09, bot câm, link cũ vẫn đọc được — ĐÃ tìm gốc (bằng chứng trên server) + code + test dev bằng Task Scheduler thật, CHỜ deploy `cap-nhat.bat` + nghiệm thu LIVE** (`watchdog.ps1`, `server-BAT-tudong.bat`, `server-TAT-tudong.bat`, `server-AUTOLOGIN.bat`; docs README + ARCHITECTURE). *KHÔNG đụng `supervisor.py` / `cap-nhat.bat`.*
+  *Chẩn đoán (server `F:\Soft_Khac\comics-bundle`, Python 3.14, user Administrator)*: healthchecks "Toony Supervisor" down + bot không trả lời, reader/cloudflared vẫn chạy (mồ côi). Không có `supervisor.py` trong tiến trình; log dừng ngang (không dòng "Supervisor dừng"), không event crash. **Gốc 1**: Windows Update reboot 21/09 10:43 → `ToonyServer` (onlogon) bật supervisor 10:58:59 → mặc định `schtasks` "Stop task if runs >72h" → 24/09 ~10:59 Task Scheduler giết (`Last Result 267014`=`0x41306`). **Gốc 2**: `ToonyWatchdog` `Last Result 1` mỗi 2', không có `watchdog-log.txt` — `-Base "%~dp0"` (`\` cuối nuốt dấu nháy) → watchdog `exit 1` câm từ 24/08, chưa từng hồi sinh.
+  *Fix*: watchdog lấy gốc `$PSScriptRoot` + log cả nhánh lỗi + quét CIM lỗi thì không bật + fallback pythonw; `server-BAT` xoá `ToonyServer`, watchdog là nơi DUY NHẤT bật supervisor (`schtasks /run`, chỉ `start` trực tiếp khi task hỏng), cờ pause tạm trong lúc dọn, cuối file đếm supervisor, bỏ goto. Chi tiết ARCHITECTURE mục Heartbeat/Hướng A.
+  *Đã test (dev, thư mục nháp, supervisor GIẢ, task đổi tên `ZZTest*` rồi xoá sạch)*: chạy bản copy `server-BAT` → xoá task onlogon giả, task mới KHÔNG còn `-Base`, in "OK: dang co 1 supervisor", `watchdog-log` có dòng, tiến trình giả sống tiếp sau khi task kết thúc (Last Result 0). Kill → chạy watchdog → lên lại; đang sống → không bật trùng; cờ pause → không bật; tham số KIỂU CŨ (`-Base "...\"`) → vẫn chạy đúng; `-Pyw` sai → fallback + cảnh báo. **Tái hiện gốc 1**: task giới hạn 1 phút chạy thẳng pythonw → bị giết, `LastTaskResult 267014 (0x41306)` y như server.
+  **Deploy (trên server, RDP)**: `cap-nhat.bat` (bot đang chết nên `/update` không dùng được; mà `/update` cũng không đăng ký lại task). Link sẽ ĐỔI (bot gửi link mới). **Nghiệm thu LIVE**: (1) cuối `server-BAT` in `OK: dang co 1 supervisor chay.` + bot gửi link + `/link` trả lời + `watchdog-log.txt` có dòng + healthchecks "up"; (2) `schtasks /query /tn ToonyServer` → không tìm thấy; (3) kill supervisor tay → ≤2' tự lên lại + thêm dòng log + link mới; (4) `server-TAT` → KHÔNG tự lên, rồi `server-BAT` bật lại; (5) lần reboot sau (WU) → ~2-3' sau đăng nhập bot gửi link.
+  **Còn ngỏ**: (a) supervisor bị kill thì cloudflared CŨ mồ côi vẫn chạy song song tunnel mới (link cũ sống tới khi `server-BAT`) — vô hại, chưa dọn. (b) Khi watchdog đã chạy thật, có thể cho `/update` tự thoát supervisor khi `supervisor.py` đổi để watchdog bật lại (hết phải RDP) — để sau. (c) Chưa có khoá 1-bản trong chính supervisor (hiện dựa vào watchdog là nơi duy nhất bật). (d) Trong lúc `cap-nhat.bat` đang pip install, task watchdog CŨ gọi `watchdog.ps1` MỚI (đã hết lỗi) có thể bật supervisor sớm 1 lần → `server-BAT` dọn lại ngay; có thể nhận 2 tin link liên tiếp — vô hại.
 - **[12/09] Bot: `/provider` (quản-lý-domain) + GHÉP tải bù `/tai … into:"folder"` (nút inline) + `--dest-name` — ĐÃ code + test dev (engine 4 nhánh + luồng bot offline), CHỜ push + `/update` + RESTART supervisor** (`providers.py`, `provider_admin.py` [MỚI], `comics_core.py`, `comic_downloader.py`, `supervisor.py`; docs ARCHITECTURE + README).
   *4 yêu cầu user*: (1) TruyenQQ url mới `truyenqq.com.vn` — **GÁC LẠI**: đã kiểm là **Cloudflare Turnstile "Verify you are human"** (requests 403, browser cũng cần người tick) → phải làm provider MỚI kiểu comix-lite (transport browser + parser mượn TruyenQQ), không phải thêm domain; chưa làm. (2)(3) lệnh bot xem/sửa domain provider. (4) tải bù vào folder có sẵn (tránh trùng truyện trên reader).
   **#2+#3 — override domain (KHÔNG sửa code)**: `providers.py._apply_overrides()` đọc `.reader-meta/provider-domains.json` lúc import (trước `REGISTRY`) → nối `domains_add` + đổi `BASE`/`referer` lên instance; tiến trình con tự áp, **KHÔNG cần restart supervisor**. `provider_admin.py` = CLI `list|add|set|del|clear` (validate tên, chặn comix, không xoá domain gốc). Bot `/provider` (list mở; sửa cần admin) relay stdout. ⚠️ Site chống-hotlink phải set kèm base+referer; site Turnstile thêm domain vô ích (đã in cảnh báo).
@@ -299,6 +305,10 @@
 - **[10/08] Tool LÀM NÉT Real-ESRGAN — ĐÃ push. Tích hợp tự động vào `/tai` CHƯA làm.**
 
 ## Quyết định gần đây (mới nhất trước)
+- **25/09: Bỏ task onlogon `ToonyServer`, watchdog là nơi DUY NHẤT bật supervisor** — `schtasks /create` gắn sẵn giới
+  hạn 72h cho task; tiến trình task bật trực tiếp bị giết sau 72h (đã bị thật 21→24/09). Supervisor do watchdog
+  `Start-Process` là tiến trình riêng, task watchdog kết thúc sau vài giây nên không dính giới hạn. Một cơ chế thay
+  hai, hết khe 2 đường bật chen nhau thành 2 bản (409). Đánh đổi chấp nhận: sau reboot lên chậm ≤2'.
 - **29/08: Con trỏ "đang đọc" (nút reading / nhãn .fcm / vị trí cuộn) = client-sync từ nguồn sống + mirror
   localStorage per-account có ts, KHÔNG purge-page và KHÔNG render trung tính** — purge không với tới bfcache;
   render trung tính gây flash Latest→reading MỖI lần cho tài khoản (phạt ca thường để trị ca hiếm). Server vẫn
@@ -492,9 +502,9 @@
   theo dõi → `/watchlist` xác nhận có tên + provider + "mới nhất ch.N" → `/checknow` xem tóm tắt +
   hàng đợi tải chạy. Chỉnh giờ check qua `check_hour`/`check_min` trong `notify-config.json` nếu muốn
   khác 03:00. Sau 1 đêm: xác nhận có tin tóm tắt "🔍 Đã kiểm tra N truyện…" đúng giờ.
-- **[Auto-start A nghiệm thu]** Trên server: `cap-nhat.bat` → chạy lại `server-BAT-tudong.bat` (đăng
-  ký lại task bằng `python.exe`) → `server-AUTOLOGIN.bat` gõ pass (Enable) → reboot không đụng gì →
-  xác nhận cửa sổ log "ToonyServer" hiện + Telegram link mới + heartbeat 🟢 + `/trangthai` trả lời.
+- **[Auto-start nghiệm thu — thay bằng mục [25/09] ở đầu file]** Sau `cap-nhat.bat`: reboot không đụng gì →
+  ~2-3' sau khi Windows tự đăng nhập: Telegram link mới + heartbeat 🟢 + `/trangthai` trả lời +
+  `watchdog-log.txt` có dòng "da bat lai". (Không còn task `ToonyServer` / cửa sổ log.)
 - **[Comix 403/503 nghiệm thu LIVE]** Trên server: `/update` (xác nhận log in `(client tải ảnh:
   curl_cffi (giả vân tay Chrome))` = Bậc 2 bật; nếu in `requests (KHÔNG giả TLS…)` thì curl_cffi
   chưa cài — kiểm `pip install curl_cffi`). Chờ qua đợt siết rồi `/tai` lại bộ comix đang dở →
@@ -536,8 +546,12 @@
   (downloader thoát, supervisor báo lỗi + chạy job kế; ① là lưới cuối nếu cả cái này hụt).
 - **Phương án A (autologon) — desktop tự mở khoá sau reboot** (ai chạm console/RDP thấy phiên đã đăng
   nhập). Supervisor gắn phiên interactive Administrator → **Sign out = giết server**, đổi tài khoản
-  phải **Switch user**. Cửa sổ log giờ là `python.exe` — đóng nhầm/Ctrl-C = tắt server (tắt sạch:
-  `server-TAT-tudong.bat`). Task chỉ chạy khi ĐĂNG NHẬP; autologon lo phần tự đăng nhập sau reboot.
+  phải **Switch user**. Supervisor chạy ẨN (pythonw); kill tay sẽ bị watchdog bật lại ≤2' (tắt sạch:
+  `server-TAT-tudong.bat`). Watchdog (/it) chỉ chạy khi ĐĂNG NHẬP; autologon lo phần tự đăng nhập sau reboot.
+- **Task tạo bằng `schtasks /create` có sẵn giới hạn "Stop if runs >72h"** — ĐỪNG cho task chạy THẲNG tiến
+  trình sống lâu (bị giết sau 72h). Muốn tiến trình dài hạn: task chỉ `Start-Process` rồi thoát (như watchdog).
+- **Tham số `.bat` → `schtasks /tr` → PowerShell `-File`: ĐỪNG truyền đường dẫn có `\` cuối trong nháy**
+  (`"%~dp0"`) — `\"` thành dấu nháy thường. Bỏ `\` cuối, hoặc để script tự lấy `$PSScriptRoot`.
 - **curl_cffi là dep OPTIONAL cho comix**: thiếu → tự lùi về `requests` (vẫn mượn vé, kém chắc trước
   Cloudflare có vân tay TLS). Muốn Bậc 2 chắc ăn phải `pip install curl_cffi` (đã trong
   `requirements.txt`, `cap-nhat.bat` tự cài). Dev máy này CHƯA cài → dev chỉ test được Bậc 1.

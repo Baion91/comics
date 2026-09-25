@@ -7,7 +7,7 @@ cd /d "%~dp0"
 echo ============================================================
 echo  TAT CO CHE TU DONG
 echo  - Dung supervisor (keo theo reader + cloudflared)
-echo  - Go dang ky chay-khi-dang-nhap
+echo  - Go dang ky watchdog (va task cu ToonyServer neu con)
 echo ============================================================
 echo.
 
@@ -37,7 +37,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command "Get-CimInstance Win32_Pr
 rem --- phong ho-: kill cloudflared con sot ---
 taskkill /IM cloudflared.exe /F >nul 2>&1
 
-rem --- go dang ky Task Scheduler (ca supervisor onlogon lan watchdog) ---
+rem --- go dang ky Task Scheduler: watchdog + task onlogon cu "ToonyServer" (da bo tu 25/09,
+rem     xoa phong server chua chay server-BAT ban moi) ---
 schtasks /delete /tn "ToonyWatchdog" /f >nul 2>&1
 echo Da go dang ky "ToonyWatchdog" (neu co).
 schtasks /delete /tn "ToonyServer" /f >nul 2>&1
