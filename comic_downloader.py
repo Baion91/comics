@@ -128,9 +128,14 @@ def main(default_provider=None):
     ap.add_argument("--recheck", action="store_true",
                     help="Quét lại cả chương đã đánh dấu .done (mặc định bỏ qua cho nhanh)")
     ap.add_argument("--repair-scramble", dest="repair_scramble", action="store_true",
-                    help="comix.to: quét thư viện ĐÃ tải, tự tìm & giải-xáo lại các trang "
-                         "TRÁO Ô (bản Official chèn mỗi trang thứ 10). KHÔNG tải chương "
-                         "mới; chương không dính bỏ qua nhanh (không chạm mạng)")
+                    help="comix.to: vá truyện ĐÃ tải — giải-xáo lại các trang TRÁO Ô (bản "
+                         "Official) còn ghi trước mốc giải-xáo đúng. KHÔNG tải chương mới; "
+                         "chương đã sạch bỏ qua nhanh (không chạm mạng). Kèm --dest-name "
+                         "để khoá đúng folder truyện")
+    ap.add_argument("--repair-scan", dest="repair_scan", action="store_true",
+                    help="comix.to: CHỈ quét ĐĨA (không mạng) cả thư viện --out, liệt kê "
+                         "chương còn trang TRÁO Ô — bước xem trước của lệnh bot /repair all "
+                         "(in kèm dòng REPAIR_SCAN_JSON)")
     ap.add_argument("--out", default="downloads", help="Thư mục lưu (mặc định: downloads)")
     ap.add_argument("--dest-name", dest="dest_name", metavar="FOLDER",
                     help="GHÉP vào folder truyện CÓ SẴN tên này (tải bù chương thiếu từ "
@@ -165,6 +170,10 @@ def main(default_provider=None):
 
     if args.pack:
         core.pack_tree(Path(args.pack))
+        return
+    if args.repair_scan:
+        import comix_site   # lười: chỉ đọc đĩa, không mở Chromium
+        comix_site.print_repair_scan(Path(args.out))
         return
     if args.list_file:
         urls = read_list(args.list_file)

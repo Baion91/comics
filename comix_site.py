@@ -80,6 +80,7 @@ import os
 import random
 import re
 import shutil
+import statistics
 import subprocess
 import sys
 import threading
@@ -87,7 +88,7 @@ import time
 import urllib.parse
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import requests
@@ -116,6 +117,19 @@ RECOMPRESS_Q = 85             # Re-nén ảnh comix tải về xuống mức Web
                               # hạ q85 nhẹ đi ~nửa (đối chứng ch335: 24.5MB->12MB) mà mắt
                               # thường không thấy khác bản Asura scan. Đổi bằng cờ --comix-q;
                               # --comix-q 0 = TẮT (giữ nguyên byte gốc từ site).
+# MỐC GIẢI-XÁO ĐÚNG trên server. Trang TRÁO Ô (cờ s:1) có file ghi TRƯỚC mốc = bản xáo
+# thô (code cũ không giải-xáo được) -> phải làm lại; ghi SAU mốc = đã giải-xáo đúng (từ
+# 79d2509 trang s:1 CHỈ được ghi qua giải-xáo, hụt thì để thiếu chứ không ghi bản thô).
+# Thay cho detector looks_scrambled làm cổng: detector ÂM TÍNH GIẢ trên trang gần-trắng
+# (credit, TO BE CONTINUED, trang tựa: xáo mà chỉ ~2-3.9 điểm) -> /repair 02-03/09 bỏ sót
+# 108 trang/92 chương. Chốt 27/09 bằng bằng chứng trên server: trang ghi lại sớm nhất là
+# Farmer 02/09 12:45:06, soi tay 9 trang đầu/giữa/cuối 3 đợt repair đều sạch, không trang
+# nào ghi lại trước đó. Khai +07 (giờ server) cho khỏi lệch múi. Xem [[comix-scramble-s-flag]].
+UNSCRAMBLE_SINCE = datetime(2026, 9, 2, 12, 45,
+                            tzinfo=timezone(timedelta(hours=7))).timestamp()
+UNSCRAMBLE_SINCE_TXT = "02/09/2026 12:45"
+UNSCR_FLAG = "unscr_ok"       # sidecar: chương đã soi trên comix + giải-xáo lại đủ theo mốc
+                              # -> /repair bỏ qua luôn (khỏi chạm mạng mỗi lượt)
 CHALLENGE_WAIT = 300          # giây chờ người xác minh Cloudflare trước khi bỏ cuộc
 MAX_RELAUNCH = 3              # số lần TỰ dựng lại Chromium cho MỖI đợt sự cố (reset khi tải được thêm)
 RELAUNCH_BACKOFF = 5.0        # giây nghỉ trước khi mở Chromium mới
@@ -1302,87 +1316,316 @@ def _resilient(cs, call):
             cs.relaunch()
 
 
-def _repair_scramble_chapter(cs, img_client, folder, cands, side, args):
-    """Vá 1 chương ĐÃ tải bị TRÁO Ô (mỗi trang thứ 10 của bản Official). Trả (status,
-    n_fixed). status:
-      'noimg'  - folder trống -> để lượt tải thường lo (repair KHÔNG tải chương mới).
-      'clean'  - không dò thấy trang xáo -> bỏ NHANH, KHÔNG chạm mạng (đã sửa/hoặc sạch).
-      'novers' - có trang xáo nhưng không lấy được URL bản khớp (bản gỡ / lệch số trang).
-      'fixed'  - đã giải-xáo hết trang s:1 nghi ngờ, đóng lại .done.
-      'partial'- giải được một phần, còn sót (chạy lại để bù).
-    Xem [[comix-scramble-s-flag]]."""
-    if not _folder_has_images(folder):
-        return "noimg", 0
-    present = {}
-    for p in folder.iterdir():
-        if (p.is_file() and p.suffix.lower() in core.IMG_EXTS
-                and p.stem.lower() != "cover"):
-            m = re.match(r"(\d+)", p.stem)
-            if m:
-                present[int(m.group(1))] = p
-    if not present:
-        return "noimg", 0
-    # Dò offline: bội-10 trước (đúng bẫy comix -> chương hỏng dừng sớm), rồi phần còn lại.
-    # KÍCH HOẠT khi (a) có trang trông bị xáo, HOẶC (b) có KHOẢNG TRỐNG số trang — ca trang
-    # s:1 giải-xáo hụt nên THIẾU HẲN file (không có gì để dò), vd chương 1 kẹt 02/09.
-    order = sorted(present, key=lambda i: (i % 10 != 0, i))
-    has_gap = bool(set(range(1, max(present) + 1)) - set(present))
-    if not has_gap and not any(core.looks_scrambled(present[i]) for i in order):
-        return "clean", 0
-    # Lấy URL: ưu tiên bản TRÙNG id sidecar (đúng thứ tự trang); else bản official; else best.
-    ver = None
-    if side and side.get("chapterId"):
-        ver = next((v for v in cands if v["id"] == side.get("chapterId")), None)
-    id_matched = ver is not None
+def _scan_pages(folder: Path):
+    """{số trang: (Path, mtime)} của các file ảnh trang (tên mở đầu bằng số) trong folder
+    chương. Dùng scandir: trên Windows stat có sẵn từ lượt liệt kê nên quét cả thư viện
+    (vài nghìn chương) vẫn nhanh. Folder không có -> {}."""
+    out = {}
+    try:
+        with os.scandir(folder) as it:
+            for e in it:
+                stem, ext = os.path.splitext(e.name)
+                if ext.lower() not in core.IMG_EXTS or stem.lower() == "cover":
+                    continue
+                m = re.match(r"(\d+)", stem)
+                if not m:
+                    continue
+                try:
+                    if e.is_file():
+                        out[int(m.group(1))] = (Path(e.path), e.stat().st_mtime)
+                except OSError:
+                    pass
+    except OSError:
+        pass
+    return out
+
+
+def _parse_at(s):
+    """Trường "at" của sidecar ('%Y-%m-%d %H:%M:%S', giờ máy) -> epoch; hỏng/thiếu -> None."""
+    try:
+        return datetime.strptime(s, "%Y-%m-%d %H:%M:%S").timestamp()
+    except (TypeError, ValueError):
+        return None
+
+
+def _scr_page_trusted(path: Path) -> bool:
+    """Trang TRÁO Ô trên đĩa đã là bản giải-xáo đúng chưa? = file ghi SAU mốc
+    UNSCRAMBLE_SINCE (trước mốc code chưa giải-xáo được -> chắc chắn còn xáo)."""
+    try:
+        return path.stat().st_mtime >= UNSCRAMBLE_SINCE
+    except OSError:
+        return False
+
+
+def _mark_unscr(folder: Path, side):
+    """Ghi cờ UNSCR_FLAG vào sidecar: chương đã soi comix + giải-xáo đủ theo mốc."""
+    data = dict(side or read_sidecar(folder) or {})
+    data[UNSCR_FLAG] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    _save_sidecar(folder, data)
+
+
+def repair_offline_state(folder: Path, side, done: bool):
+    """Phân loại 1 chương cho /repair CHỈ bằng ĐĨA (sidecar + ngày ghi file), KHÔNG mạng.
+    Dùng CHUNG cho job vá (_repair_scramble_chapter) và quét toàn thư viện (repair_scan)
+    -> bản xem trước trên bot khớp đúng việc job sẽ làm. Trả (state, info):
+      'noimg'       folder trống/không có                      -> bỏ qua
+      'notofficial' không sidecar (site khác) / bản scan nhóm  -> bỏ qua (chỉ Official xáo)
+      'ok'          đã soi (cờ unscr_ok) / mọi trang 10,20,30.. đều ghi SAU mốc
+      'partialdl'   chưa .done = đang tải dở -> để /tai lo (resume tự giải-xáo lại, _page_ok)
+      'edited'      .done mà THỦNG số trang (xoá tay?) -> bỏ qua + báo, info["gaps"]
+      'check'       cần soi comix. info["old"] = trang 10,20.. còn ngày cũ; info["strict"]
+                    = True khi ngày file KHÔNG đáng tin (tải trước mốc mà phần lớn trang
+                    thường lại mang ngày SAU mốc = cả chương bị ghi lại, vd nén lại tại
+                    chỗ) -> làm lại MỌI trang xáo bất kể ngày.
+    Vì sao lúc dò offline chỉ nhìn trang bội 10: comix chèn trang xáo đúng các vị trí đó
+    (dump payload 01/09 + ~450 chương có vết repair, chưa trang lẻ nào từng bị ghi lại).
+    Lên mạng rồi thì dùng cờ s:1 THẬT của site, không đoán nữa."""
+    pages = _scan_pages(folder)
+    if not pages:
+        return "noimg", {}
+    if not side or not side.get("isOfficial"):
+        return "notofficial", {}
+    if side.get(UNSCR_FLAG):
+        return "ok", {}
+    if not done:
+        return "partialdl", {}
+    gaps = sorted(set(range(1, max(pages) + 1)) - set(pages))
+    if gaps:
+        return "edited", {"gaps": gaps}
+    tens = sorted(i for i in pages if i % 10 == 0)
+    rest = [mt for i, (_p, mt) in pages.items() if i % 10]
+    at = _parse_at(side.get("at"))
+    if at is not None and at < UNSCRAMBLE_SINCE and rest \
+            and statistics.median(rest) >= UNSCRAMBLE_SINCE:
+        return "check", {"strict": True, "old": tens}
+    old = [i for i in tens if pages[i][1] < UNSCRAMBLE_SINCE]
+    if not old:
+        return "ok", {}
+    return "check", {"strict": False, "old": old}
+
+
+def _repair_scramble_chapter(cs, img_client, folder, versions, side, args):
+    """Vá 1 chương ĐÃ tải còn trang TRÁO Ô (bản Official). Trả (status, n_fixed, info).
+    Dò bằng repair_offline_state (đĩa, không mạng) — trạng thái khác 'check' trả nguyên
+    ('noimg'/'notofficial'/'ok'/'partialdl'/'edited'), KHÔNG chạm mạng. 'check' mới lên comix:
+      'gone'      - bản upload đang nằm trên đĩa (sidecar chapterId) không còn trên comix
+                    (hoặc 0 trang) -> bỏ qua + báo. KHÔNG lùi sang bản nhóm khác (sẽ ghép
+                    ảnh 2 nhóm vào 1 chương — user chốt 27/09).
+      'fetchfail' - chưa lấy được danh sách trang (mạng/quảng cáo) -> chạy lại để bù
+      'edited'    - số trang trên đĩa khác số trang của ĐÚNG bản đó (xoá/đánh số lại tay?)
+                    -> bỏ qua: ghi theo số thứ tự sẽ đè nhầm trang khác
+      'verified'  - không trang nghi nào cần làm lại -> ghi cờ, lần sau bỏ qua khỏi mạng
+      'fixed'     - đã làm lại đủ trang nghi -> ghi cờ
+      'partial'   - vá hụt vài trang (info["still"]) -> chạy lại để bù
+    Trang nghi site VẪN đánh s:1 -> giải-xáo; site đã THÔI xáo (không cờ) -> tải lại thẳng
+    (ảnh tại url nay sạch). Chỉ đụng trang nghi của ĐÚNG bản đang có; trang thường giữ
+    nguyên. Nghiệm thu bằng tín hiệu thật (giải-xáo trả bytes / tải qua kiểm tra), KHÔNG
+    soi detector. Xem [[comix-scramble-s-flag]]."""
+    done = (folder / ".done").exists()
+    state, info = repair_offline_state(folder, side, done)
+    if state != "check":
+        return state, 0, info
+    ver = next((v for v in versions if v.get("id") == side.get("chapterId")), None)
     if ver is None:
-        ver = next((v for v in cands if v.get("isOfficial")), None) \
-            or (cands[0] if cands else None)
-    if ver is None:
-        return "novers", 0
+        return "gone", 0, {"group": side.get("group")}
     page_items = _resilient(cs, lambda: cs.fetch_pages(ver["url"], ver["id"]))
+    if page_items is None:
+        return "fetchfail", 0, {}
     if not page_items:
-        return "novers", 0
-    # Không trùng id -> đòi khớp số trang để tránh lệch chỉ số (ghi đè nhầm trang).
-    if not id_matched and len(page_items) != len(present):
-        return "novers", 0
-    scr_pairs = [(i, it["url"]) for i, it in enumerate(page_items, 1)
-                 if it.get("s") and (i not in present or core.looks_scrambled(present[i]))]
-    if not scr_pairs:
-        return "clean", 0
-    got = _resilient(cs, lambda: cs.descramble_pages(ver["url"], scr_pairs, img_client))
-    nfix = 0
-    for i, _u in scr_pairs:
-        data = got.get(i)
-        if not data:
-            continue
-        old = _page_file(folder, i)
-        if old is not None and old.suffix.lower() != ".webp":
-            try:
-                old.unlink()
-            except OSError:
-                pass
-        (folder / f"{i:03d}.webp").write_bytes(data)
-        p = _fix_ext(folder / f"{i:03d}.webp")
-        _recompress_webp(p, getattr(args, "comix_q", RECOMPRESS_Q))
-        nfix += 1
-    # CÒN SÓT = trang s:1 THIẾU HẲN, hoặc CÓ thử vá lượt này mà giải-xáo KHÔNG trả ra
-    # bytes (got). KHÔNG soi lại looks_scrambled trên ảnh vừa giải-xáo: detector dương
-    # tính giả trên webtoon dải dài (ảnh sạch vẫn ~4-8 -> "partial" mãi, không đóng .done;
-    # ca Farmer of Spirits ch2/ch3 02/09). Trang s:1 KHÔNG nằm trong scr_pairs = ở
-    # discovery đã sạch. Xem [[comix-scramble-s-flag]].
-    attempted = {i for i, _ in scr_pairs}
-    still = []
-    for i, it in enumerate(page_items, 1):
-        if not it.get("s"):
-            continue
-        if _page_file(folder, i) is None:
-            still.append(i)                       # thiếu hẳn file
-        elif i in attempted and not got.get(i):
-            still.append(i)                       # có thử vá nhưng giải-xáo hụt
+        return "gone", 0, {"group": side.get("group"), "empty": True}
+    pages = _scan_pages(folder)
+    if set(pages) != set(range(1, len(page_items) + 1)):
+        return "edited", 0, {"disk": len(pages), "site": len(page_items)}
+    s1 = {i for i, it in enumerate(page_items, 1) if it.get("s")}
+    # Trang NGHI = trang 10,20,.. còn ngày cũ (dò offline) + trang site đang đánh s:1 mà
+    # còn ngày cũ. Ngày file không đáng tin (strict) -> mọi trang 10,20,.. + mọi trang s:1.
+    # KHÔNG chỉ dựa cờ s:1: comix có thể THÔI xáo (27/09: Dungeon Reset ch.6 hết cờ s, ảnh
+    # tại url đã sạch) -> chỉ nhìn cờ thì trang xáo cũ trên đĩa bị coi là "sạch" oan.
+    if info.get("strict"):
+        sus = {i for i in pages if i % 10 == 0} | s1
+    else:
+        sus = set(info.get("old") or []) | {i for i in s1 if pages[i][1] < UNSCRAMBLE_SINCE}
+    if not sus:
+        _mark_unscr(folder, side)
+        return "verified", 0, {}
+    scr_t = sorted(sus & s1)    # site VẪN xáo trang này -> giải-xáo như đường tải
+    http_t = sorted(sus - s1)   # site nay trả ảnh SẠCH tại url -> tải lại thẳng
+    q = getattr(args, "comix_q", RECOMPRESS_Q)
+    done_ok = set()
+    if scr_t:
+        pairs = [(i, page_items[i - 1]["url"]) for i in scr_t]
+        got = _resilient(cs, lambda: cs.descramble_pages(ver["url"], pairs, img_client))
+        for i in scr_t:
+            data = got.get(i)
+            if not data:
+                continue
+            old = pages[i][0]
+            if old.suffix.lower() != ".webp":
+                try:
+                    old.unlink()
+                except OSError:
+                    pass
+            (folder / f"{i:03d}.webp").write_bytes(data)
+            _recompress_webp(_fix_ext(folder / f"{i:03d}.webp"), q)
+            done_ok.add(i)
+    if http_t:
+        img_client.refresh_identity()   # vé mới nhất từ browser (main thread) trước khi tải
+        for i in http_t:
+            if _redownload_page(folder, i, page_items[i - 1]["url"], img_client, q):
+                done_ok.add(i)
+        _drop_repair_tmp(folder)
+    still = sorted(sus - done_ok)
+    how = {"scr": len([i for i in scr_t if i in done_ok]),
+           "http": len([i for i in http_t if i in done_ok])}
     if still:
-        return "partial", nfix
-    _mark_done(folder)
-    return "fixed", nfix
+        return "partial", len(done_ok), {"still": still, **how}
+    _mark_unscr(folder, side)
+    return "fixed", len(done_ok), how
+
+
+REPAIR_TMP = ".repair-tmp"   # trong folder chương; đầu-dấu-chấm -> reader/check bỏ qua
+
+
+def _redownload_page(folder: Path, i: int, url: str, img_client, q: int) -> bool:
+    """Tải LẠI thẳng trang i (comix nay trả ảnh sạch tại url) vào chỗ tạm, qua kiểm tra
+    của download_image rồi mới THAY file cũ — hụt thì file cũ giữ nguyên (không bao giờ để
+    trang trống). 403 lần đầu -> làm mới vé rồi thử 1 lần; lần 2 để Forbidden bay ra (dừng
+    phiên như đường tải thường, tránh thử mù tụt uy tín IP)."""
+    tmpd = folder / REPAIR_TMP
+    tmpd.mkdir(exist_ok=True)
+    for p in tmpd.glob(f"{i:03d}.*"):
+        try:
+            p.unlink()
+        except OSError:
+            pass
+    tmp = tmpd / f"{i:03d}.webp"
+    try:
+        ok = core.download_image(url, tmp, img_client)
+    except core.Forbidden:
+        img_client.refresh_identity()
+        ok = core.download_image(url, tmp, img_client)
+    if not ok or not tmp.exists() or tmp.stat().st_size == 0:
+        return False
+    tmp = _fix_ext(tmp)
+    _recompress_webp(tmp, q)
+    old = _page_file(folder, i)
+    if old is not None:
+        try:
+            old.unlink()
+        except OSError:
+            return False
+    os.replace(tmp, folder / tmp.name)
+    return True
+
+
+def _drop_repair_tmp(folder: Path):
+    shutil.rmtree(folder / REPAIR_TMP, ignore_errors=True)
+
+
+def _how_note(info):
+    """'giải-xáo 1, tải lại thẳng 2' — trang site vẫn xáo vs site đã thôi xáo."""
+    bits = []
+    if info.get("scr"):
+        bits.append(f"giải-xáo {info['scr']}")
+    if info.get("http"):
+        bits.append(f"tải lại thẳng {info['http']}")
+    return ", ".join(bits) or "0"
+
+
+def _edited_note(info):
+    """Mô tả ngắn chương 'lệch số trang' cho log/Telegram."""
+    if "site" in info:
+        return f"đĩa {info['disk']} trang / comix {info['site']} trang"
+    return f"thiếu trang {core.compact_ints(info.get('gaps') or [])}"
+
+
+def _chapter_num_of(dirname: str):
+    """'Chapter 12.5' -> 12.5 ; tên khác -> None (folder chương comix luôn 'Chapter N')."""
+    m = re.fullmatch(r"Chapter (\d+(?:\.\d+)?)", dirname)
+    return float(m.group(1)) if m else None
+
+
+def _marker_slug(series_dir: Path):
+    """Đọc slug từ file dấu _COMIX_official_*.txt ở gốc folder truyện; không có -> None."""
+    for mk in series_dir.glob(MARKER_PREFIX + "*.txt"):
+        try:
+            for line in mk.read_text(encoding="utf-8", errors="replace").splitlines():
+                k, _, v = line.partition(":")
+                if k.strip() == "slug" and v.strip():
+                    return v.strip()
+        except OSError:
+            pass
+    return None
+
+
+def repair_scan(out_dir: Path):
+    """Quét TOÀN thư viện (chỉ đĩa, không mạng) tìm chương comix còn trang xáo -> dict cho
+    lệnh bot `/repair all` (xem trước + tạo job) và tổng kết 'kiểm lại'. Truyện comix nhận
+    qua file dấu (có slug -> link). Folder có chương Official mà THIẾU file dấu -> liệt kê
+    riêng (không suy ra link được, user /repair tay). Phân loại qua repair_offline_state
+    (cùng hàm job dùng) nên số xem trước khớp việc job làm."""
+    series, nomarker = [], []
+    try:
+        dirs = sorted(d for d in out_dir.iterdir() if d.is_dir() and not d.name.startswith("."))
+    except OSError:
+        dirs = []
+    for sd in dirs:
+        slug = _marker_slug(sd)
+        chaps = []
+        try:
+            chaps = [d for d in sd.iterdir() if d.is_dir() and _chapter_num_of(d.name) is not None]
+        except OSError:
+            pass
+        if not slug:
+            if any((d / SIDECAR).exists() and (read_sidecar(d) or {}).get("isOfficial")
+                   for d in chaps):
+                nomarker.append(sd.name)
+            continue
+        rec = {"folder": sd.name, "slug": slug, "url": f"{BASE}/title/{slug}",
+               "official": 0, "check": [], "strict": [], "check_pages": 0,
+               "edited": [], "partialdl": []}
+        for d in sorted(chaps, key=lambda d: _chapter_num_of(d.name)):
+            side = read_sidecar(d)
+            state, info = repair_offline_state(d, side, (d / ".done").exists())
+            num = _chapter_num_of(d.name)
+            if side and side.get("isOfficial"):
+                rec["official"] += 1
+            if state == "check":
+                rec["check"].append(num)
+                rec["check_pages"] += len(info.get("old") or [])
+                if info.get("strict"):
+                    rec["strict"].append(num)
+            elif state == "edited":
+                rec["edited"].append([num, info.get("gaps") or []])
+            elif state == "partialdl":
+                rec["partialdl"].append(num)
+        series.append(rec)
+    return {"since": UNSCRAMBLE_SINCE_TXT, "series": series, "nomarker": nomarker}
+
+
+def print_repair_scan(out_dir: Path):
+    """In kết quả repair_scan cho người đọc + 1 dòng REPAIR_SCAN_JSON cho bot."""
+    res = repair_scan(out_dir)
+    print(f"Quét trang TRÁO Ô trên đĩa ({out_dir}) — mốc: ghi trước "
+          f"{UNSCRAMBLE_SINCE_TXT} = chưa giải-xáo")
+    for s in res["series"]:
+        line = f"  {s['folder']}: Official {s['official']} chương"
+        if s["check"]:
+            line += (f" | CẦN soi comix {len(s['check'])} chương (~{s['check_pages']} trang)"
+                     f" — ch. {core.compact_chapters(s['check'], max_groups=60)}")
+        else:
+            line += " | sạch"
+        if s["strict"]:
+            line += f" | ngày file không tin được: {len(s['strict'])}"
+        if s["edited"]:
+            line += f" | lệch số trang: {len(s['edited'])}"
+        if s["partialdl"]:
+            line += f" | đang tải dở: {len(s['partialdl'])}"
+        print(line)
+    if res["nomarker"]:
+        print("  Có bản Official nhưng THIẾU file dấu (cần /repair <link> tay): "
+              + ", ".join(res["nomarker"]))
+    print("REPAIR_SCAN_JSON:" + json.dumps(res, ensure_ascii=False))
 
 
 def run(args):
@@ -1446,14 +1689,23 @@ def run(args):
                 print("Không có chương nào khớp lựa chọn.", file=sys.stderr)
                 sys.exit(1)
 
-            out_root = Path(args.out) / core.safe_name(title)
+            repair_mode = getattr(args, "repair_scramble", False)
+            # Chế độ vá: KHOÁ đúng folder đã có. `/repair all` truyền --dest-name = folder
+            # mang file dấu (phòng comix đổi tên truyện -> tên suy từ title lệch folder cũ).
+            # Không thấy folder -> dừng, KHÔNG tạo folder rỗng (repair không tải chương mới).
+            dest_name = getattr(args, "dest_name", None) if repair_mode else None
+            out_root = Path(args.out) / core.safe_name(dest_name or title)
             tmp_root = Path(args.out) / TMP_DIRNAME / core.safe_name(title)
+            if repair_mode and not out_root.is_dir():
+                print(f"Không thấy folder truyện “{out_root.name}” trong {args.out} — "
+                      "repair chỉ vá chương đã tải, không tạo mới.", file=sys.stderr)
+                sys.exit(1)
             out_root.mkdir(parents=True, exist_ok=True)
             # xác tráo-folder dở từ phiên trước (crash giữa swap) -> dọn
             if tmp_root.exists():
                 for d in tmp_root.glob("*.__trash"):
                     shutil.rmtree(d, ignore_errors=True)
-            if cover:
+            if cover and not repair_mode:     # vá thì khỏi đụng ảnh bìa
                 # fetch_series vừa (có thể) giải Cloudflare -> lấy vé mới cho cover.
                 img_client.refresh_identity()
                 # thử bản full (bỏ '@280') trước, hụt (404) thì lấy luôn bản thumb.
@@ -1475,7 +1727,7 @@ def run(args):
             # đĩa -> nhắn Telegram X/Y + cần nâng cấp/tải NGAY, TRƯỚC khi tải ảnh. comix không
             # có peek rẻ nên báo cáo này phải chờ Chromium mở xong (không tức thì như site
             # thường). Chỉ ĐỌC ĐĨA (không thêm request). Lỗi ở đây KHÔNG được cản việc tải.
-            if not getattr(args, "repair_scramble", False):
+            if not repair_mode:
                 try:
                     _report_comix_plan(title, nums, by_num, out_root, args,
                                        pin_name, unpin)
@@ -1489,9 +1741,11 @@ def run(args):
             n_full = n_skipped = n_locked = n_upgraded = n_repinned = 0
             nopin = []        # chương ghim nhóm mà site không có bản nhóm đó (bỏ qua)
             img_ok = img_missing = img_broken = 0
-            repair_mode = getattr(args, "repair_scramble", False)
-            n_repaired = img_repaired = 0
-            repaired_partial, repaired_novers = [], []
+            # Kết quả chế độ vá, theo nhóm -> tổng kết + REPAIR_RESULT_JSON (bot gộp đợt).
+            rep = {"fixed": [], "verified": [], "partial": [], "fetchfail": [],
+                   "gone": [], "edited": [], "partialdl": []}
+            img_repaired = 0
+            visited = set()   # folder chương đã đi qua (còn lại = chương không còn trên comix)
 
             for idx, num in enumerate(nums, 1):
                 label = f"Chapter {core.fmt_num(num)}"
@@ -1508,35 +1762,50 @@ def run(args):
                 eff_pin = _effective_pin(side, pin_name, unpin)
                 cands = candidates_for(by_num[num], eff_pin)
 
-                # CHẾ ĐỘ SỬA TRÁO Ô (--repair-scramble): chỉ vá chương ĐÃ tải bị xáo,
-                # KHÔNG tải chương mới (dùng lệnh tải thường cho việc đó). Dò offline
-                # trước -> chương không dính thì bỏ nhanh, khỏi chạm mạng.
+                # CHẾ ĐỘ SỬA TRÁO Ô (--repair-scramble): chỉ vá chương ĐÃ tải còn trang xáo,
+                # KHÔNG tải chương mới (dùng lệnh tải thường cho việc đó). Dò offline theo
+                # MỐC ngày ghi file -> chương đã sạch bỏ nhanh, khỏi chạm mạng.
                 if repair_mode:
+                    visited.add(label)
                     # In tiến độ MỖI chương (kể cả chương bỏ nhanh) để log luôn tiến —
                     # tránh stall-watchdog supervisor kill oan khi quét nhiều chương sạch.
                     print(f"\r[{idx}/{total}] {label} — dò tráo ô...            ",
                           end="", flush=True)
-                    status, nfix = _repair_scramble_chapter(
-                        cs, img_client, folder, cands, side, args)
+                    status, nfix, info = _repair_scramble_chapter(
+                        cs, img_client, folder, by_num[num], side, args)
+                    img_repaired += nfix
                     if status == "fixed":
-                        n_repaired += 1
-                        img_repaired += nfix
+                        rep["fixed"].append(num)
                         cs.mark_progress()
-                        print(f"{prefix} — đã giải-xáo {nfix} trang tráo ô")
+                        print(f"{prefix} — đã làm lại {nfix} trang ({_how_note(info)})")
                         if args.cbz:
                             core.make_cbz(folder, skip_existing=False)
-                    elif status == "partial":
-                        repaired_partial.append(label)
-                        img_repaired += nfix
+                    elif status == "verified":
+                        rep["verified"].append(num)
                         cs.mark_progress()
-                        print(f"{prefix} — giải-xáo {nfix} trang, CÒN sót (chạy lại để bù)")
-                    elif status == "novers":
-                        repaired_novers.append(label)
-                        print(f"{prefix} — có trang xáo nhưng không lấy được URL bản "
-                              "khớp, bỏ qua")
-                    # Chỉ nghỉ khi có CHẠM MẠNG (fixed/partial/novers); 'clean'/'noimg'
-                    # bỏ nhanh (thuần đọc đĩa) nên khỏi nghỉ -> quét cả bộ rất nhanh.
-                    if status in ("fixed", "partial", "novers"):
+                        print(f"{prefix} — soi comix: không trang xáo nào cần làm lại")
+                    elif status == "partial":
+                        rep["partial"].append(num)
+                        cs.mark_progress()
+                        print(f"{prefix} — giải-xáo {nfix} trang, CÒN sót trang "
+                              f"{core.compact_ints(info['still'])} (chạy lại để bù)")
+                    elif status == "fetchfail":
+                        rep["fetchfail"].append(num)
+                        print(f"{prefix} — chưa lấy được danh sách trang (mạng?), "
+                              "chạy lại để bù")
+                    elif status == "gone":
+                        rep["gone"].append([num, info.get("group") or "?"])
+                        print(f"{prefix} — bản gốc [{info.get('group') or '?'}] không còn "
+                              "trên comix, bỏ qua (KHÔNG lấy bản nhóm khác)")
+                    elif status == "edited":
+                        rep["edited"].append([num, _edited_note(info)])
+                        print(f"{prefix} — lệch số trang ({_edited_note(info)}), bỏ qua")
+                    elif status == "partialdl":
+                        rep["partialdl"].append(num)
+                    # Chỉ nghỉ khi có CHẠM MẠNG; trạng thái offline bỏ nhanh (thuần đọc đĩa)
+                    # nên khỏi nghỉ -> quét cả bộ rất nhanh.
+                    if status in ("fixed", "verified", "partial", "fetchfail") \
+                            or "site" in info or info.get("empty"):
                         active += 1
                         if active % 10 == 0:
                             rest = random.uniform(60, 90)
@@ -1647,13 +1916,26 @@ def run(args):
                 # của site; trang thường tải HTTP như cũ. Xem [[comix-scramble-s-flag]].
                 scr = {i for i, it in enumerate(page_items, 1) if it.get("s")}
                 pages = list(enumerate(urls, 1))
+                # Trang 10,20,.. của bản Official còn ngày TRƯỚC mốc mà site nay KHÔNG đánh
+                # s:1 = bản xáo thô thời chưa giải-xáo được (chương tải dở từ trước 02/09 rồi
+                # tải tiếp). comix đã thôi xáo -> ảnh tại url nay sạch: xoá để tải lại.
+                if chosen.get("isOfficial"):
+                    for i in range(10, len(urls) + 1, 10):
+                        f = _page_file(dest, i)
+                        if f is not None and i not in scr and not _scr_page_trusted(f):
+                            try:
+                                f.unlink()
+                            except OSError:
+                                pass
 
                 def _page_ok(i, _scr=scr, _dest=dest):
-                    """Trang i đã ĐÚNG trên đĩa chưa? (trang tráo ô còn dấu xáo = CHƯA)."""
+                    """Trang i đã ĐÚNG trên đĩa chưa? Trang tráo ô ghi TRƯỚC mốc = còn
+                    xáo (tải dở từ thời chưa giải-xáo được) -> CHƯA. Không dùng detector
+                    looks_scrambled: âm tính giả trên trang gần-trắng (xem UNSCRAMBLE_SINCE)."""
                     f = _page_file(_dest, i)
                     if f is None:
                         return False
-                    if i in _scr and core.looks_scrambled(f):
+                    if i in _scr and not _scr_page_trusted(f):
                         return False
                     return True
 
@@ -1826,6 +2108,19 @@ def run(args):
                 else:
                     time.sleep(random.uniform(0.7, 1.3) * args.delay)
 
+            # Vá cả bộ: chương trên ĐĨA còn trang xáo mà số chương KHÔNG còn trong danh
+            # sách comix -> vòng trên không đi qua -> báo 'bản gốc không còn' cho khỏi sót
+            # im lặng (lần quét kiểm lại vẫn sẽ thấy nó).
+            if repair_mode and not (args.chapters or args.c_from is not None
+                                    or args.c_to is not None):
+                for d in sorted(out_root.iterdir(), key=lambda d: d.name):
+                    num = _chapter_num_of(d.name)
+                    if num is None or not d.is_dir() or d.name in visited:
+                        continue
+                    sd = read_sidecar(d)
+                    if repair_offline_state(d, sd, (d / ".done").exists())[0] == "check":
+                        rep["gone"].append([num, (sd or {}).get("group") or "?"])
+
             # Đóng dấu folder comix (Cách 1) — quét lại toàn bộ chương để số official/
             # tổng phản ánh đúng trạng thái sau lượt này.
             write_series_marker(out_root, slug)
@@ -1846,18 +2141,38 @@ def run(args):
 
     # ---- Tổng kết chế độ SỬA TRÁO Ô ----
     if repair_mode:
+        def cc(nums):
+            return core.compact_chapters(nums, max_groups=60)
+
+        def some(pairs, fmt):
+            txt = "; ".join(fmt(a, b) for a, b in pairs[:15])
+            return txt + (f"; … (+{len(pairs) - 15})" if len(pairs) > 15 else "")
+
+        # Dòng máy-đọc cho bot gộp đợt `/repair all`. In TRƯỚC khối tổng kết: bot cắt tin
+        # Telegram từ '===== SỬA TRÁO Ô' nên dòng này không lọt vào tin.
+        print("REPAIR_RESULT_JSON:" + json.dumps(
+            {"title": title, "folder": out_root.name, "pages": img_repaired, **rep},
+            ensure_ascii=False))
         print(f"\n===== SỬA TRÁO Ô: {title} — quét {total} chương =====")
-        print(f"   Đã sửa: {n_repaired} chương ({img_repaired} trang giải-xáo)")
-        if repaired_partial:
-            print(f"   Còn sót (chạy lại để bù): {len(repaired_partial)} — "
-                  + ", ".join(repaired_partial))
-        if repaired_novers:
-            print(f"   Không lấy được URL bản khớp: {len(repaired_novers)} — "
-                  + ", ".join(repaired_novers))
-        if not (n_repaired or repaired_partial or repaired_novers):
-            print("   ✓ Không chương nào còn ảnh tráo ô.")
-        else:
-            print("-> Chương 'còn sót' chạy lại '--repair-scramble' để bù nốt.")
+        print(f"   (mốc: trang xáo ghi trước {UNSCRAMBLE_SINCE_TXT} = chưa giải-xáo)")
+        print(f"   Đã sửa: {len(rep['fixed'])} chương ({img_repaired} trang)"
+              + (f" — ch. {cc(rep['fixed'])}" if rep["fixed"] else ""))
+        if rep["verified"]:
+            print(f"   Soi comix, không cần sửa: {len(rep['verified'])} chương")
+        retry = rep["partial"] + rep["fetchfail"]
+        if retry:
+            print(f"   Còn sót (chạy lại /repair để bù): {len(retry)} — ch. {cc(retry)}")
+        if rep["edited"]:
+            print(f"   Bỏ qua — lệch số trang (đã sửa tay?): {len(rep['edited'])} — "
+                  + some(rep["edited"], lambda n, note: f"ch. {core.fmt_num(n)} ({note})"))
+        if rep["gone"]:
+            print(f"   Bỏ qua — bản gốc không còn trên comix: {len(rep['gone'])} — "
+                  + some(rep["gone"], lambda n, g: f"ch. {core.fmt_num(n)} [{g}]"))
+        if rep["partialdl"]:
+            print(f"   Bỏ qua — chương đang tải dở (/tai để tải nốt): "
+                  f"{len(rep['partialdl'])} — ch. {cc(rep['partialdl'])}")
+        if not (rep["fixed"] or retry or rep["edited"] or rep["gone"]):
+            print("   ✓ Không chương nào còn trang tráo ô.")
         print("\nHoàn tất.")
         return
 

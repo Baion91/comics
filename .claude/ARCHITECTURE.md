@@ -195,30 +195,50 @@ cách chạy thật + decode thử ảnh.
     trả ra bytes** (`got[i]`); trang `s:1` KHÔNG nằm trong danh sách cần giải-xáo (`scr_jobs`/
     `scr_pairs`) = đã sạch ở bước phát hiện. Đường tải (`_done_ok` trong `run()`) và `/repair`
     (`still` trong `_repair_scramble_chapter`) dùng chung nguyên tắc này → đóng `.done` đúng,
-    giải-xáo HỤT (got không có bytes) vẫn bị bắt là "còn sót". `looks_scrambled()` vẫn dùng ở
-    **bước PHÁT HIỆN** (tìm file CŨ còn xáo cần vá: discovery `/repair`, `--recheck`, audit
-    `check_library`) — nơi không có tín hiệu nào khác; dương-tính-giả ở đó chỉ tốn công quét/
-    giải-xáo lại 1 chương sạch (chậm + nén lại nhẹ), KHÔNG hỏng dữ liệu, và giờ tự đóng `.done`.
-    **Sửa kho cũ**: `--repair-scramble` (chỉ comix) — dò offline từng chương
-    (bỏ NHANH chương không dính, không chạm mạng), chương còn ảnh xáo thì lấy payload bản ĐANG
-    có trên đĩa (khớp `chapterId` sidecar, hoặc đòi khớp số trang) rồi giải-xáo lại ĐÚNG trang
-    `s:1`, ghi đè tại chỗ; KHÔNG tải chương mới. Kích hoạt khi có trang TRÔNG xáo **hoặc có
-    KHOẢNG TRỐNG số trang** (ca trang `s:1` giải-xáo hụt nên thiếu hẳn file — không có gì để
-    dò); "còn sót" = trang `s:1` **thiếu hẳn file** hoặc **đã thử vá mà `got` không trả bytes**
-    (giải-xáo hụt), CHỈ đóng `.done` khi hết sót (bản 02/09 sáng chỉ đếm file đang có → "Đã sửa
-    1 chương (0 trang)" rồi đóng `.done` sai; bản 02/09 chiều lại soi `looks_scrambled` → dương
-    tính giả giữ "partial" mãi). Lý do phải có repair riêng:
-    chương xáo cũ đã mang `.done` (file webp hợp lệ, `is_known_broken` chỉ tra sổ URL-hỏng nên
-    không bắt được) → chạy `/tai` thường (kể cả `--recheck`) sẽ BỎ QUA/không tải lại. Xem
-    memory `comix-scramble-s-flag`. **Bot `/repair <link…> [chương]`** (`supervisor.py`):
-    gom NHIỀU link → mỗi link 1 job `--repair-scramble` vào CHUNG hàng đợi tải (dedup theo
-    (url,chapters,repair) → không đè job /tai; nhãn 🧩), chạy TUẦN TỰ 1 worker (chung queue
-    với /tai). Báo per-job GIỐNG /tai: ack "🧩 Đã thêm N bộ" → "🧩 Bắt đầu SỬA TRÁO Ô" →
-    "✅ Sửa tráo ô xong" + bảng số liệu (`_read_summary` bắt cả khối "===== SỬA TRÁO Ô");
-    KHÔNG phải digest gộp như auto-check "chương mới". repair in progress mỗi chương để log
-    tiến (tránh stall-watchdog kill oan khi quét chương sạch). Còn ngỏ (cosmetic/nice-to-have,
-    chưa làm — user biết): tin HUỶ/TREO của job vá vẫn dùng chữ "tải"/gợi ý "/tai" (chức năng
-    đúng, chỉ sai câu chữ); chưa có "/repair all" (phải liệt kê từng link comix). Đổi
+    giải-xáo HỤT (got không có bytes) vẫn bị bắt là "còn sót". `looks_scrambled()` nay CHỈ
+    còn dùng ở audit `check_library` (báo, không quyết định gì).
+    **Phát hiện trang xáo cũ = MỐC NGÀY GHI FILE, KHÔNG dùng detector** (sửa 27/09/2026):
+    detector ÂM TÍNH GIẢ trên trang gần-trắng (credit TappyToon, "TO BE CONTINUED", trang tựa,
+    bong bóng nền trắng: xáo mà chỉ ~2-3.9 điểm < ngưỡng 4.0) → `/repair` 02-03/09 bỏ sót 108
+    trang/92 chương mà vẫn đóng `.done` (quét server 27/09 qua `/api/pages`, soi tay 97 trang:
+    mọi trang có nét đều xáo thật). Hai phân bố chồng nhau (xáo-trắng ~2.4 / sạch-webtoon tới
+    42) nên KHÔNG chỉnh ngưỡng được. Nay: `UNSCRAMBLE_SINCE` = **02/09/2026 12:45 (+07)** — trang
+    ghi TRƯỚC mốc = bản xáo thô (code cũ không giải-xáo được); ghi SAU = đúng (chốt bằng bằng
+    chứng: trang repair sớm nhất trên server 02/09 12:45:06, soi 9 trang đầu/giữa/cuối 3 đợt
+    đều sạch, không trang nào ghi lại trước đó). Luật offline `repair_offline_state()` (DÙNG
+    CHUNG cho job vá + quét toàn thư viện): chỉ chương Official (sidecar `isOfficial`) + `.done`
+    + không thủng số trang; nghi khi còn trang **10,20,30..** ghi trước mốc (comix chèn trang xáo
+    đúng các vị trí đó — ~450 chương có vết repair, chưa trang lẻ nào từng bị ghi lại). **Chốt
+    chặn ngày file**: sidecar `at` trước mốc mà trung vị ngày trang thường SAU mốc = cả chương
+    bị ghi lại (nén lại tại chỗ / chép backup) → "strict": làm lại MỌI trang 10,20.. + s:1.
+    Vá xong ghi cờ sidecar `unscr_ok` → lượt sau bỏ qua khỏi mạng.
+    **comix đã THÔI xáo** (phát hiện 27/09: Dungeon Reset ch.6 tải mới không còn cờ `s`, ảnh
+    tại url sạch) → trang nghi mà site KHÔNG đánh s:1 thì **tải lại thẳng** (`_redownload_page`:
+    vào `<chương>/.repair-tmp/`, qua kiểm tra `download_image` rồi mới thay file cũ; hụt giữ
+    file cũ); trang site VẪN đánh s:1 thì giải-xáo như cũ. KHÔNG chỉ dựa cờ `s` (bản đầu của
+    fix này dựa cờ → "soi comix, không cần sửa" oan khi site thôi xáo — bắt được nhờ test thật).
+    Đường tải thường (chương tải dở trước mốc rồi tải tiếp): `_page_ok` coi trang s:1 ghi trước
+    mốc là chưa xong; trang 10,20.. Official ghi trước mốc mà site không còn cờ → xoá để tải lại.
+    **Sửa kho cũ**: `--repair-scramble` (chỉ comix, KHÔNG tải chương mới, không tải bìa; thiếu
+    folder → dừng, không tạo folder rỗng; `--dest-name` khoá đúng folder). Online chỉ dùng ĐÚNG
+    bản đang có (khớp `chapterId` sidecar trên TOÀN bộ bản của số chương); mất bản đó → `gone`,
+    **KHÔNG lùi sang bản nhóm khác** (bản cũ lùi "official đầu tiên/cands[0]" = ghép ảnh 2 nhóm).
+    Số trang đĩa ≠ số trang bản đó (xoá/đánh số lại tay) → `edited`, bỏ qua (ghi theo chỉ số sẽ
+    đè nhầm). Chương chưa `.done` → `partialdl`, để `/tai` lo. Chương trên đĩa mà comix hết liệt
+    kê → báo `gone`. Tổng kết in `REPAIR_RESULT_JSON:` (trước khối "===== SỬA TRÁO Ô" nên không
+    lọt tin Telegram). Lý do phải có repair riêng: chương xáo cũ đã mang `.done` → `/tai` thường
+    BỎ QUA. Xem memory `comix-scramble-s-flag`.
+    **Bot `/repair <link…> [chương]`** (`supervisor.py`): mỗi link 1 job `--repair-scramble`
+    vào CHUNG hàng đợi tải (dedup theo (url,chapters,repair,group,dest); nhãn 🧩), chạy TUẦN TỰ.
+    **`/repair all`** (27/09): supervisor chạy `comic_downloader.py --repair-scan` (CHỈ đọc đĩa,
+    in `REPAIR_SCAN_JSON:`; truyện comix nhận qua file dấu `_COMIX_official_*.txt` → slug → link;
+    folder có Official mà thiếu file dấu → liệt kê riêng) → tin XEM TRƯỚC (cần vá bao nhiêu
+    chương/trang mỗi truyện, bỏ qua kèm lý do, ước tính giờ) + nút `rpa:ok/no` (khuôn `_pending`
+    như GHÉP, `kind`) → ✅ tạo ĐỢT: mỗi truyện 1 job `repair` + `dest`=folder + `batch`=mã đợt
+    (bền qua restart). Job trong đợt KHÔNG báo "bắt đầu"; báo xong kèm `[k/N]`; kết quả ghi
+    `.reader-meta/repair-batches.json`; job cuối của đợt xong (hoặc /stop, /clearq xoá hết
+    job chờ) → `_batch_summary`: tổng kết + **quét đĩa lại** báo còn bao nhiêu chương nghi.
+    Còn ngỏ (cosmetic): tin HUỶ/TREO của job vá vẫn dùng chữ "tải"/gợi ý "/tai". Đổi
     `supervisor.py` ⇒ `/update` phải kèm RESTART supervisor tay mới nạp lệnh mới.
   - `asura_downloader.py` — **giờ chỉ là shim** gọi `comic_downloader.main(default=asura)`
     → lệnh/shortcut cũ + gõ slug trần vẫn chạy như Asura như trước.

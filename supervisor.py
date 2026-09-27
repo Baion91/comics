@@ -45,6 +45,9 @@ CLOUDFLARED = os.path.join(META_DIR, "cloudflared.exe")
 QUEUE_FILE = os.path.join(META_DIR, "bot-download-queue.json")
 DL_LOG_FILE = os.path.join(META_DIR, "tai-run.log")   # output downloader (tail xem tiến độ)
 DL_LOG_MAX = 2_000_000    # cắt log khi vượt ~2MB
+# Đợt `/repair all`: kết quả từng truyện gom ở đây (bền qua restart) để nhắn TỔNG KẾT khi
+# job cuối của đợt xong. {batch_id: {cid, ts, total, series: {folder: kết quả}}}.
+REPAIR_BATCH_FILE = os.path.join(META_DIR, "repair-batches.json")
 # Watchlist auto-check chương mới. watchlist.json = 1 NƠI quản lý danh sách truyện tự
 # check (gitignore .reader-meta/* nên sống qua git reset của cap-nhat.bat). check_updates.py
 # chạy dạng SUBPROCESS (cô lập requests/providers khỏi supervisor stdlib) và ghi kết quả
@@ -228,6 +231,7 @@ HELP_TEXT = (
     "        (xem kế hoạch rồi bấm ✅ xác nhận; chương .done được giữ, không tạo folder trùng)\n"
     "/repair <link comix> [chương] — vá trang bị TRÁO Ô (bản Official comix.to)\n"
     "     vd: /repair <link>  (cả bộ)  hoặc  /repair <link> 1  (thử 1 chương trước)\n"
+    "/repair all — quét CẢ thư viện comix trên ổ, xem trước rồi bấm ✅ để vá hết\n"
     "/trangthai — xem truyện đang tải + hàng chờ\n"
     "/provider — xem provider + domain; sửa (admin): /provider add|set|del|clear <name> …\n"
     "/stop — dừng truyện đang tải + xoá hàng chờ (của bạn)\n"
@@ -299,7 +303,8 @@ class Supervisor:
         self._wl_lock = threading.Lock()   # bảo vệ ghi watchlist.json (supervisor = writer duy nhất)
         self._checking = False             # đang chạy 1 lần auto-check -> chặn chạy chồng
         self._pending = {}                 # id -> {url,dest,chapters,cid,ts}: chờ bấm nút xác nhận GHÉP
-        self._pending_lock = threading.Lock()
+        self._pending_lock = threading.Lock()   # (kind='rpa': xác nhận `/repair all`)
+        self._batch_lock = threading.Lock()     # bảo vệ REPAIR_BATCH_FILE (worker + nút bấm)
 
     def reader_url(self):
         return f"http://127.0.0.1:{self.reader_port}"
@@ -522,7 +527,7 @@ class Supervisor:
             {"command": "link", "description": "Lấy link đọc hiện tại"},
             {"command": "whoami", "description": "Xem chat_id của bạn"},
             {"command": "tai", "description": "Tải truyện: /tai <link> [chương vd 1-20] [nhóm comix] (admin)"},
-            {"command": "repair", "description": "Vá trang tráo ô comix: /repair <link> [chương] (admin)"},
+            {"command": "repair", "description": "Vá trang tráo ô comix: /repair <link> [chương] | /repair all (admin)"},
             {"command": "trangthai", "description": "Xem tải đang chạy + hàng chờ (admin)"},
             {"command": "provider", "description": "Xem/sửa domain provider: /provider [add|set|del <name>...]"},
             {"command": "stop", "description": "Dừng tải + xoá hàng chờ của bạn (admin)"},
@@ -848,7 +853,8 @@ class Supervisor:
                                 "chapters": j.get("chapters"),
                                 "repair": bool(j.get("repair")),
                                 "group": j.get("group"),
-                                "dest": j.get("dest")})
+                                "dest": j.get("dest"),
+                                "batch": j.get("batch")})
         return out
 
     def _kill_stray_downloaders(self):
@@ -887,15 +893,17 @@ class Supervisor:
                 self._save_jobs_locked()
             log(f"Nạp lại {len(loaded)} truyện trong hàng đợi từ phiên trước -> tải tiếp.")
 
-    def _enqueue_jobs(self, pairs, repair=False, group=None, dest=None):
-        """Thêm [(url, cid[, chapters]), ...] vào hàng đợi tải. chapters = None -> tải cả
-        truyện; hoặc chuỗi chọn chương '5,7,20-25' (như --chapters). repair=True -> job
+    def _enqueue_jobs(self, pairs, repair=False, group=None, dest=None, batch=None):
+        """Thêm [(url, cid[, chapters[, dest]]), ...] vào hàng đợi tải. chapters = None ->
+        tải cả truyện; hoặc chuỗi chọn chương '5,7,20-25' (như --chapters). repair=True -> job
         chạy comic_downloader `--repair-scramble` (vá trang tráo ô, KHÔNG tải chương mới).
         group = tên nhóm GHIM cho comix (`--group`; 'auto' = bỏ ghim), None = luật mặc định.
         dest = tên folder GHÉP vào (`--dest-name`; tải bù từ provider khác vào folder có sẵn),
-        None = tạo folder theo tên truyện như thường. Chống trùng theo (url, chapters, repair,
-        group, dest) nên job tải/vá/ghim/ghép cùng truyện KHÔNG đè nhau. Trả (added, dup).
-        Dùng chung cho /tai, /repair, auto-check và xác nhận GHÉP."""
+        None = tạo folder theo tên truyện như thường; phần tử thứ 4 của pair (nếu có) đè dest
+        cho riêng job đó (`/repair all`: mỗi truyện khoá đúng folder của nó). batch = mã đợt
+        `/repair all` (gom kết quả, tổng kết khi job cuối xong). Chống trùng theo (url,
+        chapters, repair, group, dest) nên job tải/vá/ghim/ghép cùng truyện KHÔNG đè nhau.
+        Trả (added, dup). Dùng chung cho /tai, /repair, auto-check và xác nhận GHÉP."""
         added, dup = [], 0
         with self._dlq_lock:
             have = {(j["url"], j.get("chapters"), bool(j.get("repair")), j.get("group"),
@@ -903,13 +911,15 @@ class Supervisor:
             for pair in pairs:
                 url, cid = pair[0], pair[1]
                 chapters = pair[2] if len(pair) > 2 else None
-                key = (url, chapters, repair, group, dest)
+                jdest = pair[3] if len(pair) > 3 else dest
+                key = (url, chapters, repair, group, jdest)
                 if key in have:
                     dup += 1
                 else:
                     self._jobs.append({"url": url, "cid": cid, "state": "pending",
                                        "resumed": False, "chapters": chapters,
-                                       "repair": repair, "group": group, "dest": dest})
+                                       "repair": repair, "group": group, "dest": jdest,
+                                       "batch": batch})
                     have.add(key)
                     added.append(url)
             if added:
@@ -1051,17 +1061,18 @@ class Supervisor:
             "reply_markup": json.dumps(kb), "disable_web_page_preview": "true"})
 
     def handle_callback(self, token, cb):
-        """Xử lý bấm nút inline (callback_query). Hiện chỉ có nút xác nhận/huỷ GHÉP folder."""
+        """Xử lý bấm nút inline (callback_query): xác nhận/huỷ GHÉP folder ('mrg:') và
+        xác nhận/huỷ `/repair all` ('rpa:')."""
         cbid = cb.get("id")
         data = cb.get("data") or ""
         msg = cb.get("message") or {}
         cid = (msg.get("chat") or {}).get("id")
         mid = msg.get("message_id")
         tg_api(token, "answerCallbackQuery", {"callback_query_id": cbid})   # tắt spinner
-        if not data.startswith("mrg:") or cid is None:
+        if cid is None or not data.startswith(("mrg:", "rpa:")):
             return
         try:
-            _, action, pid = data.split(":", 2)
+            kind, action, pid = data.split(":", 2)
         except ValueError:
             return
         if not self._is_admin(cid):
@@ -1071,9 +1082,12 @@ class Supervisor:
         with self._pending_lock:
             self._prune_pending()
             pend = self._pending.pop(pid, None)
-        if not pend:
+        if not pend or pend.get("kind", "mrg") != kind:
             tg_api(token, "editMessageText", {"chat_id": cid, "message_id": mid,
                 "text": "⌛ Phiên xác nhận đã hết hạn hoặc đã xử lý. Gửi lại lệnh nếu cần."})
+            return
+        if kind == "rpa":
+            self._repair_all_confirm(token, cid, mid, action, pend)
             return
         if action == "no":
             tg_api(token, "editMessageText", {"chat_id": cid, "message_id": mid,
@@ -1097,16 +1111,22 @@ class Supervisor:
             tg_api(token, "sendMessage", {"chat_id": cid, "text": "⛔ Bạn không phải admin."})
             return
         words = raw.split()[1:]
+        if words and words[0].lower() == "all":
+            tg_api(token, "sendMessage", {"chat_id": cid,
+                "text": "⏳ Đang quét thư viện comix trên ổ (chưa chạm mạng)…"})
+            self._run_bg(self._repair_all_preview, token, cid)
+            return
         urls = [w for w in words if w.startswith("http")]
         spec_raw = ",".join(w for w in words if not w.startswith("http"))
         chapters = re.sub(r",+", ",", spec_raw.replace(" ", "")).strip(",") or None
         if not urls:
             tg_api(token, "sendMessage", {"chat_id": cid,
-                "text": "Gửi: /repair <link comix> [chương]\n"
+                "text": "Gửi: /repair <link comix> [chương]  hoặc  /repair all\n"
                         "Vá lại các trang bị TRÁO Ô (bản Official). Ví dụ:\n"
+                        "  /repair all — quét CẢ thư viện, xem trước rồi bấm ✅ để vá hết\n"
                         "  /repair https://comix.to/... — quét & vá cả bộ\n"
                         "  /repair https://comix.to/... 1 — thử 1 chương trước cho chắc\n"
-                        "(Chỉ dùng cho comix.to; chương không dính bỏ qua nhanh.)"})
+                        "(Chỉ dùng cho comix.to; chương đã sạch bỏ qua nhanh.)"})
             return
         if chapters and not re.fullmatch(r"[0-9.,\-]+", chapters):
             tg_api(token, "sendMessage", {"chat_id": cid,
@@ -1124,6 +1144,281 @@ class Supervisor:
         tg_api(token, "sendMessage", {"chat_id": cid, "text": "\n".join(parts),
             "disable_web_page_preview": "true"})
 
+    # --- `/repair all`: quét ĐĨA cả thư viện -> xem trước + nút -> ĐỢT job vá -------------
+    # Ước tính thời gian cho tin xem trước (đo thô trên server): mỗi chương phải soi comix
+    # ~25s (mở trang đọc + giải-xáo) + nhịp nghỉ 60-90s sau mỗi 10 chương; mỗi truyện thêm
+    # ~2.5' mở Chromium + lấy danh sách chương.
+    REPAIR_SECS_PER_CH = 32
+    REPAIR_SECS_PER_SERIES = 150
+
+    @staticmethod
+    def _run_repair_scan():
+        """Chạy `comic_downloader.py --repair-scan` (CHỈ đọc đĩa, không mạng) -> (dict, None)
+        hoặc (None, lỗi). Luật phân loại nằm ở comix_site (CHUNG với job vá) — supervisor
+        chỉ đọc kết quả, không tự đoán (và không import comix_site/requests)."""
+        cmd = [sys.executable, os.path.join(BASE_DIR, "comic_downloader.py"), "--repair-scan"]
+        try:
+            r = subprocess.run(cmd, cwd=BASE_DIR, creationflags=NO_WINDOW, timeout=600,
+                               capture_output=True, text=True, encoding="utf-8",
+                               errors="replace")
+            out = (r.stdout or "") + "\n" + (r.stderr or "")
+        except Exception as e:
+            return None, str(e)
+        m = re.search(r"^REPAIR_SCAN_JSON:(\{.*\})\s*$", out, re.M)
+        if not m:
+            return None, out.strip()[-500:]
+        try:
+            return json.loads(m.group(1)), None
+        except ValueError:
+            return None, "kết quả quét lỗi định dạng"
+
+    @classmethod
+    def _compact_nums(cls, nums, max_groups=20):
+        """[1,2,3,7,12.5] -> '1-3, 7, 12.5' (số chương/trang, gộp dải số nguyên liền nhau)."""
+        vals = sorted({float(n) for n in nums})
+        groups, i = [], 0
+        while i < len(vals):
+            j = i
+            while (j + 1 < len(vals) and vals[j].is_integer() and vals[j + 1] == vals[j] + 1):
+                j += 1
+            a, b = cls._fmt_num(vals[i]), cls._fmt_num(vals[j])
+            groups.append(f"{a}" if i == j else f"{a}-{b}")
+            i = j + 1
+        if len(groups) > max_groups:
+            return ", ".join(groups[:max_groups]) + f", … (+{len(groups) - max_groups})"
+        return ", ".join(groups)
+
+    @staticmethod
+    def _fmt_dur(secs):
+        m = max(1, int(round(secs / 60)))
+        return f"{m // 60} giờ {m % 60} phút" if m >= 60 else f"{m} phút"
+
+    @staticmethod
+    def _clip(text, n=4000):
+        """Telegram giới hạn 4096 ký tự/tin -> cắt gọn, báo phần bị bỏ."""
+        return text if len(text) <= n else text[:n - 20].rstrip() + "\n… (cắt bớt)"
+
+    def _repair_all_preview(self, token, cid):
+        """/repair all: quét offline -> tin XEM TRƯỚC (truyện nào cần vá bao nhiêu chương,
+        chương bị bỏ qua kèm lý do, ước tính thời gian) + nút ✅/❌. Bấm ✅ mới tạo job."""
+        res, err = self._run_repair_scan()
+        if res is None:
+            tg_api(token, "sendMessage", {"chat_id": cid,
+                "text": f"⚠ Quét thư viện lỗi:\n{err}", "disable_web_page_preview": "true"})
+            return
+        series = res.get("series") or []
+        todo = [s for s in series if s["check"]]
+        n_ch = sum(len(s["check"]) for s in todo)
+        L = ["🧩 SỬA TRÁO Ô — cả thư viện comix",
+             f"(quét trên ổ, chưa chạm mạng · mốc: trang xáo ghi trước {res.get('since')})", ""]
+        if todo:
+            L.append(f"Cần vá: {len(todo)} truyện, {n_ch} chương "
+                     f"(~{sum(s['check_pages'] for s in todo)} trang):")
+            for s in todo:
+                line = f"• {s['folder']}: {len(s['check'])} ch (~{s['check_pages']} trang)"
+                if s["strict"]:
+                    line += (f" — {len(s['strict'])} ch ngày file không tin được, "
+                             "làm lại mọi trang xáo")
+                L.append(line)
+        else:
+            L.append("✓ Không truyện nào còn chương cần vá.")
+        n_clean = len(series) - len(todo)
+        if n_clean:
+            L.append(f"Đã sạch: {n_clean} truyện comix")
+        edited = [(s["folder"], n, gaps) for s in series for n, gaps in s["edited"]]
+        partial = {}
+        for s in series:
+            if s["partialdl"]:
+                partial[s["folder"]] = s["partialdl"]
+        if edited or partial:
+            L += ["", "Bỏ qua, chỉ báo (không tự làm gì):"]
+        if edited:
+            items = [f"{f} ch.{self._fmt_num(n)} (thiếu trang {self._compact_nums(g, 8)})"
+                     for f, n, g in edited[:10]]
+            L.append(f"• Lệch số trang — sửa tay? ({len(edited)}): " + "; ".join(items)
+                     + (" …" if len(edited) > 10 else ""))
+        if partial:
+            L.append(f"• Đang tải dở — /tai để tải nốt ({sum(map(len, partial.values()))}): "
+                     + "; ".join(f"{f} ch.{self._compact_nums(v, 8)}"
+                                 for f, v in partial.items()))
+        if res.get("nomarker"):
+            L += ["", "⚠ Có bản Official nhưng thiếu file dấu (gửi /repair <link> tay): "
+                  + ", ".join(res["nomarker"])]
+        if not todo:
+            tg_api(token, "sendMessage", {"chat_id": cid, "text": self._clip("\n".join(L)),
+                                          "disable_web_page_preview": "true"})
+            return
+        secs = n_ch * self.REPAIR_SECS_PER_CH + len(todo) * self.REPAIR_SECS_PER_SERIES
+        L += ["", f"⏱ Ước tính ~{self._fmt_dur(secs)} (chạy lần lượt trong hàng đợi; "
+                  "lệnh /tai gửi sau sẽ xếp sau).",
+              f"Bấm ✅ để đưa {len(todo)} truyện vào hàng đợi."]
+        pid = os.urandom(4).hex()
+        with self._pending_lock:
+            self._prune_pending()
+            self._pending[pid] = {"kind": "rpa", "cid": cid, "ts": time.time(),
+                                  "series": [{"folder": s["folder"], "url": s["url"]}
+                                             for s in todo]}
+        kb = {"inline_keyboard": [[
+            {"text": "✅ Vá tất cả", "callback_data": f"rpa:ok:{pid}"},
+            {"text": "❌ Huỷ", "callback_data": f"rpa:no:{pid}"}]]}
+        tg_api(token, "sendMessage", {"chat_id": cid, "text": self._clip("\n".join(L), 3900),
+            "reply_markup": json.dumps(kb), "disable_web_page_preview": "true"})
+
+    def _repair_all_confirm(self, token, cid, mid, action, pend):
+        """Bấm nút trên tin xem trước `/repair all`: ✅ -> tạo ĐỢT job vá (mỗi truyện 1 job,
+        khoá đúng folder mang file dấu qua --dest-name), ❌ -> huỷ."""
+        if action != "ok":
+            tg_api(token, "editMessageText", {"chat_id": cid, "message_id": mid,
+                "text": "❌ Đã huỷ /repair all."})
+            return
+        bid = datetime.now().strftime("%m%d-%H%M%S")
+        pairs = [(s["url"], cid, None, s["folder"]) for s in pend["series"]]
+        # Ghi hồ sơ đợt TRƯỚC khi enqueue: worker có thể bốc job ngay khi vừa vào hàng.
+        with self._batch_lock:
+            data = self._load_batches()
+            data[bid] = {"cid": cid, "ts": time.time(), "total": len(pairs), "series": {}}
+            self._save_batches(data)
+        added, dup = self._enqueue_jobs(pairs, repair=True, batch=bid)
+        with self._batch_lock:
+            data = self._load_batches()
+            if added and bid in data:
+                data[bid]["total"] = len(added)
+            else:
+                data.pop(bid, None)
+            self._save_batches(data)
+        if added:
+            txt = (f"✅ Đã đưa {len(added)} truyện vào hàng đợi SỬA TRÁO Ô"
+                   + (f" ({dup} truyện đã có job vá sẵn, bỏ qua)" if dup else "")
+                   + ".\nSẽ báo khi xong từng truyện + tổng kết cuối đợt. /trangthai để theo dõi.")
+        else:
+            txt = "⏭ Các truyện này đã có job vá trong hàng đợi."
+        tg_api(token, "editMessageText", {"chat_id": cid, "message_id": mid, "text": txt})
+
+    @staticmethod
+    def _load_batches():
+        try:
+            with open(REPAIR_BATCH_FILE, encoding="utf-8") as f:
+                data = json.load(f)
+            return data if isinstance(data, dict) else {}
+        except (OSError, ValueError):
+            return {}
+
+    @staticmethod
+    def _save_batches(data):
+        # Dọn hồ sơ đợt quá 14 ngày (đợt bị bỏ dở mà không ai tổng kết) cho file khỏi phình.
+        now = time.time()
+        data = {k: v for k, v in data.items() if now - v.get("ts", now) < 14 * 86400}
+        try:
+            os.makedirs(META_DIR, exist_ok=True)
+            tmp = REPAIR_BATCH_FILE + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=1)
+            os.replace(tmp, REPAIR_BATCH_FILE)
+        except OSError as e:
+            log(f"! Không ghi được hồ sơ đợt /repair all: {e}")
+
+    @staticmethod
+    def _read_repair_result(start_pos):
+        """Dòng REPAIR_RESULT_JSON job vá in ở cuối lượt -> dict (không có -> None)."""
+        try:
+            with open(DL_LOG_FILE, "r", encoding="utf-8", errors="replace") as f:
+                f.seek(start_pos)
+                text = f.read()
+        except OSError:
+            return None
+        found = re.findall(r"^REPAIR_RESULT_JSON:(\{.*\})\s*$", text, re.M)
+        try:
+            return json.loads(found[-1]) if found else None
+        except ValueError:
+            return None
+
+    def _batch_record(self, job, outcome):
+        """Ghi kết quả 1 job của đợt `/repair all` vào hồ sơ; trả (thứ tự job này, tổng)."""
+        bid = job.get("batch")
+        key = job.get("dest") or self._slug(job["url"])
+        with self._batch_lock:
+            data = self._load_batches()
+            b = data.get(bid)
+            if b is None:
+                return None, None
+            b["series"][key] = outcome
+            self._save_batches(data)
+            return len(b["series"]), b.get("total")
+
+    def _batch_maybe_finish(self, bid, token):
+        """Hết job của đợt trong hàng đợi (xong/lỗi/huỷ) -> nhắn TỔNG KẾT (1 lần duy nhất:
+        hồ sơ bị gỡ ngay trong khoá) + quét đĩa lại để báo còn bao nhiêu chương nghi."""
+        if not bid:
+            return
+        with self._dlq_lock:
+            if any(j.get("batch") == bid for j in self._jobs):
+                return
+        with self._batch_lock:
+            data = self._load_batches()
+            b = data.pop(bid, None)
+            self._save_batches(data)
+        if b and token:
+            self._run_bg(self._batch_summary, token, bid, b)
+
+    def _batch_summary(self, token, bid, b):
+        cid = b.get("cid")
+        res = [(k, v) for k, v in (b.get("series") or {}).items()]
+        ok = [(k, v.get("res") or {}) for k, v in res if v.get("state") == "ok"]
+        bad = [(k, v) for k, v in res if v.get("state") != "ok"]
+        n_fixed = sum(len(r.get("fixed") or []) for _, r in ok)
+        n_pages = sum(r.get("pages") or 0 for _, r in ok)
+        n_ver = sum(len(r.get("verified") or []) for _, r in ok)
+        L = [f"🏁 Xong đợt SỬA TRÁO Ô ({len(res)}/{b.get('total')} truyện đã chạy)",
+             f"• Đã sửa: {n_fixed} chương ({n_pages} trang)"]
+        if n_ver:
+            L.append(f"• Soi comix, không cần sửa: {n_ver} chương")
+
+        def per(key, fmt):
+            out = []
+            for k, r in ok:
+                items = r.get(key) or []
+                if items:
+                    out.append(f"{k} {fmt(items)}")
+            return out
+
+        retry = [f"{k} ch.{self._compact_nums((r.get('partial') or []) + (r.get('fetchfail') or []), 10)}"
+                 for k, r in ok if (r.get("partial") or r.get("fetchfail"))]
+        if retry:
+            L.append("• Còn sót (gửi lại /repair all để bù): " + "; ".join(retry))
+        edited = per("edited", lambda it: "ch." + ", ".join(
+            f"{self._fmt_num(n)} ({note})" for n, note in it[:5]) + (" …" if len(it) > 5 else ""))
+        if edited:
+            L.append("• Bỏ qua — lệch số trang (sửa tay?): " + "; ".join(edited))
+        gone = per("gone", lambda it: "ch." + ", ".join(
+            f"{self._fmt_num(n)} [{g}]" for n, g in it[:5]) + (" …" if len(it) > 5 else ""))
+        if gone:
+            L.append("• Bỏ qua — bản gốc không còn trên comix: " + "; ".join(gone))
+        pdl = per("partialdl", lambda it: "ch." + self._compact_nums(it, 8))
+        if pdl:
+            L.append("• Bỏ qua — đang tải dở (/tai để tải nốt): " + "; ".join(pdl))
+        if bad:
+            names = {"cancelled": "đã huỷ", "stalled": "treo, đã bỏ", "error": "lỗi"}
+            L.append("• Không chạy xong: " + "; ".join(
+                f"{k} ({names.get(v.get('state'), v.get('state'))})" for k, v in bad))
+        missing = b.get("total", 0) - len(res)
+        if missing > 0:
+            L.append(f"• Bị xoá khỏi hàng chờ trước khi chạy: {missing} truyện")
+        scan, err = self._run_repair_scan()
+        if scan is None:
+            L.append(f"\n⚠ Không quét lại được để kiểm: {err[:200]}")
+        else:
+            left = [(s["folder"], s["check"]) for s in scan.get("series") or [] if s["check"]]
+            if left:
+                L.append("\n🔎 Quét lại trên ổ: còn " + str(sum(len(c) for _, c in left))
+                         + " chương nghi — " + "; ".join(
+                             f"{f} ch.{self._compact_nums(c, 8)}" for f, c in left[:10]))
+                L.append("(gồm chương còn sót/bản gốc mất ở trên; gửi /repair all để xem lại)")
+            else:
+                L.append("\n🔎 Quét lại trên ổ: không còn chương nào nghi ✓")
+        if cid is not None:
+            tg_api(token, "sendMessage", {"chat_id": cid, "text": self._clip("\n".join(L)),
+                                          "disable_web_page_preview": "true"})
+
     @staticmethod
     def _slug(url):
         """Rút tên gọn từ URL để hiển thị (bỏ đuôi '/', lấy cụm cuối có ý nghĩa)."""
@@ -1138,7 +1433,9 @@ class Supervisor:
             lbl = f"{lbl} (ch {job['chapters']})"
         if job.get("group"):
             lbl = f"{lbl} [{job['group']}]"  # ghim nhóm comix ('auto' = bỏ ghim)
-        if job.get("dest"):
+        if job.get("dest") and job.get("repair"):
+            lbl = f"{lbl} 📁“{job['dest']}”"    # vá đúng folder này (`/repair all`)
+        elif job.get("dest"):
             lbl = f"{lbl} → 🔀“{job['dest']}”"  # GHÉP vào folder có sẵn
         if job.get("repair"):
             lbl = "🧩 " + lbl                # job SỬA TRÁO Ô
@@ -1201,15 +1498,23 @@ class Supervisor:
         cid=None -> xoá tất cả; có cid -> chỉ của chat đó. KHÔNG đụng job đang chạy
         (việc kill do handle_cancel lo). Có khoá để không giẫm worker/lệnh khác."""
         removed = 0
+        batches = set()
         with self._dlq_lock:
             keep = []
             for j in self._jobs:
                 if j["state"] == "pending" and (cid is None or str(j["cid"]) == str(cid)):
                     removed += 1
+                    if j.get("batch"):
+                        batches.add(j["batch"])
                 else:
                     keep.append(j)
             self._jobs = keep
             self._save_jobs_locked()
+        # Đợt `/repair all` mất hết job chờ mà không còn job nào đang chạy -> tổng kết luôn
+        # (job đang chạy của đợt, nếu có, sẽ tự tổng kết khi xong).
+        token = self.cfg.get("bot_token")
+        for bid in batches:
+            self._batch_maybe_finish(bid, token)
         return removed
 
     def handle_cancel(self, token, cid, kill, clear, scope_all):
@@ -1362,8 +1667,10 @@ class Supervisor:
             url, cid = job["url"], job.get("cid")
             token = self.cfg.get("bot_token")
             # Chỉ báo 'bắt đầu' ở lần chạy ĐẦU của job; lần thử lại do lỗi mạng (net_retries>0)
-            # thì im để khỏi lặp tin mỗi vòng.
-            if token and cid is not None and job.get("net_retries", 0) == 0:
+            # thì im để khỏi lặp tin mỗi vòng. Job trong ĐỢT `/repair all` không báo bắt đầu
+            # (đỡ spam cả chục tin) — chỉ báo xong từng truyện + tổng kết cuối đợt.
+            if token and cid is not None and job.get("net_retries", 0) == 0 \
+                    and not job.get("batch"):
                 scope = f"\n(chỉ chương {job['chapters']})" if job.get("chapters") else ""
                 if job.get("group"):
                     scope += ("\n(bỏ ghim nhóm — về luật mặc định)"
@@ -1381,6 +1688,7 @@ class Supervisor:
             start_pos = 0
             keep = False        # True = lỗi MẠNG tạm -> giữ job trong hàng đợi, thử lại (không xoá)
             stalled = False     # True = job treo câm (log đứng im) -> bị kill bởi stall-watchdog
+            outcome = {"state": "error"}   # kết quả ghi vào hồ sơ đợt `/repair all` (nếu có)
             try:
                 try:      # cắt log nếu phình to
                     if os.path.getsize(DL_LOG_FILE) > DL_LOG_MAX:
@@ -1421,6 +1729,7 @@ class Supervisor:
                 if rc is None and self.stop.is_set():
                     return   # supervisor đang tắt (đã kill proc) -> thoát êm; job 'running' để resume
                 if self._dl_cancelled:
+                    outcome = {"state": "cancelled"}
                     msg = (f"⏹ Đã huỷ tải:\n{url}\n"
                            "(Tải lại bằng /tai sẽ tự bỏ qua chương đã xong, "
                            "tiếp tục từ chỗ dở.)")
@@ -1431,6 +1740,7 @@ class Supervisor:
                     job["stall_retries"] = job.get("stall_retries", 0) + 1
                     n = job["stall_retries"]
                     if n > DL_STALL_RETRY_MAX:
+                        outcome = {"state": "stalled"}
                         log(f"! Job treo câm quá {DL_STALL_RETRY_MAX} lần — bỏ: {url}")
                         msg = (f"❌ Tải bị treo lặp lại (đã tự kill {n} lần) — bỏ qua:\n{url}\n"
                                "(Chạy /tai lại để thử tiếp; chương đã xong tự bỏ qua.)")
@@ -1440,9 +1750,14 @@ class Supervisor:
                         msg = (f"⚠️ Tải bị treo (đứng im quá lâu) — đã tự kill Chromium và sẽ "
                                f"thử lại:\n{url}") if n == 1 else None
                 elif rc == 0:
-                    summary = self._read_summary(start_pos)   # số liệu chương + ảnh
+                    # số liệu chương + ảnh; tổng kết vá liệt kê số chương nên cho dài hơn
+                    summary = self._read_summary(
+                        start_pos, maxchars=3000 if job.get("repair") else 1500)
                     done_head = "✅ Sửa tráo ô xong" if job.get("repair") else "✅ Tải xong"
                     msg = f"{done_head}:\n{url}" + (("\n\n" + summary) if summary else "")
+                    outcome = {"state": "ok"}
+                    if job.get("repair"):
+                        outcome["res"] = self._read_repair_result(start_pos)
                 else:
                     # LỖI MẠNG (mất mạng lúc này, HOẶC log có dấu hiệu mạng: getaddrinfo,
                     # 'mạng chập chờn'...) -> GIỮ job trong hàng đợi, thử lại sau; KHÔNG xoá
@@ -1462,6 +1777,12 @@ class Supervisor:
                         msg = f"❌ Lỗi tải:\n{url}" + (("\n" + tail) if tail else "")
             except Exception as e:
                 msg = f"❌ Lỗi tải:\n{url}\n{e}"
+            # Job của đợt `/repair all` xong hẳn (không giữ lại thử) -> ghi kết quả vào hồ sơ
+            # đợt, đánh số [k/N] lên tin báo.
+            if job.get("batch") and not keep:
+                k, n = self._batch_record(job, outcome)
+                if msg and k:
+                    msg = f"[{k}/{n}] {msg}"
             # Gửi báo TRƯỚC, rồi mới xoá job khỏi file: nếu bị giết giữa 2 việc thì thà
             # báo trùng (resume chạy lại thấy .done -> báo 'xong' lần nữa) còn hơn mất tin.
             if msg and token and cid is not None:
@@ -1479,6 +1800,8 @@ class Supervisor:
                     except ValueError:
                         pass
                 self._save_jobs_locked()
+            if job.get("batch") and not keep:
+                self._batch_maybe_finish(job["batch"], token)
             # backoff trước khi thử lại job này (treo câm nghỉ lâu hơn lỗi mạng thoáng qua)
             if keep and self.stop.wait(DL_STALL_BACKOFF if stalled else NET_RECHECK):
                 return
