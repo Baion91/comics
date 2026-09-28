@@ -28,7 +28,8 @@ from providers import PROVIDERS, by_name, load_overrides, OVERRIDE_FILE
 _COMIX_INFO = {"name": "comix", "domains": ["comix.to"], "base": "comix.to (browser)",
                "referer": None, "fixed": True}
 
-HOTLINK = {"truyenqq", "zettruyen"}   # site CDN đòi referer -> nhắc set base+referer khi đổi
+# site CDN đòi referer -> nhắc set base+referer khi đổi
+HOTLINK = {"truyenqq", "zettruyen", "qqcomvn"}
 
 
 def _save_overrides(cfg: dict):
@@ -73,9 +74,15 @@ def _check_name(name):
 
 
 def _hotlink_note(name):
+    if name not in HOTLINK:
+        return ""
+    # provider có tầng trình duyệt (allow_browser, vd qqcomvn) tự chuyển Chromium khi bị
+    # challenge; provider HTTP thuần thì challenge = không tải được dù thêm domain.
+    cf = ("site có tầng trình duyệt: bị Cloudflare challenge thì tool tự chuyển Chromium"
+          if hasattr(by_name.get(name), "allow_browser") else
+          "và nếu site đã bật Cloudflare challenge thì thêm domain cũng không tải được")
     return ("\n⚠️ Site này CDN đòi Referer theo domain — nhớ set cả base+referer sang domain "
-            "mới thì ảnh mới tải được (và nếu site đã bật Cloudflare challenge thì thêm "
-            "domain cũng không tải được).") if name in HOTLINK else ""
+            f"mới thì ảnh mới tải được ({cf}).")
 
 
 def cmd_add(argv):

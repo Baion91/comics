@@ -25,7 +25,7 @@ Các script trong thư mục này, mỗi cái một việc:
 ## 1. Tải truyện — `comic_downloader.py` (hoặc bấm `Tai truyen.bat`)
 
 Một tool cho MỌI site, tự nhận site theo link (hiện hỗ trợ **Asura**, **Raven**, **Dilib**,
-**MangaDex**, **TruyenQQ**, **Comix**, **ACGN**, **NetTruyen**, **ZetTruyen**).
+**MangaDex**, **TruyenQQ**, **TruyenQQ.com.vn**, **Comix**, **ACGN**, **NetTruyen**, **ZetTruyen**).
 
 > **Raven Scans đã đổi `ravenscans.org` → `ravenscans.net`** (và đổi cấu trúc URL chương) —
 > dùng link `.net` mới; link `.org` cũ vẫn được nhận.
@@ -39,7 +39,23 @@ Một tool cho MỌI site, tự nhận site theo link (hiện hỗ trợ **Asura
 > (dán link 1 chương cũng được, tool tự về trang truyện). Ảnh trên CDN của site **chống hotlink**
 > nên tool tự gửi kèm Referer — không cần làm gì thêm. ⚠️ Site này **đổi tên miền liên tục**
 > (truyenqq.com → ...to → ...ko → ...); nếu link cũ không nhận nữa thì dùng **domain hiện hành**,
-> hoặc báo để thêm domain mới vào provider.
+> hoặc báo để thêm domain mới vào provider. (Riêng `truyenqq.com.vn` là **site KHÁC**, xem mục dưới.)
+
+> **TruyenQQ.com.vn** (truyện tiếng Việt, site riêng dù trùng tên — tên provider `qqcomvn`): dán
+> link trang truyện `https://truyenqq.com.vn/{slug}` (link 1 chương cũng được). Cần biết:
+> - **Folder có hậu tố ` [QQ.vn]`** (vd `Tinh Giáp Hồn Tướng [QQ.vn]`): site đánh số chương theo
+>   **thứ tự riêng** (1, 2, 3… liên tục, KHÔNG phải số chương thật — lệch dần do chương 0/chương
+>   lẻ/extra), nên tool để riêng 1 folder, không bao giờ trộn với cùng bộ tải từ nguồn khác. Vì thế
+>   **không dùng được `into:`** (ghép folder). Muốn ẩn hậu tố trên reader thì đổi tên hiển thị qua
+>   web admin (không đổi folder, không mất tiến độ).
+> - **Cloudflare**: ngày thường tải thẳng bằng HTTP. Nếu site bật chặn, tool **tự chuyển sang
+>   Chromium thật** (cửa sổ trình duyệt hiện trên máy server — đừng đóng). Thường tự qua; nếu
+>   Cloudflare đòi tick "Verify you are human", bot **nhắn Telegram** → mở màn hình server tick
+>   trong **15 phút** là tool tải tiếp; quá giờ thì dừng sạch (ảnh đã tải giữ nguyên, `/tai` lại
+>   là tiếp đúng chỗ). Tool **không bao giờ tự bấm** ô xác minh.
+> - Chất lượng ảnh: phần lớn **giống hệt** TruyenQQ (truyenqqko), có chương nét hơn, có chương kém
+>   hơn — không phải "bản xịn" đồng loạt.
+> - Chạy tay: `--fetch browser` ép dùng Chromium ngay; `--fetch http` chỉ HTTP (bị chặn thì dừng).
 
 > **ZetTruyen** (zettruyen1.com — truyện tiếng Việt): dán link trang truyện
 > `https://www.zettruyen1.com/truyen-tranh/{slug}` (dán link 1 chương cũng được). Site HTML tĩnh
@@ -456,14 +472,16 @@ khi đăng nhập Windows, tự tạo link đọc từ xa và báo qua Telegram.
   - **Xem/sửa provider** — `/provider` xem danh sách provider + domain (mở cho mọi người). Sửa (admin)
     khi site đổi tên miền, KHÔNG cần đụng code: `/provider add <name> <domain> [base] [referer]` ·
     `/provider set <name> base|referer <url>` · `/provider del <name> <domain>` · `/provider clear <name>`.
-    Có hiệu lực NGAY cho lần tải kế. ⚠️ Site chống-hotlink (TruyenQQ/Zet) nhớ set kèm **base+referer**
-    sang domain mới; site bật Cloudflare "Verify you are human" thì thêm domain cũng không tải được.
+    Có hiệu lực NGAY cho lần tải kế. ⚠️ Site chống-hotlink (TruyenQQ/Zet/qqcomvn) nhớ set kèm
+    **base+referer** sang domain mới; site bật Cloudflare "Verify you are human" thì thêm domain cũng
+    không tải được — TRỪ `qqcomvn` (có tầng Chromium tự chuyển, xem mục TruyenQQ.com.vn).
   - **Tải bù vào folder có sẵn** (admin) — `/tai <link nguồn khác> <chương> into:"Tên folder"`: tải
     chương thiếu từ provider KHÁC vào ĐÚNG folder truyện đang có (giữ bookmark/tiến-trình, **không tạo
     truyện trùng** trên reader). Bot in **kế hoạch** (đã đủ / tải mới / ghi đè / nguồn thiếu) kèm 2 nút
     **✅ Xác nhận / ❌ Huỷ** — bấm ✅ mới tải. Chương `.done` được giữ; chương có ảnh nhưng dở chỉ tải-lại-
     trọn khi bạn **chỉ định chương cụ thể** (không thì bỏ qua cho an toàn). Lưu ý: 2 provider phải đánh
-    **cùng số chương** thì mới khớp — kế hoạch cho bạn xem trước để kiểm.
+    **cùng số chương** thì mới khớp — kế hoạch cho bạn xem trước để kiểm. Nguồn `truyenqq.com.vn` bị
+    **chặn** ghép (số chương là số thứ tự của site, lệch số thật).
   - **Huỷ tải** (admin): `/stop` dừng truyện đang tải **+ xoá hàng chờ của bạn** ·
     `/killnow` **chỉ** dừng truyện đang tải · `/clearq` **chỉ** xoá hàng chờ · `/stopall`
     dừng tất cả + xoá **sạch** hàng chờ (của mọi người). `/stop`/`/killnow`/`/clearq` chỉ

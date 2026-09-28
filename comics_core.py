@@ -487,6 +487,15 @@ class Forbidden(Blocked):
     (5 site khác) bắt được y như trước -> không đổi hành vi của chúng."""
 
 
+class Challenged(Blocked):
+    """Cloudflare đòi XÁC MINH (header `cf-mitigated: challenge`, status 403/429/503).
+    KHÁC 429 thật: chờ/lùi giờ không bao giờ qua được (cần trình duyệt chạy JS / người
+    tick) -> ném NGAY, KHÔNG kéo cầu dao 429 (trước đây 429-challenge làm _request ngủ
+    90s->5'->15' rồi bật gate.abort -> hỏng cả mọi truyện sau trong lượt check_updates).
+    Provider có tầng trình duyệt (qqcomvn) bắt lớp này để leo tầng; nơi khác rơi vào
+    `except Blocked` cũ = dừng phiên sạch (exit 2), chạy lại là tải tiếp."""
+
+
 class TooMany429(Exception):
     """Bị nhắc 429 quá nhiều lần trong một phiên - dừng để giữ uy tín IP."""
 
@@ -580,6 +589,10 @@ def _request(url: str, retries: int = 3):
         gate.wait_turn()
         try:
             r = session.get(url, timeout=20)
+            # Challenge của Cloudflare (thường trả 429/403 kèm header này) -> dừng NGAY,
+            # không coi là 429 thật (lùi giờ vô ích, còn làm abort cả phiên).
+            if r.headers.get("cf-mitigated", "").lower() == "challenge":
+                raise Challenged(f"Cloudflare đòi xác minh (HTTP {r.status_code}) tại {url}")
             if r.status_code == 429:
                 delay = gate.tripped_429(_retry_after(r))
                 print(f"\n  ! Server nhắc 429 - tạm dừng toàn bộ {delay:.0f}s "

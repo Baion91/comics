@@ -17,11 +17,14 @@ THÊM SITE MỚI: viết 1 class như dưới rồi thêm vào PROVIDERS. Không
               API/CDN thì sửa hằng BASE/API trong đúng provider đó.
 """
 
+import html as html_lib
 import json
 import os
 import re
+import sys
+from urllib.parse import urlparse
 
-from comics_core import Chapter, get_json, get_text
+from comics_core import META_DIR, Blocked, Challenged, Chapter, get_json, get_text
 
 # File override domain/base/referer do người dùng thêm qua bot (KHÔNG cần sửa code +
 # push khi site xoay tên miền — vd TruyenQQ). Nằm trong .reader-meta/ (gitignore) nên
@@ -368,8 +371,9 @@ class TruyenQQProvider:
 
     name = "truyenqq"
     BASE = "https://truyenqqko.com"
-    # giữ các domain cũ để link cũ vẫn khớp REGISTRY (site hay đổi tên miền)
-    domains = ["truyenqqko.com", "truyenqqto.com", "truyenqqvn.com", "truyenqq.com.vn"]
+    # giữ các domain cũ để link cũ vẫn khớp REGISTRY (site hay đổi tên miền).
+    # KHÔNG có truyenqq.com.vn: đó là site KHÁC (code/CDN/đánh số riêng) -> TruyenQQVNProvider.
+    domains = ["truyenqqko.com", "truyenqqto.com", "truyenqqvn.com"]
     referer = "https://truyenqqko.com/"
 
     def __init__(self):
@@ -750,9 +754,241 @@ class ZetTruyenProvider:
         return u if u.startswith("http") else self.BASE + u
 
 
+class TruyenQQVNProvider:
+    """truyenqq.com.vn — site RIÊNG, KHÁC họ truyenqqko/to/go/vn.com dù trùng tên (code
+    khác: URL gốc `/{slug}` + `/{slug}/chapter-N`; CDN ảnh riêng `sNN.cc3t.net`). Ảnh NÉT
+    hơn họ ko: rộng ~1000 vs 900px, nén nhẹ hơn, cắt trang khác (đo 27/09/2026).
+
+    ⚠️ SỐ CHƯƠNG = SỐ THỨ TỰ CỦA SITE, không phải số chương thật: site đánh 1..N (có bộ
+    0..N) liên tục, không có chương lẻ, chèn cả chương extra -> lệch số thật TĂNG DẦN (Tinh
+    Giáp: +1 đầu bộ -> +15 cuối bộ). Site KHÔNG lộ số thật ở đâu cả. Vì vậy:
+      - folder LUÔN có hậu tố SUFFIX (" [QQ.vn]") -> không bao giờ trộn với folder cùng tên
+        của nguồn đánh số thật (ZetTruyen/TruyenQQ...) — trộn = hỏng thư viện âm thầm;
+      - `positional_numbers = True` -> comic_downloader CHẶN ghép (into:/--dest-name).
+
+    ⚠️ CLOUDFLARE CHẬP CHỜN (đo: 12/09 trang series 403-challenge, 27/09 429-challenge,
+    28/09 mở; trang chương thì mở cả 3 lần). Nên:
+      - KHÔNG BAO GIỜ gọi trang series: mọi thứ lấy từ 1 "trang chương mốc" — dropdown
+        `<option value="/{slug}/chapter-N">` có ĐỦ danh sách chương, kèm og:title (tên
+        truyện) + JSON `recently_viewed` (file bìa ở /media/book/);
+      - THANG LEO 2 tầng trong `_fetch`: HTTP thường (core.get_text) -> bị challenge
+        (core.Challenged) thì chuyển sang Chromium thật (cf_browser, import lười) cho phần
+        còn lại của phiên. `fetch_mode` (cờ --fetch auto|http|browser) ép tầng;
+        `allow_browser=False` (check_updates đặt) -> không mở Chromium, ném Challenged.
+      - Ảnh LUÔN tải bằng HTTP (core, đa luồng): CDN cc3t.net không challenge, chỉ đòi
+        `Referer: {BASE}/` (thiếu -> 403). Host CDN đổi theo truyện (s34, s25...) -> lấy
+        nguyên URL.
+
+    Đổi domain: /provider (thêm domain + set base/referer) — không sửa code."""
+
+    name = "qqcomvn"
+    BASE = "https://truyenqq.com.vn"
+    domains = ["truyenqq.com.vn"]
+    referer = "https://truyenqq.com.vn/"
+    positional_numbers = True
+    SUFFIX = " [QQ.vn]"
+    PROFILE = "qqvn-profile"        # profile Chromium riêng trong .reader-meta
+    LABEL = "TruyenQQ.com.vn"
+    LAYOUT_FAIL_LIMIT = 3           # số chương LIỀN không nhận ra cấu trúc -> dừng phiên
+
+    _CH_TAIL = re.compile(r"\s*[-:–]\s*Chapter\s+\d+(?:\.\d+)?\s*$", re.I)
+    _IMG_EXT = (".jpg", ".jpeg", ".png", ".webp", ".gif", ".avif")
+
+    def __init__(self):
+        self.fetch_mode = "auto"    # auto | http | browser  (comic_downloader --fetch)
+        self.allow_browser = True   # check_updates tắt: dò chương không mở Chromium
+        self._escalated = False     # đã leo lên trình duyệt trong tiến trình này
+        self._browser = None
+        self._hint = {}             # slug -> URL chương người dùng dán (mốc dự phòng)
+        self._anchor = {}           # slug -> (url, html) trang chương mốc (cả khi hụt)
+        self._layout_fail = 0
+
+    # -- tải HTML: HTTP -> (challenge) -> Chromium ----------------------------------
+
+    def _fetch(self, url):
+        """HTML 1 trang hoặc None (404/mạng hỏng sau retry). Đã leo lên trình duyệt thì
+        giữ tới hết tiến trình (khỏi dội Cloudflare bằng request chắc chắn bị chặn)."""
+        if self.fetch_mode != "browser" and not self._escalated:
+            try:
+                page = get_text(url)
+                if page is None or not re.search(
+                        r"<title>\s*(?:just a moment|attention required)", page[:4000], re.I):
+                    return page
+                raise Challenged(f"Cloudflare trả trang xác minh tại {url}")
+            except Challenged as e:
+                if self.fetch_mode == "http" or not self.allow_browser:
+                    raise
+                print(f"\n  ! {e}\n  -> Chuyển sang TRÌNH DUYỆT THẬT (Chromium) cho phần còn "
+                      "lại của phiên...", flush=True)
+                self._escalated = True
+        return self._get_browser().get_html(url)
+
+    def _get_browser(self):
+        if self._browser is None:
+            import cf_browser    # lười: Playwright chỉ nạp khi thật sự bị chặn / ép --fetch
+            host = urlparse(self.BASE).hostname or "truyenqq.com.vn"
+            b = cf_browser.CFBrowser(self.PROFILE, host, self.LABEL)
+            b.open()
+            self._browser = b
+        return self._browser
+
+    def close(self):
+        """comic_downloader gọi trong finally -> không để Chromium mồ côi ôm profile."""
+        if self._browser is not None:
+            self._browser.close()
+            self._browser = None
+
+    # -- trang chương mốc -----------------------------------------------------------
+
+    def _chapter_nums(self, slug, page):
+        """Số chương từ dropdown `<option value>` (đủ cả bộ) + link thường (dự phòng);
+        chấp nhận cả URL tuyệt đối lẫn tương đối để bền khi site đổi cách ghi."""
+        pat = (r'(?:value|href)="(?:https?://[^/"]+)?/' + re.escape(slug)
+               + r'/chapter-(\d+)/?"')
+        return sorted({int(n) for n in re.findall(pat, page or "", re.I)})
+
+    def _debug_dump(self, name, page):
+        """Lưu HTML trang không đọc được -> sửa parser nhanh khi site đổi giao diện."""
+        try:
+            d = META_DIR / "qqvn-debug"
+            d.mkdir(parents=True, exist_ok=True)
+            p = d / f"{name}.html"
+            p.write_text(page or "", encoding="utf-8")
+            return p
+        except OSError:
+            return None
+
+    def _anchor_page(self, slug):
+        """(url, html) của trang chương có danh sách chương; ('', '') nếu không lấy được.
+        Nhớ cả kết quả hụt -> title/list/cover không thử lại 3 lần. chapter-1 đứng đầu
+        (luôn có JSON bìa), rồi link người dùng dán, rồi chapter-0 (bộ đánh số từ 0)."""
+        if slug in self._anchor:
+            return self._anchor[slug]
+        tried, got = [], ("", "")
+        for url in (f"{self.BASE}/{slug}/chapter-1", self._hint.get(slug),
+                    f"{self.BASE}/{slug}/chapter-0"):
+            if not url or url in tried:
+                continue
+            tried.append(url)
+            page = self._fetch(url)
+            if page and self._chapter_nums(slug, page):
+                got = (url, page)
+                break
+            if page:
+                p = self._debug_dump(f"{slug}-anchor", page)
+                print(f"  ! {url}: không thấy danh sách chương (site đổi giao diện?)"
+                      + (f" — HTML lưu tại {p}" if p else ""), file=sys.stderr)
+        self._anchor[slug] = got
+        return got
+
+    # -- hợp đồng provider -----------------------------------------------------------
+
+    def series_slug(self, text: str) -> str:
+        t = re.split(r"[?#]", text.strip())[0]
+        if "://" in t:
+            parts = [p for p in urlparse(t).path.split("/") if p]
+        else:
+            parts = [p for p in t.split("/") if p]
+            if parts and "." in parts[0]:
+                parts = parts[1:]           # 'truyenqq.com.vn/slug' không có scheme
+        if not parts:
+            return ""
+        slug = parts[0].lower()
+        if len(parts) > 1 and re.fullmatch(r"chapter-\d+", parts[1], re.I):
+            self._hint[slug] = f"{self.BASE}/{slug}/{parts[1].lower()}"
+        return slug
+
+    def title_from_slug(self, slug: str) -> str:
+        _, page = self._anchor_page(slug)
+        name = ""
+        m = re.search(r'<meta\s+property="og:title"\s+content="([^"]*)"', page, re.I)
+        if m:
+            name = m.group(1)
+        else:
+            m = re.search(r"<h1[^>]*>(.*?)</h1>", page, re.I | re.S)
+            if m:
+                name = re.sub(r"<[^>]+>", "", m.group(1))
+        # neo CUỐI chuỗi: giữ nguyên tên có dấu ':' ("Goblin Slayer Gaiden: Year One")
+        name = self._CH_TAIL.sub("", html_lib.unescape(name)).strip()
+        if not name:
+            m = re.search(r"var\s+bname\s*=\s*'((?:[^'\\]|\\.)*)'", page)
+            name = m.group(1).replace("\\'", "'").strip() if m else ""
+        if not name:
+            name = slug.replace("-", " ").title()
+        return name + self.SUFFIX
+
+    def list_chapters(self, slug: str):
+        _, page = self._anchor_page(slug)
+        return [Chapter(float(n), "", f"{self.BASE}/{slug}/chapter-{n}")
+                for n in self._chapter_nums(slug, page)]
+
+    def _parse_images(self, page, num):
+        """(urls, nhận_ra_cấu_trúc). Chính: `<img>` trong khối `.reading-content` (tới
+        thanh điều hướng dưới `reading-option`), đọc data-src/data-original (không phụ
+        thuộc thứ tự thuộc tính). Dự phòng khi mất khối: URL tuyệt đối có `/chapter-N/`
+        ở cả trang (loại ảnh quảng cáo `/media/images/...` dùng src tương đối)."""
+        i = page.find('class="reading-content"')
+        if i >= 0:
+            j = page.find('class="reading-option', i)
+            block, strict = page[i:j if j > 0 else len(page)], False
+        else:
+            block, strict = page, True
+        seen, out = set(), []
+        for tag in re.findall(r"<img\b[^>]*>", block, re.I):
+            m = re.search(r'\bdata-(?:src|original|lazy-src)\s*=\s*"(https?://[^"]+)"', tag, re.I)
+            if not m:
+                continue
+            u = html_lib.unescape(m.group(1).strip())
+            path = urlparse(u).path.lower()
+            if not path.endswith(self._IMG_EXT):
+                continue
+            if strict and f"/chapter-{num}/" not in path:
+                continue
+            if u not in seen:
+                seen.add(u)
+                out.append(u)
+        return out, i >= 0
+
+    def chapter_images(self, chapter):
+        num = int(chapter.number)
+        cached = [pg for (u, pg) in self._anchor.values() if u and u == chapter.ref]
+        page = cached[0] if cached else self._fetch(chapter.ref)
+        if not page:
+            return []    # 404/mạng: core coi như chưa có ảnh, KHÔNG .done -> lượt sau thử lại
+        urls, known = self._parse_images(page, num)
+        if urls or known:
+            # khối đọc có mà rỗng = chương rỗng thật ở nguồn -> bỏ qua chương đó, KHÔNG dừng
+            self._layout_fail = 0
+            return urls
+        # Không nhận ra cấu trúc trang đọc: vài chương liền = site đổi giao diện -> dừng
+        # phiên + báo rõ (thay vì lặng lẽ ghi "khóa/không ảnh" cho cả trăm chương).
+        self._layout_fail += 1
+        p = self._debug_dump(urlparse(chapter.ref).path.strip("/").replace("/", "-"), page)
+        print(f"  ! Chapter {num}: không nhận ra cấu trúc trang đọc"
+              + (f" — HTML lưu tại {p}" if p else ""), file=sys.stderr)
+        if self._layout_fail >= self.LAYOUT_FAIL_LIMIT:
+            raise Blocked(f"{self.LABEL}: {self._layout_fail} chương liền không đọc được "
+                          "trang (site đổi giao diện?) — cần sửa parser, xem .reader-meta/"
+                          "qqvn-debug/")
+        return []
+
+    def cover_url(self, slug: str):
+        _, page = self._anchor_page(slug)
+        m = re.search(r'"image"\s*:\s*"([^"]+?\.(?:jpe?g|png|webp|gif))"', page, re.I)
+        if m:
+            f = m.group(1).replace("\\/", "/")
+            return f if f.startswith("http") else f"{self.BASE}/media/book/{f.lstrip('/')}"
+        m = re.search(r'<meta\s+property="og:image"\s+content="([^"]+)"', page, re.I)
+        if m and m.group(1).strip():
+            u = m.group(1).strip()
+            return u if u.startswith("http") else self.BASE + "/" + u.lstrip("/")
+        return None
+
+
 # --- Đăng ký: thêm site mới = thêm 1 dòng vào đây -------------------------------
 PROVIDERS = [AsuraProvider(), RavenProvider(), DilibProvider(), MangaDexProvider(),
-             TruyenQQProvider(), ACGNProvider(), NetTruyenProvider(), ZetTruyenProvider()]
+             TruyenQQProvider(), ACGNProvider(), NetTruyenProvider(), ZetTruyenProvider(),
+             TruyenQQVNProvider()]
 
 
 def load_overrides() -> dict:

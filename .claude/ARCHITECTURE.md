@@ -18,6 +18,11 @@ cách chạy thật + decode thử ảnh.
     cứu được của ảnh cụt], `_DecodeGate` [khóa đọc-ghi cho cờ toàn cục LOAD_TRUNCATED_IMAGES],
     sổ sự cố `load_issues`/`record_issue`/`is_known_broken`, `bad_marker`/`clear_bad`,
     `append_log`). Thêm site KHÔNG đụng file này.
+    **`Challenged(Blocked)` (28/09/2026)**: `_request` thấy header `cf-mitigated: challenge`
+    (Cloudflare đòi xác minh — thường kèm 429/403) → ném NGAY, **không kéo cầu dao 429**.
+    Trước đó 429-challenge bị coi là rate-limit: ngủ 90s→5'→15' rồi `gate.abort` → trong
+    `check_updates` làm hỏng MỌI truyện sau trong lượt dò. Challenge chờ bao lâu cũng không qua
+    (cần JS/người) nên dừng ngay là đúng; site không bị challenge thì hành vi y cũ.
   - **Kiểm tra chất lượng ảnh** (24/07): lõi ở `comics_core`, 2 đầu gọi vào —
     (1) *inline khi tải*: `download_image` kiểm tầng 1 (độ dài truyền tải) + tầng 2
     (chữ ký + giải mã) TRƯỚC khi ghi → ảnh hỏng không để lại file, resume tự tải bù;
@@ -32,7 +37,8 @@ cách chạy thật + decode thử ảnh.
     chương; Raven = URL trang chương). `PROVIDERS`/`by_name`/`REGISTRY` (map domain).
     Đang có: **AsuraProvider** (API JSON), **RavenProvider** (parse HTML + `ts_reader`),
     **DilibProvider** (parse HTML PHP), **MangaDexProvider** (API JSON, bản dịch `en`),
-    **TruyenQQProvider** (parse HTML, `truyenqqko.com`), **ACGNProvider** (parse HTML tĩnh,
+    **TruyenQQProvider** (parse HTML, họ `truyenqqko/to/vn.com` — KHÔNG gồm `truyenqq.com.vn`,
+    site khác, xem TruyenQQVNProvider), **ACGNProvider** (parse HTML tĩnh,
     `comic.acgn.cc`, truyện tiếng Trung — ảnh nhúng `_src` trong trang `view-{id}.htm`,
     danh sách tập ở `manhua-{slug}.htm`; số chương từ text `VOL`/`第N話`; referer=None;
     CDN `img.acgn.cc` lọc theo vùng → 522 ngoài VN),
@@ -54,11 +60,57 @@ cách chạy thật + decode thử ảnh.
     đuôi (không đụng core). ⚠️ CDN cdn*.zetimage.com CHỐNG HOTLINK → referer=`{BASE}/` (kiểm
     theo domain site; API list KHÔNG cần referer nên check_updates peek được). Tên có dấu từ
     `<h1 class="comic-title-content">`. Domain có số (zettruyen1) → dễ đổi như TruyenQQ: đổi
-    thì thêm `domains` + đổi BASE/referer sang domain hiện hành).
+    thì thêm `domains` + đổi BASE/referer sang domain hiện hành),
+    **TruyenQQVNProvider** (`name="qqcomvn"`, `truyenqq.com.vn`, 28/09/2026) — site RIÊNG dù trùng
+    tên họ ko (code khác: URL `/{slug}` + `/{slug}/chapter-N`; CDN riêng `sNN.cc3t.net`, host đổi
+    theo truyện s34/s25… → lấy nguyên URL; CDN đòi `Referer: {BASE}/`, thiếu 403). **⚠️ SỐ CHƯƠNG =
+    SỐ THỨ TỰ CỦA SITE**: site đánh 1..N (có bộ 0..N) liên tục, không chương lẻ, chèn cả extra →
+    lệch số thật TĂNG DẦN (Tinh Giáp: vn N = thật N−1 đầu bộ → N−15 cuối bộ, đo bằng khớp chuỗi số
+    trang với truyenqqko); site KHÔNG lộ số thật ở đâu → folder LUÔN hậu tố `SUFFIX=" [QQ.vn]"`
+    (không bao giờ trộn với folder cùng tên của nguồn số thật — trộn = hỏng thư viện âm thầm) +
+    `positional_numbers=True` (CLI chặn ghép `into:`/`--dest-name`). **⚠️ CLOUDFLARE CHẬP CHỜN**
+    (trang series: 12/09 403-challenge, 27/09 429-challenge, 28/09 mở; trang chương mở cả 3 lần) →
+    KHÔNG BAO GIỜ gọi trang series: mọi thứ lấy từ 1 **trang chương mốc** (thử `chapter-1` → link
+    người dùng dán → `chapter-0`): dropdown `<option value="/{slug}/chapter-N">` có ĐỦ danh sách
+    (regex chấp nhận value/href, URL tương đối lẫn tuyệt đối), `og:title` → bỏ đuôi ` - Chapter N`
+    neo cuối (giữ tên có `:`), JSON `recently_viewed` `"image"` → bìa `/media/book/<file>` (nhỏ
+    ~190×247, nguồn duy nhất không bị challenge). Ảnh: `<img>` trong khối `.reading-content` (tới
+    `reading-option` dưới), đọc `data-src`; mất khối → dự phòng URL tuyệt đối có `/chapter-N/`
+    (loại ảnh quảng cáo `/media/images/` src tương đối); khối có mà rỗng = chương rỗng ở nguồn (bỏ
+    qua, không dừng); `LAYOUT_FAIL_LIMIT=3` chương LIỀN không nhận ra cấu trúc → `Blocked` "site đổi
+    giao diện" + lưu HTML mẫu `.reader-meta/qqvn-debug/`. **THANG LEO 2 TẦNG** (`_fetch`): HTTP
+    thường (`get_text`; thêm dò title "Just a moment") → bị `Challenged` thì chuyển sang Chromium
+    thật (`cf_browser`, import lười) cho HẾT tiến trình (`_escalated`, khỏi dội CF bằng request chắc
+    bị chặn); ảnh LUÔN tải HTTP đa luồng (CDN không challenge). `fetch_mode` (cờ `--fetch
+    auto|http|browser`), `allow_browser` (check_updates đặt False → ném Challenged thay vì mở
+    Chromium), `close()` (dispatch gọi trong finally). **Chất lượng (đo 28/09, đính chính)**: phần
+    lớn ảnh GIỐNG HỆT họ ko (vn ch2↔ko 1, vn 408↔ko 393: cùng MP/byte), có chương nét hơn (vn ch1
+    1000 vs 900px) và có chương KÉM hơn (vn ch3 800 vs 900px, 0.85× điểm ảnh) — KHÔNG phải "bản
+    xịn" đồng loạt.
+  - `cf_browser.py` — **tầng TRÌNH DUYỆT THẬT dùng chung cho site sau Cloudflare** (28/09/2026;
+    hiện chỉ qqcomvn). `CFBrowser(profile, host, label)`: `open()`/`get_html(url)`/`close()`.
+    CHÉP (không refactor) công thức comix đã chạy thật trên server: Chromium trong
+    `.reader-meta/pw-browsers` + playwright 1.55 (chung bản cài → comix "tập dượt" tầng này mỗi
+    ngày), HEADFUL + `--disable-blink-features=AutomationControlled` + bỏ `--enable-automation`,
+    `_Watchdog` 90s quanh mở+PROBE `evaluate('()=>1')`, `kill_profile_chrome` (match TÊN profile →
+    không đụng comix/Chrome thường) trước khi mở, tự dựng lại ≤`MAX_RELAUNCH=3`/đợt. Profile riêng
+    `<site>-profile` (qqcomvn: `qqvn-profile`) giữ cookie `cf_clearance`. Route: host site mở trừ
+    image/media/font; ngoài site chỉ `*.cloudflare.com` (iframe Turnstile). `get_html`: van
+    `core.gate` → goto → challenge (header `cf-mitigated` hoặc title) → `_wait_pass`: pha 1 im lặng
+    `AUTO_PASS_WAIT=20s` (challenge JS/managed thường tự qua) → pha 2 Telegram "cần tick" (chung
+    `notify-config.json`, chống spam `NOTIFY_GAP`) + chờ `HUMAN_WAIT=15'`, in log mỗi `HEARTBEAT=60s`
+    (stall-watchdog 20' không giết oan), nhắc lại giữa chừng → qua thì goto LẠI lấy response sạch
+    (`response.text()` = HTML thô y như HTTP → CHUNG parser); hết giờ → `core.Challenged` (dừng
+    sạch, exit 2). **Mỗi URL chỉ chờ NGƯỜI 1 lần**: vừa tick mà CF chặn lại ngay (nghi CF chặn cả
+    trình duyệt tự động) → chỉ chờ tự qua rồi dừng, không giữ hàng đợi cả giờ. 404/410 → None.
+    `BrowserGone(Blocked)` → core dừng sạch. **KHÔNG BAO GIỜ tự bấm ô "Verify you are human".**
   - `comic_downloader.py` — CLI mỏng: `resolve_provider()` tự nhận site theo domain
     của URL (hoặc cờ `--site`), rồi gọi qua `dispatch()`: provider thường → `core.run`;
     provider có `custom_run` (hiện chỉ comix) → loop riêng. Cờ giữ y hệt bản cũ
-    (`--from/--to/--chapters/--cbz/--pack/--out/--workers/--delay`).
+    (`--from/--to/--chapters/--cbz/--pack/--out/--workers/--delay`). `dispatch()` (28/09): chặn
+    `--dest-name` với provider `positional_numbers` (exit 1 + lý do — bot preview `into:` hiện
+    500 ký tự cuối nên người dùng thấy); `--fetch` gán `provider.fetch_mode`; `finally` gọi
+    `provider.close()` (đóng Chromium tầng trình duyệt kể cả khi exit/lỗi).
   - `comix_site.py` — **loop tải RIÊNG cho comix.to (Comick)**, KHÔNG đi qua
     `core.run()` nhưng tái dùng gân cốt core (PoliteGate, `download_image` + kiểm ảnh
     4 tầng, `make_cbz`, `safe_name`, `append_log`). Vì sao riêng: API mã hóa
@@ -400,7 +452,8 @@ cách chạy thật + decode thử ảnh.
   `_wait_or_stall(proc, start_pos)` thay `proc.wait()` vô-timeout (cũ) — poll `os.path.getsize(tai-run.log)`
   mỗi `DL_STALL_POLL=30s`; log ĐỨNG IM > `dl_stall_limit` (config, mặc định `DL_STALL_LIMIT=1200s`) → nghi
   treo câm → `_kill(proc)` + `_kill_comix_chrome()` (terminate python KHÔNG giết chrome CON của Playwright →
-  phải diệt riêng qua match 'comix-profile', kẻo mồ côi ôm profile) → nhánh `stalled`: GIỮ job `pending` thử
+  phải diệt riêng, kẻo mồ côi ôm profile; từ 28/09 match `TOOL_CHROME_RE` = mọi `.reader-meta\<tên>-profile`
+  — comix + `qqvn-profile` của cf_browser; dùng chung cho dọn-lạc lúc khởi động) → nhánh `stalled`: GIỮ job `pending` thử
   lại (`stall_retries++`, backoff `DL_STALL_BACKOFF=120s`), quá `DL_STALL_RETRY_MAX=1` → bỏ + báo lỗi (daily
   tự enqueue lại). Vì sao đọc SIZE (không đọc nội dung): `getsize`=1 stat O(1), rẻ bất kể log to/nhỏ (log
   đã tự cắt ~2MB đầu mỗi job); size tăng đơn điệu trong 1 job = tín hiệu "còn sống". Vòng poll CHỈ tồn tại
@@ -473,6 +526,9 @@ cách chạy thật + decode thử ảnh.
   (`done_numbers`: folder `Chapter N` có `.done` **HOẶC chứa ảnh** — bắt cả thư viện cũ thiếu `.done`)
   → `missing_count` + `listed_max`/`done_max` + `new_since_last` (max tăng so `last_max` cũ). Status:
   `ok` (thiếu>0 → supervisor enqueue) / `comix` (luôn enqueue, không peek được — Chromium) /
+  `browser` (28/09: provider có tầng trình duyệt bị Cloudflare chặn lúc dò — checker đặt
+  `allow_browser=False` nên KHÔNG mở Chromium, bắt `core.Challenged` → supervisor VẪN enqueue, job tải tự
+  chuyển Chromium; tin tóm tắt nhóm 🌐. Trước đây thành `error` = không bao giờ enqueue) /
   `unsupported` (site chưa provider) / `error` (list rỗng/lỗi, KHÔNG đụng state). Ghi kết quả ra
   `.reader-meta/watch-check-result.json` (supervisor đọc lại — KHÔNG parse stdout vì `_request` in
   429/503 ra stdout). Cờ `--only <url>` (lặp được) để check 1 vài truyện (dùng cho `/checknow`,

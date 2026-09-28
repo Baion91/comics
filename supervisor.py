@@ -75,6 +75,11 @@ DL_NET_RETRY_MAX = 4       # mạng đã OK mà job vẫn fail kiểu-mạng qu�
 NET_ERR_MARKERS = ("getaddrinfo", "nameresolution", "failed to resolve", "max retries",
                    "mạng chập chờn", "connection aborted", "connectionreset",
                    "connection reset", "timed out", "temporarily unavailable")
+# Chromium do TOOL mở (Playwright) nhận diện qua thư mục profile riêng trong .reader-meta:
+# `comix-profile` (comix_site), `qqvn-profile` (cf_browser — truyenqq.com.vn) và mọi
+# `<tên>-profile` thêm sau này. Regex .NET cho PowerShell `-match`; Chrome thường của user
+# không chạy từ .reader-meta nên KHÔNG bị đụng.
+TOOL_CHROME_RE = r"\.reader-meta[\\/][\w-]+-profile"
 # Stall-watchdog (lưới bao chót): job đang chạy mà LOG ĐỨNG IM (không thêm byte) quá
 # DL_STALL_LIMIT giây = nghi treo câm (vd Chromium comix wedge lọt qua watchdog nội bộ) ->
 # kill tiến trình + Chromium comix rồi giữ job thử lại. Phát hiện bằng os.path.getsize (1
@@ -682,17 +687,18 @@ class Supervisor:
 
     @staticmethod
     def _kill_comix_chrome():
-        """Giết Chromium (Playwright, tải comix) nhận diện qua profile 'comix-profile' trong
-        command line — KHÔNG đụng Chrome thường của user. Dùng khi kill job treo: terminate
-        tiến trình python downloader KHÔNG giết được chrome CON (Playwright mở) -> nó thành
-        mồ côi ôm profile -> đúng thứ gây wedge lần sau. Best-effort, Windows-only."""
+        """Giết Chromium do tool mở (Playwright: comix + tầng trình duyệt cf_browser) nhận
+        diện qua profile trong .reader-meta (TOOL_CHROME_RE) — KHÔNG đụng Chrome thường của
+        user. Dùng khi kill job treo: terminate tiến trình python downloader KHÔNG giết được
+        chrome CON (Playwright mở) -> nó thành mồ côi ôm profile -> đúng thứ gây wedge lần
+        sau. Best-effort, Windows-only."""
         if os.name != "nt":
             return
         try:
             subprocess.run(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
                 "-Command",
                 "Get-CimInstance Win32_Process -Filter \"Name='chrome.exe'\" | "
-                "Where-Object { $_.CommandLine -match 'comix-profile' } | "
+                "Where-Object { $_.CommandLine -match '" + TOOL_CHROME_RE + "' } | "
                 "ForEach-Object { Stop-Process -Id $_.ProcessId -Force "
                 "-ErrorAction SilentlyContinue }"],
                 creationflags=NO_WINDOW, timeout=30,
@@ -871,10 +877,10 @@ class Supervisor:
                 "Name='pythonw.exe'\" | Where-Object { $_.CommandLine -match "
                 "'comic_downloader\\.py' } | ForEach-Object { Stop-Process -Id "
                 "$_.ProcessId -Force -ErrorAction SilentlyContinue }; "
-                # Chromium (Playwright, tải comix) mồ côi: nhận diện qua profile
-                # riêng 'comix-profile' trong command line — KHÔNG đụng Chrome thường.
+                # Chromium do tool mở (comix / cf_browser) mồ côi: nhận diện qua profile
+                # trong .reader-meta (TOOL_CHROME_RE) — KHÔNG đụng Chrome thường.
                 "Get-CimInstance Win32_Process -Filter \"Name='chrome.exe'\" | "
-                "Where-Object { $_.CommandLine -match 'comix-profile' } | "
+                "Where-Object { $_.CommandLine -match '" + TOOL_CHROME_RE + "' } | "
                 "ForEach-Object { Stop-Process -Id $_.ProcessId -Force "
                 "-ErrorAction SilentlyContinue }"],
                 creationflags=NO_WINDOW, timeout=30,
@@ -2079,11 +2085,12 @@ class Supervisor:
             d["series"] = keep
         self._update_watchlist(_upd)
 
-        # Enqueue: comix (mỗi ngày) + provider thường còn thiếu chương (mới/khoá/dở).
+        # Enqueue: comix (mỗi ngày) + 'browser' (Cloudflare chặn lúc dò -> job tải tự chuyển
+        # Chromium) + provider thường còn thiếu chương (mới/khoá/dở).
         pairs = []
         for r in results:
             st = r.get("status")
-            if st == "comix" or (st == "ok" and r.get("missing_count", 0) > 0):
+            if st in ("comix", "browser") or (st == "ok" and r.get("missing_count", 0) > 0):
                 job_cid = added_by.get(r["url"]) or cid or self._default_notify_cid()
                 pairs.append((r["url"], job_cid))
         added, dup = self._enqueue_jobs(pairs) if pairs else ([], 0)
@@ -2117,6 +2124,7 @@ class Supervisor:
                     if r.get("missing_count", 0) > 0 and not r.get("new_since_last")]
         uptodate = [r for r in ok if r.get("missing_count", 0) == 0]
         comix = [r for r in results if r.get("status") == "comix"]
+        cfb = [r for r in results if r.get("status") == "browser"]
         errs = [r for r in results if r.get("status") == "error"]
         unsup = [r for r in results if r.get("status") == "unsupported"]
 
@@ -2138,6 +2146,13 @@ class Supervisor:
             lines += [f"• {r.get('title')}" for r in comix[:15]]
             if len(comix) > 15:
                 lines.append(f"   … và {len(comix) - 15} truyện nữa")
+        if cfb:
+            lines.append("")
+            lines.append(f"🌐 Cloudflare chặn lúc dò ({len(cfb)}) — vẫn xếp tải, tool tự "
+                         "chuyển Chromium (cần tick sẽ nhắn riêng):")
+            lines += [f"• {r.get('title')}" for r in cfb[:15]]
+            if len(cfb) > 15:
+                lines.append(f"   … và {len(cfb) - 15} truyện nữa")
         if uptodate:
             lines += _bucket("✅ Không đổi (đã đủ):", uptodate)
         if errs:

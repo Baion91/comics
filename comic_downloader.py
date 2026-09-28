@@ -42,10 +42,29 @@ _COMIX = ComixEntry()
 
 def dispatch(provider, args):
     """comix đi loop riêng (custom_run); site thường đi core.run."""
-    if hasattr(provider, "custom_run"):
-        provider.custom_run(args)
-    else:
-        core.run(provider, args)
+    # Provider đánh số chương theo THỨ TỰ riêng của site (lệch số thật, vd qqcomvn) ->
+    # ghép vào folder nguồn khác (so số chương 1:1) sẽ SAI chương -> chặn. Bot preview
+    # `/tai … into:` in 500 ký tự cuối output nên người dùng thấy đúng lý do này.
+    if getattr(args, "dest_name", None) and getattr(provider, "positional_numbers", False):
+        sys.exit(f"⛔ {provider.name}: KHÔNG hỗ trợ ghép (into:/--dest-name) — site đánh số "
+                 "chương theo THỨ TỰ riêng (lệch số chương thật), ghép vào folder nguồn khác "
+                 "sẽ sai chương. Tải thường (không into:) -> folder riêng có hậu tố "
+                 f"'{getattr(provider, 'SUFFIX', '').strip()}'.")
+    fetch = getattr(args, "fetch", "auto")
+    if hasattr(provider, "fetch_mode"):
+        provider.fetch_mode = fetch
+    elif fetch != "auto":
+        print(f"  (--fetch {fetch} chỉ áp dụng cho site có tầng trình duyệt — bỏ qua "
+              f"với {provider.name})", file=sys.stderr)
+    try:
+        if hasattr(provider, "custom_run"):
+            provider.custom_run(args)
+        else:
+            core.run(provider, args)
+    finally:
+        close = getattr(provider, "close", None)
+        if close:
+            close()   # đóng Chromium của tầng trình duyệt (nếu đã mở) kể cả khi lỗi/exit
 
 
 def read_list(path):
@@ -136,6 +155,11 @@ def main(default_provider=None):
                     help="comix.to: CHỈ quét ĐĨA (không mạng) cả thư viện --out, liệt kê "
                          "chương còn trang TRÁO Ô — bước xem trước của lệnh bot /repair all "
                          "(in kèm dòng REPAIR_SCAN_JSON)")
+    ap.add_argument("--fetch", choices=("auto", "http", "browser"), default="auto",
+                    help="Site có tầng trình duyệt (truyenqq.com.vn): auto = HTTP thường, bị "
+                         "Cloudflare chặn thì tự chuyển sang Chromium (mặc định); http = chỉ "
+                         "HTTP (bị chặn thì dừng); browser = ép Chromium ngay từ đầu (thử tầng "
+                         "trình duyệt / khi biết chắc đang bị chặn)")
     ap.add_argument("--out", default="downloads", help="Thư mục lưu (mặc định: downloads)")
     ap.add_argument("--dest-name", dest="dest_name", metavar="FOLDER",
                     help="GHÉP vào folder truyện CÓ SẴN tên này (tải bù chương thiếu từ "

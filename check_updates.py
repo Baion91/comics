@@ -130,6 +130,11 @@ def check_one(entry):
             core.session.headers["Referer"] = provider.referer
         else:
             core.session.headers.pop("Referer", None)
+        # Checker KHÔNG mở Chromium (giữ nhẹ + không treo lượt dò 3h sáng): provider có
+        # tầng trình duyệt (qqcomvn) bị Cloudflare chặn -> ném Challenged -> status 'browser'
+        # bên dưới; job tải (được mở Chromium) mới là nơi vượt challenge.
+        if hasattr(provider, "allow_browser"):
+            provider.allow_browser = False
         slug = provider.series_slug(url)
         chapters = provider.list_chapters(slug)
         if not chapters:
@@ -152,6 +157,12 @@ def check_one(entry):
         # HIGHLIGHT noti; chương khoá thử-lại-hằng-ngày thì missing>0 nhưng KHÔNG new).
         if isinstance(prev_max, (int, float)) and listed_max is not None:
             res["new_since_last"] = listed_max > prev_max
+    except core.Challenged as e:
+        # Không peek được vì Cloudflare đòi xác minh -> như comix: cứ enqueue, job tải tự
+        # chuyển sang Chromium (cf_browser) + nhờ người tick nếu cần. Trước đây thành
+        # 'error' = không bao giờ enqueue -> truyện đứng im mãi khi site bật challenge.
+        res["status"] = "browser"
+        res["error"] = str(e)[:200]
     except SystemExit as e:      # provider/core có thể sys.exit -> nuốt, coi là lỗi
         res["error"] = f"thoát bất thường: {e.code}"
     except Exception as e:
@@ -187,8 +198,8 @@ def main():
         r = check_one(entry)
         results.append(r)
         # log người-đọc ra stdout (supervisor đọc RESULT_FILE, không parse stdout)
-        tag = {"ok": "OK", "comix": "comix", "unsupported": "CHƯA HỖ TRỢ",
-               "error": "LỖI"}.get(r["status"], r["status"])
+        tag = {"ok": "OK", "comix": "comix", "browser": "CLOUDFLARE→TRÌNH DUYỆT",
+               "unsupported": "CHƯA HỖ TRỢ", "error": "LỖI"}.get(r["status"], r["status"])
         extra = ""
         if r["status"] == "ok":
             extra = f" — mới nhất ch.{_fmt(r['listed_max'])}, thiếu {r['missing_count']}"
