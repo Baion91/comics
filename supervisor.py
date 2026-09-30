@@ -243,7 +243,9 @@ HELP_TEXT = (
     "/killnow — chỉ dừng truyện đang tải (của bạn)\n"
     "/clearq — chỉ xoá hàng chờ (của bạn)\n"
     "/stopall — dừng tất cả + xoá sạch hàng chờ (mọi người)\n"
-    "/update — cập nhật code + restart reader\n\n"
+    "/update — cập nhật code + restart reader\n"
+    "/diag — bộ đo tốc độ reader: tóm tắt + link báo cáo đầy đủ\n"
+    "     /diag clear (xoá số đo cũ) | /diag off | /diag on (tắt/bật ghi)\n\n"
     "Tự động check chương mới:\n"
     "/watchlist — xem danh sách truyện được auto-check\n"
     "/watch <link> — thêm truyện vào danh sách\n"
@@ -540,6 +542,7 @@ class Supervisor:
             {"command": "clearq", "description": "Chỉ xoá hàng chờ của bạn (admin)"},
             {"command": "stopall", "description": "Dừng tất cả + xoá sạch hàng chờ (admin)"},
             {"command": "update", "description": "Cập nhật code (admin)"},
+            {"command": "diag", "description": "Bộ đo tốc độ reader: /diag [clear|off|on] (admin)"},
             {"command": "watchlist", "description": "Xem danh sách truyện auto-check (admin)"},
             {"command": "watch", "description": "Thêm truyện vào danh sách: /watch <link> (admin)"},
             {"command": "unwatch", "description": "Bỏ truyện: /unwatch <số|link> (admin)"},
@@ -597,6 +600,8 @@ class Supervisor:
                 "disable_web_page_preview": "true"})
         elif text.startswith("/update"):
             self._run_bg(self.handle_update, token, cid)
+        elif text.startswith("/diag"):
+            self._run_bg(self.handle_diag, token, cid, raw)
         elif text.startswith("/watchlist"):   # PHẢI xét trước /watch (tiền tố trùng)
             self.handle_watchlist(token, cid)
         elif text.startswith("/watch"):
@@ -772,6 +777,64 @@ class Supervisor:
                 "disable_web_page_preview": "true"})
         finally:
             self._updating = False
+
+    def handle_diag(self, token, cid, raw):
+        """/diag [clear|off|on] — bộ đo tốc độ reader (xem diag_report.py). Báo cáo dựng
+        từ .reader-meta/diag/*.jsonl do reader ghi; nạp lại module mỗi lần để /update
+        đổi được nội dung báo cáo mà KHÔNG cần restart supervisor."""
+        if not self._is_admin(cid):
+            tg_api(token, "sendMessage", {"chat_id": cid, "text": "⛔ Bạn không phải admin."})
+            return
+        try:
+            import importlib
+            import diag_report
+            importlib.reload(diag_report)
+        except Exception as e:
+            tg_api(token, "sendMessage", {"chat_id": cid,
+                "text": f"❌ Không nạp được diag_report.py: {e}"})
+            return
+        parts = raw.split()
+        sub = parts[1].lower() if len(parts) > 1 else ""
+        flag = os.path.join(META_DIR, "diag-off")
+        if sub == "clear":
+            n = diag_report.clear(META_DIR)
+            tg_api(token, "sendMessage", {"chat_id": cid,
+                "text": f"🧹 Đã xoá {n} file số đo. Bắt đầu đo lại từ bây giờ."})
+            return
+        if sub in ("off", "on"):
+            try:
+                if sub == "off":
+                    open(flag, "a").close()
+                elif os.path.exists(flag):
+                    os.remove(flag)
+            except OSError as e:
+                tg_api(token, "sendMessage", {"chat_id": cid, "text": f"❌ {e}"})
+                return
+            tg_api(token, "sendMessage", {"chat_id": cid,
+                "text": "⏸ Đã TẮT ghi số đo (hiệu lực sau ≤10s)." if sub == "off"
+                        else "▶️ Đã BẬT ghi số đo."})
+            return
+        try:
+            text = diag_report.build_report(META_DIR, 48, brief=True)
+        except Exception as e:
+            text = f"❌ Lỗi dựng báo cáo: {e}"
+        if os.path.exists(flag):
+            text = "⏸ (đang TẮT ghi — /diag on để bật)\n" + text
+        for i in range(0, len(text), 3900):              # Telegram giới hạn 4096 ký tự/tin
+            tg_api(token, "sendMessage", {"chat_id": cid, "text": text[i:i + 3900],
+                                          "disable_web_page_preview": "true"})
+        link = self.cur_link()
+        tok = diag_report.get_token(META_DIR)
+        if link:
+            base = link.rstrip("/")
+            msg = ("📎 Báo cáo đầy đủ (gửi link này cho Claude):\n"
+                   f"{base}/api/diag/report?k={tok}\n\n"
+                   f"Dữ liệu thô: {base}/api/diag/raw?k={tok}&f=client\n"
+                   f"             {base}/api/diag/raw?k={tok}&f=server")
+        else:
+            msg = "Chưa có link tunnel — trên server chạy: python diag_report.py"
+        tg_api(token, "sendMessage", {"chat_id": cid, "text": msg,
+                                      "disable_web_page_preview": "true"})
 
     # --- Quyền admin (admin_chat_ids trong notify-config.json) -------------
     def _admins(self):

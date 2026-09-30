@@ -28,12 +28,17 @@ import time
 import unicodedata
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import quote, unquote, urlsplit
+from urllib.parse import parse_qs, quote, unquote, urlsplit
 
 try:
     from PIL import Image
 except ImportError:
     Image = None
+
+try:
+    import diag_report          # bộ đo: đọc log + dựng báo cáo (dùng chung với bot /diag)
+except ImportError:
+    diag_report = None
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 # CHỈ quét thư viện trong "downloads" — không quét thư mục gốc project để tránh
@@ -128,6 +133,24 @@ def list_images(path):
     except OSError:
         return []
     return sorted(names, key=natkey)
+
+
+def list_images_mt(path):
+    """Như list_images nhưng kèm {tên: mtime_ns} lấy NGAY từ scandir (Windows: thông
+    tin có sẵn trong kết quả liệt kê thư mục, không tốn thêm syscall mỗi file). Render
+    1 chương trước đây stat mỗi ảnh 2-3 lần (URL ?v=, chữ ký trang, cache kích thước)."""
+    mts = {}
+    try:
+        with os.scandir(path) as it:
+            for e in it:
+                if e.is_file() and os.path.splitext(e.name)[1].lower() in IMG_EXTS:
+                    try:
+                        mts[e.name] = e.stat().st_mtime_ns
+                    except OSError:
+                        mts[e.name] = 0
+    except OSError:
+        return [], {}
+    return sorted(mts, key=natkey), mts
 
 
 def build_series(path, name):
@@ -874,26 +897,88 @@ def continue_info(s, progress=None):
 
 _dim_lock = threading.Lock()
 _dim_cache = {}
+# Cache kích thước ảnh LƯU RA ĐĨA: trước chỉ nằm trong RAM -> mỗi lần reader restart
+# (update/Windows update/watchdog) mọi chương trở lại "nguội": mở chương lần đầu phải
+# mở PIL TỪNG ảnh (tập ~60 trang trên HDD nguội = vài giây, sự cố "bấm đọc đơ" 25/09).
+# Khoá = đường dẫn tuyệt đối, kèm mtime_ns -> file đổi thì tự đo lại.
+DIMS_FILE = os.path.join(META_DIR, "dims-cache.json")
+DIMS_MAX = 400_000              # quá ngưỡng (rác file đã xoá tích luỹ) -> bỏ, đo lại dần
+_dim_loaded = False
+_dim_dirty = 0
+_dim_tl = threading.local()     # đếm ảnh đo nguội/ấm trong request hiện tại (bộ đo)
 
 
-def img_dims(path):
+def _dims_load_locked():
+    global _dim_loaded
+    _dim_loaded = True
+    try:
+        with open(DIMS_FILE, encoding="utf-8") as f:
+            raw = json.load(f)
+        if isinstance(raw, dict) and len(raw) <= DIMS_MAX:
+            for p, v in raw.items():
+                if isinstance(v, list) and len(v) == 3:
+                    _dim_cache[p] = (v[0], (v[1], v[2]) if v[1] else None)
+    except (OSError, ValueError):
+        pass
+    threading.Thread(target=_dims_saver, daemon=True).start()
+
+
+def _dims_saver():
+    """Ghi cache kích thước ra đĩa (nguyên tử) mỗi 20s nếu có mục mới."""
+    global _dim_dirty
+    while True:
+        time.sleep(20)
+        with _dim_lock:
+            if not _dim_dirty:
+                continue
+            _dim_dirty = 0
+            snap = {p: [mt, wh[0] if wh else 0, wh[1] if wh else 0]
+                    for p, (mt, wh) in _dim_cache.items()}
+        try:
+            tmp = DIMS_FILE + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(snap, f, ensure_ascii=False, separators=(",", ":"))
+            os.replace(tmp, DIMS_FILE)
+        except OSError:
+            pass
+
+
+def _dim_count(kind):
+    try:
+        setattr(_dim_tl, kind, getattr(_dim_tl, kind, 0) + 1)
+    except Exception:
+        pass
+
+
+def img_dims(path, mt=None):
+    """(w, h) của ảnh, cache theo (path, mtime). Truyền sẵn mt (lấy từ scandir) để
+    khỏi stat lại từng file."""
+    global _dim_dirty
     if Image is None:
         return None
-    try:
-        mt = os.stat(path).st_mtime_ns
-    except OSError:
-        return None
+    if mt is None:
+        try:
+            mt = os.stat(path).st_mtime_ns
+        except OSError:
+            return None
     with _dim_lock:
+        if not _dim_loaded:
+            _dims_load_locked()
         c = _dim_cache.get(path)
         if c and c[0] == mt:
+            _dim_count("dw")
             return c[1]
+    _dim_count("dc")
     try:
         with Image.open(path) as im:
             wh = im.size
     except Exception:
         wh = None
     with _dim_lock:
+        if len(_dim_cache) >= DIMS_MAX:
+            _dim_cache.clear()
         _dim_cache[path] = (mt, wh)
+        _dim_dirty += 1
     return wh
 
 
@@ -1270,6 +1355,14 @@ a.ch.read{opacity:.45}
 #totop.show{opacity:1;transform:translateY(0) scale(1);pointer-events:auto}
 #totop:active{transform:translateY(0) scale(.9)}
 #totop svg{width:26px;height:26px;display:block}
+/* --- thanh tiến trình chuyển trang: web app (standalone) KHÔNG có thanh tải của
+   trình duyệt -> điều hướng chậm trông như app đơ. Hiện sau 120ms (trang có sẵn
+   trong cache SW thì không kịp nháy), chạy chậm dần tới ~92% chờ trang mới. --- */
+#navbar{position:fixed;left:0;right:0;top:env(safe-area-inset-top,0px);height:3px;z-index:9999;
+  pointer-events:none;transform-origin:0 50%;transform:scaleX(0);opacity:0;
+  background:#a78bfa;box-shadow:0 0 8px rgba(167,139,250,.75)}
+#navbar.go{opacity:1;transform:scaleX(.92);
+  transition:transform 8s cubic-bezier(.08,.75,.2,1),opacity .15s}
 """
 
 
@@ -1336,6 +1429,130 @@ TOTOP_JS = """
     var r=window.matchMedia&&matchMedia('(prefers-reduced-motion: reduce)').matches;
     scrollTo({top:0,behavior:r?'auto':'smooth'});});
   upd();
+})();
+"""
+
+# Thanh tiến trình khi chuyển trang (xem #navbar trong CSS). Bắt MỌI click vào link
+# cùng origin (chạy SAU handler của trang nên tôn trọng preventDefault); điều hướng
+# bằng JS (chọn chương, phím mũi tên) gọi TOONY_NAV(url) trước khi đổi location.
+NAV_JS = """
+(function(){
+  var bar=null, tmr=0;
+  function stop(){ clearTimeout(tmr); if(bar) bar.className=''; }
+  window.TOONY_NAV=function(href){
+    if(window.TOONY_MARK_TAP) TOONY_MARK_TAP(href);
+    clearTimeout(tmr);
+    tmr=setTimeout(function(){
+      if(!bar){ bar=document.createElement('div'); bar.id='navbar'; document.body.appendChild(bar); }
+      bar.className=''; void bar.offsetWidth; bar.className='go';
+    },120);
+  };
+  document.addEventListener('click',function(e){
+    if(e.defaultPrevented||e.button||e.metaKey||e.ctrlKey||e.shiftKey||e.altKey) return;
+    var a=e.target.closest&&e.target.closest('a[href]'); if(!a) return;
+    if((a.target&&a.target!=='_self')||a.hasAttribute('download')) return;
+    var u; try{ u=new URL(a.href,location.href); }catch(x){ return; }
+    if(u.origin!==location.origin) return;
+    if(u.pathname===location.pathname&&u.search===location.search) return;   // cùng trang
+    TOONY_NAV(u.href);
+  });
+  addEventListener('pageshow',stop);          // quay lại từ bfcache
+  addEventListener('pagehide',stop);
+})();
+"""
+
+# Bộ đo (diag) phía trình duyệt — gửi về POST /api/diag (server ghi .reader-meta/diag/
+# client.jsonl; xem diag_report.py). Mỗi lần mở trang: Navigation Timing (workerStart =
+# SW khởi động, responseStart = byte đầu, DCL/load/FCP), kiểu mở, SW có điều khiển
+# trang không, đăng nhập hay khách, thời gian "bấm -> trang mới bắt đầu", localStorage,
+# hỏi SW (phiên bản, sự kiện hit/miss/trùng gần đây, hàng đợi prefetch); ở home tối đa
+# 30'/lần thêm dung lượng lưu trữ + số mục mỗi cache. Kèm dò "đứng luồng chính" (nhịp
+# 100ms hở >350ms khi trang đang hiện) và các lần mở lại app từ nền (resume/bfcache).
+# Chạy SAU load 1.5s -> không tranh tài nguyên lúc hiển thị; trang bị rời trước khi
+# kịp đo thì gửi bản rút gọn ở pagehide (chính các trang chậm hay bị bỏ ngang).
+DIAG_JS = """
+(function(){
+  if(!window.JSON||!window.Promise) return;
+  var P=window.performance||{};
+  function pnow(){ return P.now?P.now():Date.now(); }
+  var pk=location.pathname==='/'?'home':(location.pathname.split('/')[1]||'other');
+  var sa=!!((window.matchMedia&&matchMedia('(display-mode: standalone)').matches)||navigator.standalone);
+  function send(o){
+    o.v=1; o.pk=pk; o.path=location.pathname.slice(0,160); o.sa=sa; o.ct=Date.now();
+    var s; try{ s=JSON.stringify(o); }catch(e){ return; }
+    try{ if(navigator.sendBeacon&&navigator.sendBeacon('/api/diag',new Blob([s],{type:'text/plain'}))) return; }catch(e){}
+    try{ fetch('/api/diag',{method:'POST',keepalive:true,body:s}); }catch(e){}
+  }
+  window.TOONY_MARK_TAP=function(href){
+    try{ sessionStorage.setItem('toony_tap',JSON.stringify({t:Date.now(),h:String(href).split('#')[0]})); }catch(e){}
+  };
+  function ctl(){ return !!(navigator.serviceWorker&&navigator.serviceWorker.controller); }
+  var gaps=[], last=pnow(), hidAt=0;
+  setInterval(function(){
+    var n=pnow(), g=n-last; last=n;
+    if(g>350&&document.visibilityState==='visible'&&gaps.length<40) gaps.push([Math.round(n-g),Math.round(g)]);
+  },100);
+  function flushGaps(){ if(gaps.length){ send({ev:'gaps',g:gaps}); gaps=[]; } }
+  document.addEventListener('visibilitychange',function(){
+    if(document.visibilityState==='hidden'){ hidAt=Date.now(); flushGaps(); return; }
+    last=pnow();
+    if(hidAt&&Date.now()-hidAt>30000) send({ev:'resume',hid:Date.now()-hidAt,ctl:ctl()});
+    hidAt=0;
+  });
+  addEventListener('pageshow',function(e){ if(e.persisted){ last=pnow(); send({ev:'bfcache',ctl:ctl()}); } });
+  function lsInfo(){
+    var o={n:0,sz:0};
+    try{ var L=localStorage; o.n=L.length;
+      for(var i=0;i<L.length&&i<400;i++){ var k=L.key(i); o.sz+=k.length+(L.getItem(k)||'').length; }
+      o.chsort=L.getItem('chsort'); }catch(e){}
+    return o;
+  }
+  function askSW(cc){
+    return new Promise(function(res){
+      var c=navigator.serviceWorker&&navigator.serviceWorker.controller;
+      if(!c||!window.MessageChannel) return res(null);
+      var done=false, ch=new MessageChannel();
+      ch.port1.onmessage=function(e){ if(!done){ done=true; res(e.data); } };
+      setTimeout(function(){ if(!done){ done=true; res({timeout:true}); } },2500);
+      try{ c.postMessage({type:'diag',counts:!!cc},[ch.port2]); }catch(e){ done=true; res(null); }
+    });
+  }
+  function navRec(){
+    var r={ev:'nav',ctl:ctl(),li:(typeof LOGGEDIN!=='undefined')?!!LOGGEDIN:null};
+    var n=null; try{ n=P.getEntriesByType&&P.getEntriesByType('navigation')[0]; }catch(e){}
+    var K=['workerStart','fetchStart','domainLookupStart','connectStart','requestStart','responseStart',
+           'responseEnd','domInteractive','domContentLoadedEventEnd','loadEventEnd'];
+    if(n){ r.type=n.type; K.forEach(function(k){ if(n[k]>0) r[k]=Math.round(n[k]); });
+      r.tsz=n.transferSize; r.bsz=n.encodedBodySize; r.proto=n.nextHopProtocol; }
+    else if(P.timing){ var t=P.timing, s=t.navigationStart; r.type='legacy';
+      K.forEach(function(k){ if(t[k]>0) r[k]=t[k]-s; }); }
+    try{ (P.getEntriesByType('paint')||[]).forEach(function(p){
+      r[p.name==='first-contentful-paint'?'fcp':'fp']=Math.round(p.startTime); }); }catch(e){}
+    try{ var tp=JSON.parse(sessionStorage.getItem('toony_tap')||'null'); sessionStorage.removeItem('toony_tap');
+      var org=P.timeOrigin||(P.timing&&P.timing.navigationStart);
+      if(tp&&org&&tp.h===location.href.split('#')[0]) r.tap=Math.round(org-tp.t); }catch(e){}
+    r.ls=lsInfo();
+    return r;
+  }
+  var reported=false;
+  function report(){
+    if(reported) return; reported=true;
+    var r=navRec(), cc=false;
+    if(pk==='home'){ try{ var lc=+localStorage.getItem('toony_diag_cc')||0;
+      if(Date.now()-lc>1800000){ cc=true; localStorage.setItem('toony_diag_cc',String(Date.now())); } }catch(e){} }
+    var est=(cc&&navigator.storage&&navigator.storage.estimate)
+      ?navigator.storage.estimate().catch(function(){ return null; }):Promise.resolve(null);
+    Promise.all([askSW(cc),est]).then(function(x){
+      r.sw=x[0]; if(x[1]) r.st={u:x[1].usage,q:x[1].quota};
+      send(r);
+    });
+  }
+  addEventListener('pagehide',function(){
+    flushGaps();
+    if(!reported){ reported=true; var r=navRec(); r.early=1; send(r); }
+  });
+  function later(){ setTimeout(report,1500); }
+  if(document.readyState==='complete') later(); else addEventListener('load',later);
 })();
 """
 
@@ -1632,21 +1849,13 @@ def js(obj):
     return json.dumps(obj, ensure_ascii=False).replace("</", "<\\/")
 
 
-def _page_ver(ch_dir, fname):
-    """mtime_ns của 1 trang — chính là phần ?v= trong URL ảnh (xem img_url)."""
-    try:
-        return os.stat(os.path.join(ch_dir, fname)).st_mtime_ns
-    except OSError:
-        return 0
-
-
-def pages_version(ch_dir, files):
-    """Chữ ký RẺ của danh sách ảnh 1 chương (tên + mtime, chỉ stat, không mở ảnh).
-    Đổi khi thêm/xoá/THAY file (vd repair tráo ô ghi đè 010.webp) -> client so với
-    D.pv để biết HTML đang cầm (có thể là bản SW cache cũ) đã lệch đĩa chưa."""
+def pages_version(files, mts):
+    """Chữ ký RẺ của danh sách ảnh 1 chương (tên + mtime từ list_images_mt, không mở
+    ảnh). Đổi khi thêm/xoá/THAY file (vd repair tráo ô ghi đè 010.webp) -> client so
+    với D.pv để biết HTML đang cầm (có thể là bản SW cache cũ) đã lệch đĩa chưa."""
     h = hashlib.sha1()
     for f in files:
-        h.update(f"{f}:{_page_ver(ch_dir, f)}|".encode("utf-8", "surrogatepass"))
+        h.update(f"{f}:{mts.get(f, 0)}|".encode("utf-8", "surrogatepass"))
     return h.hexdigest()[:12]
 
 
@@ -1657,15 +1866,15 @@ def chapter_pages(s, rel):
     img_url() của html_reader (?v=mtime) để cache SW/HTTP khớp khoá."""
     sid = s["id"]
     ch_dir = os.path.join(s["path"], *rel.split("/"))
-    files = list_images(ch_dir)
+    files, mts = list_images_mt(ch_dir)
     pages = []
     for f in files:
-        v = _page_ver(ch_dir, f)
+        v = mts.get(f, 0)
         base = u("img", sid, *rel.split("/"), f)
-        wh = img_dims(os.path.join(ch_dir, f))
+        wh = img_dims(os.path.join(ch_dir, f), v or None)
         pages.append({"n": f, "url": f"{base}?v={v}" if v else base,
                       "w": wh[0] if wh else 0, "h": wh[1] if wh else 0})
-    return {"version": pages_version(ch_dir, files), "pages": pages}
+    return {"version": pages_version(files, mts), "pages": pages}
 
 
 def html_reader(s, rel, user=None):
@@ -1679,7 +1888,7 @@ def html_reader(s, rel, user=None):
     series_url = u("series", sid)
 
     ch_dir = os.path.join(s["path"], *rel.split("/"))
-    files = list_images(ch_dir)
+    files, mts = list_images_mt(ch_dir)
 
     # gom các cặp đã ghép thủ công thành 1 đơn vị hiển thị
     pairmap = {}
@@ -1707,10 +1916,8 @@ def html_reader(s, rel, user=None):
         # (disk đúng nhưng reader méo). Cover đã versioned sẵn (cover_url) — đây là
         # chỗ ảnh chương còn thiếu. Route /img bỏ qua query nên ?v không phá gì.
         base = u("img", sid, *rel.split("/"), fname)
-        try:
-            return f"{base}?v={os.stat(os.path.join(ch_dir, fname)).st_mtime_ns}"
-        except OSError:
-            return base
+        v = mts.get(fname)
+        return f"{base}?v={v}" if v else base
 
     imgs = []
     for ui, unit in enumerate(units):
@@ -1722,7 +1929,7 @@ def html_reader(s, rel, user=None):
             return f' src="{url}"' if ui < 3 else f' data-src="{url}"'
         if unit[0] == "img":
             fname = unit[1]
-            wh = img_dims(os.path.join(ch_dir, fname))
+            wh = img_dims(os.path.join(ch_dir, fname), mts.get(fname))
             ar = f' style="aspect-ratio:{wh[0]}/{wh[1]}"' if wh else ""
             imgs.append(f'<img{src_attr(img_url(fname))} data-f="{attr(fname)}" '
                         f'decoding="async"{ar} alt="">')
@@ -1734,8 +1941,8 @@ def html_reader(s, rel, user=None):
                     f'data-b="{attr(nxt[1])}">⧉ Join 2 pages (top–bottom)</button></div>')
         else:
             _, left, right = unit
-            wl = img_dims(os.path.join(ch_dir, left))
-            wr = img_dims(os.path.join(ch_dir, right))
+            wl = img_dims(os.path.join(ch_dir, left), mts.get(left))
+            wr = img_dims(os.path.join(ch_dir, right), mts.get(right))
             if wl and wr:
                 rl, rr = wl[0] / wl[1], wr[0] / wr[1]
                 ar = f'aspect-ratio:{rl + rr:.4f};'
@@ -1790,7 +1997,7 @@ def html_reader(s, rel, user=None):
             "uk": user_key(user),
             # chữ ký danh sách ảnh lúc render -> syncPages() (reader.js) so với
             # /api/pages để vá ảnh tại chỗ khi HTML này là bản SW cache cũ.
-            "pv": pages_version(ch_dir, files)}
+            "pv": pages_version(files, mts)}
     body = (
         f'<header id="topbar" class="bar hide">'
         f'<a class="iconbtn home" href="/" title="Library">{HOME_SVG}</a>'
@@ -2137,6 +2344,7 @@ HOME_JS = """
     try{ c.postMessage({type:'prefetch',urls:urls}); }catch(e){}
   }
   document.addEventListener('pointerdown',function(e){
+    if(e.pointerType==='touch') return;     // chạm có thể là cuộn (xem series.js)
     var a=e.target.closest&&e.target.closest('.cardlink,.fcard');
     if(a&&a.href) pf([a.href]);
   },{passive:true});
@@ -2400,11 +2608,20 @@ SERIES_JS = """
     if(!c||!urls.length) return;
     try{ c.postMessage({type:'prefetch',urls:urls}); }catch(e){}
   }
+  // CHẠM (touch) KHÔNG prefetch: pointerdown bắn ngay khi ngón tay chạm, kể cả khi
+  // cử chỉ hoá ra là CUỘN -> vuốt list = prefetch mọi chương dưới ngón tay (với truyện
+  // theo TẬP ~60 trang, mỗi lần là 1 lượt render nguội mở PIL từng ảnh) -> dồn ứ server
+  // đúng lúc bấm đọc thật (sự cố "bấm đọc đơ >5s" 25/09). Cú bấm thật tự điều hướng;
+  // SW gộp chung với prefetch nếu có. Chuột/bút giữ nguyên (pointerdown = ý định).
+  var lastPT='';
   document.addEventListener('pointerdown',function(e){
+    lastPT=e.pointerType;
+    if(e.pointerType==='touch') return;
     var a=e.target.closest&&e.target.closest('a.ch,.cbtn');
     if(a&&a.href) pf([a.href]);
   },{passive:true});
   document.addEventListener('mouseover',function(e){        // hover PC = ý định
+    if(lastPT==='touch') return;                            // iOS giả lập mouseover khi chạm
     var a=e.target.closest&&e.target.closest('a.ch,.cbtn');
     if(a&&a.href) pf([a.href]);
   },{passive:true});
@@ -2588,10 +2805,11 @@ READER_JS = """
   addEventListener('keydown',function(e){
     var t=e.target, tn=(t&&t.tagName||'').toLowerCase();
     if(tn==='input'||tn==='textarea'||tn==='select'||(t&&t.isContentEditable)) return;
-    if(e.key==='ArrowLeft'&&D.prev) location=D.prev;
-    if(e.key==='ArrowRight'&&D.next) location=D.next;
+    if(e.key==='ArrowLeft'&&D.prev){ if(window.TOONY_NAV) TOONY_NAV(D.prev); location=D.prev; }
+    if(e.key==='ArrowRight'&&D.next){ if(window.TOONY_NAV) TOONY_NAV(D.next); location=D.next; }
   });
-  document.getElementById('chsel').addEventListener('change',function(){location=this.value;});
+  document.getElementById('chsel').addEventListener('change',function(){
+    if(window.TOONY_NAV) TOONY_NAV(this.value); location=this.value; });
   // --- chỉnh cỡ ảnh: stepper −/%/+ trong header (100% = 800px, min 1%, cap 300%) ---
   (function(){
     var dec=document.getElementById('zdec'), inc=document.getElementById('zinc'),
@@ -2799,7 +3017,7 @@ def _mkasset(text, ctype):
 _JS_CT = "application/javascript; charset=utf-8"
 STATIC_ASSETS = {
     "app.css":   _mkasset(CSS, "text/css; charset=utf-8"),
-    "base.js":   _mkasset(PRESS_JS + "\n" + TOTOP_JS, _JS_CT),
+    "base.js":   _mkasset(PRESS_JS + "\n" + TOTOP_JS + "\n" + NAV_JS + "\n" + DIAG_JS, _JS_CT),
     "ls.js":     _mkasset(LS_JS, _JS_CT),
     "acct.js":   _mkasset(ACCT_JS, _JS_CT),
     "home.js":   _mkasset(HOME_JS, _JS_CT),
@@ -2888,10 +3106,25 @@ self.addEventListener('activate', (e) => {
   })());
 });
 
-// Hàng đợi prefetch trang series (giới hạn luồng để không ngốn băng thông /
-// tranh kết nối với ảnh đang tải). Trang gửi URL qua postMessage.
+// --- Bộ đo: vòng đệm sự kiện (hit/miss điều hướng, prefetch, trùng...). Trang hỏi
+// qua message {type:'diag'} rồi gửi kèm về server (xem DIAG_JS). BOOT = lúc SW được
+// khởi động (iOS giết SW khi app vào nền -> mở app là khởi động lại).
+const BOOT = Date.now();
+let EV = [];
+function ev(o) { o.t = Date.now(); EV.push(o); if (EV.length > 80) EV.shift(); }
+ev({e: 'boot'});
+
+// Hàng đợi prefetch (giới hạn luồng để không ngốn băng thông / tranh kết nối với
+// ảnh đang tải). Trang gửi URL qua postMessage. Giới hạn cả ĐỘ DÀI (giữ ý định MỚI
+// nhất) và xoá khi có điều hướng: hàng đợi của trang cũ không còn giá trị, để lại
+// chỉ tranh server với trang đang mở (sự cố "bấm đọc đơ" 25/09).
 let pfQ = [], pfActive = 0, pfWaiters = [];
-const PF_MAX = 2;
+const PF_MAX = 2, PF_QMAX = 6;
+// URL HTML đang tải dở (prefetch HOẶC điều hướng) -> promise<bool: đã vào PAGE_CACHE>.
+// Điều hướng trúng URL đang prefetch thì CHỜ lượt đó thay vì bắt server render lần
+// 2 song song (render chương nguội = mở PIL từng ảnh, tranh đĩa với chính nó).
+const inflight = new Map();
+function nokey(u) { return String(u).split('#')[0]; }
 // Báo "hàng đợi đã cạn" cho các promise đang chờ (để e.waitUntil giữ SW sống tới lúc đó).
 function pfSettle() {
   if (pfQ.length || pfActive) return;
@@ -2901,14 +3134,21 @@ function pfSettle() {
 function pumpPrefetch() {
   while (pfActive < PF_MAX && pfQ.length) {
     const url = pfQ.shift();
+    if (inflight.has(url)) continue;                 // đang tải (điều hướng/prefetch khác)
     pfActive++;
-    caches.open(PAGE_CACHE).then(async (cache) => {
-      if (await cache.match(url)) return;            // đã có -> bỏ qua
+    const p = caches.open(PAGE_CACHE).then(async (cache) => {
+      if (await cache.match(url)) return true;       // đã có -> bỏ qua
+      const t0 = Date.now();
       try {
-        const res = await fetch(url, {credentials: 'same-origin'});
-        if (res && res.ok) await cache.put(url, res.clone());
-      } catch (e) {}
-    }).finally(() => { pfActive--; pumpPrefetch(); pfSettle(); });
+        const res = await fetch(url, {credentials: 'same-origin',
+                                      headers: {'X-Toony-Kind': 'prefetch'}});
+        ev({e: 'pf', u: new URL(url).pathname, st: res.status, net: Date.now() - t0});
+        if (res && res.ok) { await cache.put(url, res.clone()); return true; }
+      } catch (e) { ev({e: 'pf', u: new URL(url).pathname, err: 1, net: Date.now() - t0}); }
+      return false;
+    }).catch(() => false);
+    inflight.set(url, p);
+    p.finally(() => { inflight.delete(url); pfActive--; pumpPrefetch(); pfSettle(); });
   }
   // Trả promise resolve khi cạn hàng đợi -> message handler bọc e.waitUntil (iOS tắt
   // SW rất sớm; không giữ sống thì prefetch bị cắt giữa chừng).
@@ -2933,8 +3173,30 @@ self.addEventListener('message', (e) => {
     e.waitUntil(caches.open(PAGE_CACHE).then((c) => c.delete(d.url, {ignoreSearch: true}))
       .then(() => { if (e.ports && e.ports[0]) e.ports[0].postMessage({ok: true}); }));
   } else if (d.type === 'prefetch' && Array.isArray(d.urls)) {
-    for (const u of d.urls) if (pfQ.indexOf(u) < 0) pfQ.push(u);
+    for (const raw of d.urls) {
+      const u = nokey(raw);
+      if (pfQ.indexOf(u) < 0 && !inflight.has(u)) pfQ.push(u);
+    }
+    if (pfQ.length > PF_QMAX) {
+      ev({e: 'pfdrop', n: pfQ.length - PF_QMAX});
+      pfQ.splice(0, pfQ.length - PF_QMAX);             // bỏ ý định CŨ, giữ mới nhất
+    }
     e.waitUntil(pumpPrefetch());
+  } else if (d.type === 'diag') {
+    // Trả sự kiện gần đây (rồi xoá) + trạng thái; counts=true thì đếm mục mỗi cache
+    // (đắt với cache ảnh lớn -> trang chỉ xin ở home, tối đa 30'/lần).
+    e.waitUntil((async () => {
+      const out = {ver: VER, age: Date.now() - BOOT, q: pfQ.length, a: pfActive,
+                   inf: inflight.size, ev: EV};
+      EV = [];
+      if (d.counts) {
+        out.cc = {};
+        for (const k of await caches.keys()) {
+          try { out.cc[k] = (await (await caches.open(k)).keys()).length; } catch (x) {}
+        }
+      }
+      if (e.ports && e.ports[0]) e.ports[0].postMessage(out);
+    })());
   }
 });
 
@@ -2972,10 +3234,17 @@ self.addEventListener('fetch', (e) => {
   // Điều hướng HTML: stale-while-revalidate -> first paint từ cache tức thì,
   // cập nhật ngầm cho lần mở sau. Không có cache -> mạng.
   if (req.mode === 'navigate') {
+    // Rời trang -> hàng đợi prefetch của trang cũ hết giá trị (lượt đang chạy vẫn để xong).
+    if (pfQ.length) { ev({e: 'pfdrop', n: pfQ.length, nav: 1}); pfQ = []; }
     e.respondWith((async () => {
+      const t0 = Date.now(), key = nokey(req.url), rec = {e: 'nav', u: url.pathname,
+                                                          age: t0 - BOOT};
       const cache = await caches.open(PAGE_CACHE);
+      rec.open = Date.now() - t0;
       const hit = await cache.match(req);
+      rec.match = Date.now() - t0 - rec.open;
       if (hit) {
+        rec.hit = 1; ev(rec);
         // Có bản cache -> trả ngay, revalidate NGẦM (nuốt lỗi mạng, khỏi vỡ điều hướng).
         // PHẢI bọc e.waitUntil: không có nó, iOS Safari tắt SW ngay khi respondWith
         // xong -> fetch/put bị hủy -> PAGE_CACHE KHÔNG BAO GIỜ cập nhật (02/09: mở lại
@@ -2986,19 +3255,43 @@ self.addEventListener('fetch', (e) => {
         // "TypeError: Failed to fetch" lúc được lúc không (đo bằng diagnostic 02/09) ->
         // .catch nuốt -> cache không đổi. cache:'no-store' để khỏi dính HTTP cache/304.
         e.waitUntil(
-          fetch(req.url, {credentials: 'same-origin', cache: 'no-store'})
+          fetch(req.url, {credentials: 'same-origin', cache: 'no-store',
+                          headers: {'X-Toony-Kind': 'revalidate'}})
             .then((res) => { if (res && res.ok) return cache.put(req.url, res.clone()); })
             .catch(() => {}));
         return hit;
       }
+      // Trúng URL đang prefetch dở -> chờ đúng lượt đó (khỏi render trùng), xong lấy
+      // từ cache. Lượt đó hỏng thì rơi xuống tải mạng như thường.
+      const pending = inflight.get(key);
+      if (pending) {
+        rec.dup = 1;
+        if (await pending) {
+          const h2 = await cache.match(key);
+          if (h2) { rec.wait = Date.now() - t0; ev(rec); return h2; }
+        }
+      }
       // KHÔNG có cache: phải ra mạng. Mạng lỗi (vd link tunnel đã đổi/chết) mà TRẢ VỀ
       // undefined thì respondWith báo "Returned response is null" (Safari không mở nổi
       // trang). Vì vậy LUÔN trả 1 Response: thành công -> res; lỗi -> trang báo tử tế.
+      let done;
+      const mine = new Promise((r) => { done = r; });
+      if (!inflight.has(key)) {                       // prefetch tới sau thì chờ lượt này
+        inflight.set(key, mine);
+        mine.finally(() => { if (inflight.get(key) === mine) inflight.delete(key); });
+      }
       try {
+        const tn = Date.now();
         const res = await fetch(req);
-        if (res && res.ok) e.waitUntil(cache.put(req, res.clone()).catch(() => {}));
+        rec.net = Date.now() - tn; rec.st = res.status; ev(rec);
+        if (res && res.ok) {
+          const put = cache.put(req, res.clone()).then(() => true, () => false);
+          put.then(done);
+          e.waitUntil(put);
+        } else done(false);
         return res;
       } catch (err) {
+        rec.err = 1; ev(rec); done(false);
         return new Response(
           '<!doctype html><meta charset=utf-8>'
           + '<meta name=viewport content="width=device-width,initial-scale=1">'
@@ -3038,8 +3331,139 @@ SW_REGISTER = ("<script>if('serviceWorker' in navigator){"
 # HTTP server
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Bộ đo (diag): server ghi 1 dòng / request vào .reader-meta/diag/server.jsonl, trình
+# duyệt gửi số đo về POST /api/diag -> client.jsonl. Báo cáo: diag_report.py / bot
+# /diag / GET /api/diag/report?k=<token>. Tắt: tạo file .reader-meta/diag-off.
+# ---------------------------------------------------------------------------
+
+DIAG_DIR = os.path.join(META_DIR, "diag")
+DIAG_OFF_FLAG = os.path.join(META_DIR, "diag-off")
+DIAG_MAX_BYTES = 5_000_000      # mỗi file; vượt thì đổi thành *.old.jsonl (giữ 1 đời)
+_diag_lock = threading.Lock()
+_diag_sizes = {}
+_diag_flag = [True, 0.0]        # [đang bật, lần kiểm cờ gần nhất]
+_inflight_lock = threading.Lock()
+_inflight_n = [0]
+
+
+def diag_enabled():
+    now = time.time()
+    if now - _diag_flag[1] > 10:                 # kiểm file cờ tối đa 10s/lần
+        _diag_flag[0] = not os.path.exists(DIAG_OFF_FLAG)
+        _diag_flag[1] = now
+    return _diag_flag[0]
+
+
+def diag_write(name, rec):
+    if not diag_enabled():
+        return
+    line = (json.dumps(rec, ensure_ascii=False, separators=(",", ":")) + "\n").encode("utf-8")
+    path = os.path.join(DIAG_DIR, name + ".jsonl")
+    with _diag_lock:
+        try:
+            size = _diag_sizes.get(name)
+            if size is None:
+                os.makedirs(DIAG_DIR, exist_ok=True)
+                try:
+                    size = os.path.getsize(path)
+                except OSError:
+                    size = 0
+            if size + len(line) > DIAG_MAX_BYTES:
+                os.replace(path, os.path.join(DIAG_DIR, name + ".old.jsonl"))
+                size = 0
+            with open(path, "ab") as f:
+                f.write(line)
+            _diag_sizes[name] = size + len(line)
+        except OSError:
+            _diag_sizes.pop(name, None)          # file bị xoá/khoá -> lần sau đo lại
+
+
+def ua_device(ua):
+    ua = ua or ""
+    if "iPhone" in ua or "iPad" in ua:
+        return "ios"
+    if "Android" in ua:
+        return "android"
+    return "bot" if ua.startswith("Python") else "pc"
+
+
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
+
+    # --- bộ đo: bắt status + Content-Length của response, đo thời gian request ---
+    def send_response(self, code, message=None):
+        self._dg_st = code
+        super().send_response(code, message)
+
+    def send_header(self, keyword, value):
+        if keyword.lower() == "content-length":
+            try:
+                self._dg_len = int(value)
+            except (TypeError, ValueError):
+                pass
+        super().send_header(keyword, value)
+
+    def _dg_begin(self):
+        self._dg_t0 = time.perf_counter()
+        self._dg_wall = int(time.time() * 1000)
+        self._dg_st = 0
+        self._dg_len = 0
+        self._dg_lib = None
+        _dim_tl.dc = 0
+        _dim_tl.dw = 0
+        with _inflight_lock:
+            _inflight_n[0] += 1
+            self._dg_fl = _inflight_n[0]
+
+    def _dg_kind(self, path):
+        k = self.headers.get("X-Toony-Kind")      # SW tự khai: prefetch / revalidate
+        if k:
+            return k[:12]
+        if (self.headers.get("User-Agent") or "").startswith("Python-urllib"):
+            return "selfping"
+        if (self.headers.get("Sec-Fetch-Mode") == "navigate"
+                or self.headers.get("Sec-Fetch-Dest") == "document"):
+            return "nav"
+        if path.startswith(("/img/", "/cover/")):
+            return "img"
+        if path.startswith("/static/"):
+            return "static"
+        if path.startswith("/api/"):
+            return "api"
+        if path == "/" or path.startswith(("/series/", "/read/")):
+            return "doc"                          # HTML không rõ nguồn (trình duyệt cũ...)
+        return "other"
+
+    def _dg_end(self):
+        with _inflight_lock:
+            _inflight_n[0] -= 1
+        try:
+            path = urlsplit(self.path).path
+            if path.startswith("/api/diag"):      # chính bộ đo -> không ghi
+                return
+            rec = {"t": self._dg_wall, "m": (self.command or "?")[0], "p": path[:200],
+                   "k": self._dg_kind(path), "s": self._dg_st, "b": self._dg_len,
+                   "ms": round((time.perf_counter() - self._dg_t0) * 1000, 1),
+                   "fl": self._dg_fl, "d": ua_device(self.headers.get("User-Agent"))}
+            if self._dg_lib is not None:
+                rec["lib"] = round(self._dg_lib, 1)
+            dc, dw = getattr(_dim_tl, "dc", 0), getattr(_dim_tl, "dw", 0)
+            if dc or dw:
+                rec["dc"], rec["dw"] = dc, dw
+            diag_write("server", rec)
+        except Exception:
+            pass
+
+    def send_text(self, text, ctype="text/plain; charset=utf-8"):
+        data = text.encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        if self.command != "HEAD":
+            self.wfile.write(data)
 
     def log_message(self, fmt, *args):  # im lặng, đỡ nhiễu console
         pass
@@ -3172,12 +3596,20 @@ class Handler(BaseHTTPRequestHandler):
         return None
 
     def do_POST(self):
+        self._dg_begin()
+        try:
+            self._do_post()
+        finally:
+            self._dg_end()
+
+    def _do_post(self):
         try:
             path = urlsplit(self.path).path
             if path == "/api/logout":
                 return self.send_json({"ok": True},
                                       set_cookie="uid=; Path=/; Max-Age=0; SameSite=Lax")
-            if path not in ("/api/spread", "/api/state", "/api/login", "/api/admin"):
+            if path not in ("/api/spread", "/api/state", "/api/login", "/api/admin",
+                            "/api/diag"):
                 return self.send_json({"ok": False, "error": "Not found"}, 404)
             length = int(self.headers.get("Content-Length") or 0)
             # /api/admin có thể tải ảnh bìa (base64) -> cho phép lớn hơn nhiều
@@ -3185,6 +3617,14 @@ class Handler(BaseHTTPRequestHandler):
             if not 0 < length <= limit:
                 return self.send_json({"ok": False, "error": "Invalid content"}, 400)
             data = json.loads(self.rfile.read(length).decode("utf-8"))
+            if path == "/api/diag":             # số đo từ trình duyệt (DIAG_JS)
+                if isinstance(data, dict):
+                    user = self.current_user()
+                    data["rt"] = int(time.time() * 1000)
+                    data["uk"] = user_key(user) if user else ""
+                    data["d"] = ua_device(self.headers.get("User-Agent"))
+                    diag_write("client", data)
+                return self.send_json({"ok": True})
             if path == "/api/login":
                 user, err = get_or_create_user(data.get("name"))
                 if err:
@@ -3268,6 +3708,13 @@ class Handler(BaseHTTPRequestHandler):
         self.do_GET()
 
     def do_GET(self):
+        self._dg_begin()
+        try:
+            self._do_get()
+        finally:
+            self._dg_end()
+
+    def _do_get(self):
         try:
             self.route()
         except (ConnectionAbortedError, BrokenPipeError):
@@ -3282,8 +3729,34 @@ class Handler(BaseHTTPRequestHandler):
     def route(self):
         path = urlsplit(self.path).path
         segs = [unquote(p) for p in path.split("/") if p]
+        t_lib = time.perf_counter()
         lib = get_library()
+        self._dg_lib = (time.perf_counter() - t_lib) * 1000
         user = self.current_user()
+
+        # Báo cáo bộ đo: token (diag/token.txt, bot /diag gửi link) hoặc tài khoản admin.
+        if len(segs) == 3 and segs[:2] == ["api", "diag"] and diag_report:
+            qs = parse_qs(urlsplit(self.path).query)
+            tok = (qs.get("k") or [""])[0]
+            if not (diag_report.check_token(META_DIR, tok) or is_admin(user)):
+                return self.send_json({"error": "forbidden"}, 403)
+            if segs[2] == "report":
+                try:
+                    hours = max(0.1, min(24 * 30, float((qs.get("h") or ["48"])[0])))
+                except ValueError:
+                    hours = 48.0
+                return self.send_text(diag_report.build_report(META_DIR, hours))
+            if segs[2] == "raw":
+                f = (qs.get("f") or ["client"])[0]
+                try:
+                    n = max(1, min(200000, int((qs.get("n") or ["3000"])[0])))
+                except ValueError:
+                    n = 3000
+                if f not in diag_report.FILES:
+                    return self.send_notfound()
+                return self.send_text(diag_report.tail(META_DIR, f, n),
+                                      "application/x-ndjson; charset=utf-8")
+            return self.send_notfound()
 
         if not segs:
             return self.send_page(html_home(lib, user))
