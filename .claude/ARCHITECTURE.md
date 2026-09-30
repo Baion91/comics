@@ -29,6 +29,12 @@ cách chạy thật + decode thử ảnh.
     Trước đó 429-challenge bị coi là rate-limit: ngủ 90s→5'→15' rồi `gate.abort` → trong
     `check_updates` làm hỏng MỌI truyện sau trong lượt dò. Challenge chờ bao lâu cũng không qua
     (cần JS/người) nên dừng ngay là đúng; site không bị challenge thì hành vi y cũ.
+    **Bìa là PHỤ (01/10/2026)**: `run()` bọc `cover_url` + `download_cover` trong try — `Blocked`/
+    `TooMany429` ở bước bìa chỉ in cảnh báo rồi tải chương tiếp (còn thiếu `cover.*` thì lần sau tự thử
+    lại; reader tạm lấy trang đầu làm bìa). Trước đó bìa gọi NGOÀI khối try chính → 403 bung traceback,
+    exit 1 trước khi tải chương nào (sự cố qqcomvn 30/09: bìa `/media/book/` nằm trên host site sau
+    Cloudflare, thang leo Chromium chỉ lo HTML). 429/503 cạn ngân sách đã bật `gate.abort` → chương đầu
+    tiên dừng phiên sạch (exit 2) như mọi lần.
   - **Kiểm tra chất lượng ảnh** (24/07): lõi ở `comics_core`, 2 đầu gọi vào —
     (1) *inline khi tải*: `download_image` kiểm tầng 1 (độ dài truyền tải) + tầng 2
     (chữ ký + giải mã) TRƯỚC khi ghi → ảnh hỏng không để lại file, resume tự tải bù;
@@ -80,7 +86,8 @@ cách chạy thật + decode thử ảnh.
     người dùng dán → `chapter-0`): dropdown `<option value="/{slug}/chapter-N">` có ĐỦ danh sách
     (regex chấp nhận value/href, URL tương đối lẫn tuyệt đối), `og:title` → bỏ đuôi ` - Chapter N`
     neo cuối (giữ tên có `:`), JSON `recently_viewed` `"image"` → bìa `/media/book/<file>` (nhỏ
-    ~190×247, nguồn duy nhất không bị challenge). Ảnh: `<img>` trong khối `.reading-content` (tới
+    ~190×247; 28/09 chưa bị challenge, **30/09 đã bị 403** khi site chặn HTTP → bước bìa của core bỏ
+    qua, không dừng phiên). Ảnh: `<img>` trong khối `.reading-content` (tới
     `reading-option` dưới), đọc `data-src`; mất khối → dự phòng URL tuyệt đối có `/chapter-N/`
     (loại ảnh quảng cáo `/media/images/` src tương đối); khối có mà rỗng = chương rỗng ở nguồn (bỏ
     qua, không dừng); `LAYOUT_FAIL_LIMIT=3` chương LIỀN không nhận ra cấu trúc → `Blocked` "site đổi

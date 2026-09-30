@@ -498,7 +498,6 @@
 - **[moetruyen — deploy & nghiệm thu server]** commit/push → `/update` → `/tai https://moetruyen.net/manga/1200-dragon-quest-emblem-of-roto 1`
   (hoặc bộ user muốn): cửa sổ Chromium `moe-profile` hiện trên server, 72/72, không stall; reader hiển thị
   `Chapter 1 - …` đúng; `/watch` bộ đó → auto-check báo `ok`. Khi gặp bộ có chương lẻ: kiểm dạng URL `/chapters/N.5`.
-- **[qqcomvn bìa 403]** đã tách task riêng (chip "Fix qqcomvn crash on cover 403 under Cloudflare").
 - **[Bộ đo + sửa đơ — deploy & đo]** commit/push → `/update` → restart supervisor → `/diag clear` → kịch bản thử (xem mục Đang làm) → `/diag` → gửi link. Đọc báo cáo để CHỐT: (R1) SW khởi động trên iOS có chiếm phần lớn thời gian trắng không (`workerStart`→`fetchStart`, SW `age`<2s) vs `responseStart`/server `ms`; (R4) `/api/state` dung lượng + chênh login/khách; "đứng luồng" lúc list chương hiện dở; `chsort` còn sống sau xoá dữ liệu (phần bộ nhớ nào sót). Ứng viên sửa tiếp tuỳ số liệu: HTML network-first timeout ~1.5–2s (+ Navigation Preload nếu iOS hỗ trợ) thay SWR; LRU `PAGE_CACHE`/`IMG_CACHE`; `/api/state` home bỏ `read`; `_library_signature()` hết chạy mỗi request (xem `lib` trong báo cáo server).
 - **[Nút reading tươi — nghiệm thu LIVE]** `/update` qua bot (chỉ `reader_server.py`). Kịch bản đúng bug gốc:
   đăng nhập trên điện thoại, đọc dở chương N, **Next sang N+1**, đọc dở rồi TẮT hẳn app/tab → mở lại link →
@@ -571,10 +570,10 @@
 - (Tùy chọn, gốc rễ) **Named tunnel + domain** để URL cố định — nếu mua domain rẻ.
 
 ## Lưu ý / rủi ro đang mở
-- **qqcomvn CRASH khi Cloudflare chặn HTTP (có sẵn từ 28/09, lộ ra 30/09)**: bìa `truyenqq.com.vn/media/book/…`
-  nay cũng bị challenge → `download_image` 403 → `Forbidden`; `download_cover` nằm NGOÀI `try` của `core.run` →
-  traceback, exit 1 trước khi tải chương nào (thang leo Chromium chỉ lo HTML, không lo bìa). Đặt sẵn `cover.*`
-  trong folder thì chạy được. Chưa sửa (task riêng).
+- **qqcomvn khi Cloudflare chặn HTTP: ĐÃ SỬA 01/10 (chưa push)** — bìa `/media/book/…` bị 403 → trước đây
+  traceback exit 1 trước mọi chương; nay core coi bìa là phụ (cảnh báo, tải chương tiếp). Test dev: thư mục
+  trống, `--fetch auto` → tự leo Chromium, bỏ bìa, ch3 53/53, rc 0; Zet vẫn tải bìa. Folder qqcomvn tải lúc site
+  chặn sẽ THIẾU `cover.*` (reader dùng trang đầu) — lượt tải sau khi site mở tự bù bìa.
 - **moetruyen phụ thuộc giao diện site**: đổi selector/cơ chế IMGX hoặc bật `capture-guard` → 5 trang liền hụt
   = `Blocked` dừng sạch (không lưu rác) + HTML mẫu `.reader-meta/moe-debug/`. Chụp chậm (~1.2s/trang) và cần
   phiên desktop như comix. `check_library` báo nhầm "tráo ô" trang gần trắng — đừng `--repair-scramble`.

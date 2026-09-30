@@ -969,9 +969,18 @@ def run(provider, args):
     out_root.mkdir(parents=True, exist_ok=True)
     # Merge: KHÔNG tải/đè bìa (folder cũ đã có bìa, có thể do người dùng tự đặt).
     if not merge:
-        cover = provider.cover_url(slug)
-        if cover:
-            download_cover(cover, out_root)
+        # Bìa là PHỤ: bị chặn thì bỏ qua, KHÔNG dừng cả bộ (sự cố 30/09: bìa qqcomvn nằm trên
+        # host site sau Cloudflare -> 403 -> Forbidden bung traceback trước khi tải chương nào;
+        # thang leo Chromium chỉ lo HTML). Còn thiếu cover.* thì lần chạy sau tự thử lại; reader
+        # tạm lấy trang đầu làm bìa. 429/503 cạn ngân sách đã bật gate.abort -> chương đầu tiên
+        # sẽ dừng phiên sạch (exit 2) ở khối try bên dưới như mọi lần.
+        try:
+            cover = provider.cover_url(slug)
+            if cover:
+                download_cover(cover, out_root)
+        except (Blocked, TooMany429) as e:
+            print(f"  ! Bỏ qua ảnh bìa ({e}) — vẫn tải chương; lần sau tự thử lại.",
+                  file=sys.stderr, flush=True)
     print(f"Sẽ tải {len(chapters)} chương vào: {out_root.resolve()}\n")
 
     total = len(chapters)
