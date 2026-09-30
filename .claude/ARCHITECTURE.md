@@ -18,6 +18,12 @@ cách chạy thật + decode thử ảnh.
     cứu được của ảnh cụt], `_DecodeGate` [khóa đọc-ghi cho cờ toàn cục LOAD_TRUNCATED_IMAGES],
     sổ sự cố `load_issues`/`record_issue`/`is_known_broken`, `bad_marker`/`clear_bad`,
     `append_log`). Thêm site KHÔNG đụng file này.
+    **Móc `render_pages` (30/09/2026, cho moetruyen)**: provider CÓ `render_pages(chapter, jobs)`
+    thì `run()` gọi nó (generator, main thread, tuần tự) THAY pool HTTP `download_image` cho các
+    trang còn thiếu; yield 1 bool/job. Hợp đồng: provider CHỈ ghi file khi ảnh đạt kiểm tra →
+    tầng 3 (đếm thiếu/`.done`/tổng kết) giữ nguyên, trang hụt lượt sau tự bù. `chapter_images`
+    vẫn phải trả đủ N "URL" (có thể giả, đuôi quyết định đuôi file) để core tính trang thiếu.
+    Provider không có móc → đường cũ y nguyên (đã hồi quy ZetTruyen + qqcomvn).
     **`Challenged(Blocked)` (28/09/2026)**: `_request` thấy header `cf-mitigated: challenge`
     (Cloudflare đòi xác minh — thường kèm 429/403) → ném NGAY, **không kéo cầu dao 429**.
     Trước đó 429-challenge bị coi là rate-limit: ngủ 90s→5'→15' rồi `gate.abort` → trong
@@ -87,8 +93,44 @@ cách chạy thật + decode thử ảnh.
     lớn ảnh GIỐNG HỆT họ ko (vn ch2↔ko 1, vn 408↔ko 393: cùng MP/byte), có chương nét hơn (vn ch1
     1000 vs 900px) và có chương KÉM hơn (vn ch3 800 vs 900px, 0.85× điểm ảnh) — KHÔNG phải "bản
     xịn" đồng loạt.
+    **MoeTruyenProvider** (`name="moetruyen"`, `moetruyen.net`, 30/09/2026) — ảnh bảo vệ IMGX: KHÔNG có
+    URL ảnh (bytes qua `page-access` + worker, vẽ lên lớp canvas chặn `toDataURL`…; trang chương gửi
+    header `X-AI-Policy: no-reverse-engineering`) → **CHỤP trang đã hiển thị** trong Chromium thật qua
+    móc `render_pages`; chỉ quan sát DOM + chụp phần tử, KHÔNG đụng worker/page-access (cùng tinh thần
+    "quan sát, không reverse" của comix). Tách 2 đường: **metadata HTTP** (Cloudflare hiện không
+    challenge GET; bị challenge → thang leo `_fetch` chép khuôn qqcomvn, `allow_browser`/`fetch_mode`
+    y hệt) — trang truyện `/manga/{id-slug}` chỉ có ~30 chương mới nhất → lấy 1 link chương làm MỐC
+    (ưu tiên link người dùng dán), dropdown trang chương `data-href=".../chapters/N"` + "Ch. N — Tên"
+    có ĐỦ bộ (gộp thêm list trang truyện); tên `data-reading-manga-title`; bìa og:image bản `-md` (bản
+    lớn `-lg` 403 → `download_image` ném Forbidden = dừng phiên, nên KHÔNG đoán URL); số trang
+    `data-reader-total-pages` → `chapter_images` trả URL GIẢ `moe://page/N.webp` (core đặt tên
+    `NNN.webp`, chương đủ ảnh → `.done` KHÔNG mở trình duyệt; check_updates dò bằng HTTP → `ok`).
+    **Chụp** (`render_pages`, profile `moe-profile`, `extra_hosts` = `truyen.moe`/`ibyteimg.com`/
+    `tiktokcdn.com`/`cdn.jsdelivr.net` [bytes ảnh do JS site fetch từ `*.ibyteimg.com` — thiếu là không
+    vẽ], `block_types=()`): mở chương 1 lần (`goto`) + CSS bỏ viền khung (0.67px) + ẩn `.reader-dock`;
+    mỗi trang: card `.page-card:not(.reader-chapter-bridge)` thứ i (loại khung "Chương kế tiếp" nằm
+    SAU trang cuối — bug của tool gốc user) → chờ `.page-protected-shell.is-loaded` + img
+    `data-imgx-rendered="1"` (≤25s) → đọc cỡ thật W×H từ `data-imgx-width/height` **SAU khi vẽ** (HTML
+    HTTP ghi SAI: 960x1440 vs thật 1116x1584) → nới `.reader-pages` = W px (+viewport W+200; ép từng
+    `.page-frame` KHÔNG ăn) → ẩn mọi fixed/sticky ngoài khối trang → chụp shell → `_encode`: cỡ lệch
+    ≤2px (cắt về W×H — chụp hay dư 1px cao), không `uniform_frame`, WebP **q90** (user chốt 30/09;
+    PNG ~1.3MB → ~260KB, lệch TB 0.54/255; là lần mã hoá ĐẦU, không phải nén lại) giải mã được → ghi
+    `.tmp` rồi `os.replace`. Trùng hệt trang trước → thử lại 1 lần rồi vẫn lưu + cảnh báo. Hụt 2 lần →
+    để trống (lượt sau bù); **5 trang LIỀN hụt → `Blocked`** (site đổi/bật capture-guard/cần đăng
+    nhập-18+). Số card trình duyệt ≠ HTML hoặc không mở được chương → bỏ chương; 3 chương liền →
+    `Blocked`. Chromium chết giữa chương → `goto` lại (tự dựng lại). **Đo thực (30/09, Dragon Quest
+    Emblem Of Roto ch.1)**: nới khung SAU khi vẽ = y hệt nới trước (lệch 0/255); chụp ở bố cục mặc định
+    (~955px) mất nét thấy rõ (lưới chấm bệt, lệch 6/255) → bắt buộc nới; 72/72 trang đúng cỡ gốc (1116×
+    1584 ×70, 1200×626, 1224×868), 94s cả chương (~1.2s/trang), 17MB; chụp lại 1 trang ra y hệt byte
+    điểm ảnh (ổn định); chạy lại `.done` 1s không mở Chromium; xoá 3 trang → chỉ chụp bù 3 (12s).
+    Số chương = số thật (`data-chapter-number`) → KHÔNG hậu tố, ghép `into:` được. `check_library` báo
+    NHẦM "trang tráo ô" trên trang gần trắng (bộ dò comix) — bỏ qua.
   - `cf_browser.py` — **tầng TRÌNH DUYỆT THẬT dùng chung cho site sau Cloudflare** (28/09/2026;
-    hiện chỉ qqcomvn). `CFBrowser(profile, host, label)`: `open()`/`get_html(url)`/`close()`.
+    dùng bởi qqcomvn [lấy HTML] + moetruyen [chụp trang]). `CFBrowser(profile, host, label,
+    extra_hosts=(), block_types=ảnh/media/font)`: `open()`/`get_html(url)`/`goto(url)`/`close()`.
+    30/09: `get_html` + `goto` chung 1 đường `_load(url, want_html)` (goto để trang mở trên `self.page`
+    cho provider thao tác DOM, trả True/False-404); `extra_hosts` = host ngoài site được tải (khớp cả
+    subdomain), `block_types` = loại bị chặn trên host site — mặc định giữ nguyên hành vi cũ của qqcomvn.
     CHÉP (không refactor) công thức comix đã chạy thật trên server: Chromium trong
     `.reader-meta/pw-browsers` + playwright 1.55 (chung bản cài → comix "tập dượt" tầng này mỗi
     ngày), HEADFUL + `--disable-blink-features=AutomationControlled` + bỏ `--enable-automation`,

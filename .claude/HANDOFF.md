@@ -1,9 +1,27 @@
-# Handoff — cập nhật lần cuối: 2026-09-28 tối (reader: BỘ ĐO `/diag` + sửa "bấm đọc đơ" [prefetch khi chạm-cuộn, render trùng, dims lưu đĩa, thanh tiến trình] — ĐÃ code + test dev, ĐÃ commit/push 30/09, CHỜ `/update` + RESTART supervisor. Trước đó 28/09: provider `qqcomvn`)
+# Handoff — cập nhật lần cuối: 2026-09-30 23:36 (provider MỚI `moetruyen` — chụp trang qua Chromium, ĐÃ code + test dev, CHƯA commit/push. Trước đó 28/09: reader BỘ ĐO `/diag` + sửa "bấm đọc đơ" [đã push 30/09, chờ `/update` + restart]; provider `qqcomvn`)
 
 > Kiến trúc ổn định (reader, provider, comix, supervisor, mạng…) nằm ở `.claude/ARCHITECTURE.md`.
 > File này chỉ ghi TRẠNG THÁI hiện tại + việc đang dở.
 
 ## Đang làm / dở dang
+- **[30/09] Provider MỚI `moetruyen` (moetruyen.net) — ĐÃ code + test dev, CHƯA commit/push, CHƯA nghiệm thu
+  server** (`providers.py` [MoeTruyenProvider], `comics_core.py` [móc `render_pages`], `cf_browser.py`
+  [`extra_hosts`/`block_types`/`goto`], `comic_downloader.py` [help `--fetch`], `.gitignore` [`*.zip`], README,
+  ARCHITECTURE). Nguồn: bản tool của user `moetruyen_downloader_v1.1.zip` (gốc repo, nay bị `.gitignore` chặn) —
+  KHÔNG dùng nguyên: có bug lưu khung "Chương kế tiếp" thành trang thừa, selector chờ `:nth-child` không bao giờ
+  khớp từ trang 2 (chờ 5s/trang rồi chụp bừa), chụp cỡ CSS ~955px (mất nét), PNG, headless.
+  *Cách làm*: metadata HTTP (dropdown trang chương mốc = đủ bộ; số trang `data-reader-total-pages`), ẢNH = chụp
+  `.page-protected-shell` sau khi nới `.reader-pages` = cỡ gốc đọc SAU khi vẽ; WebP q90. Chi tiết + số đo:
+  ARCHITECTURE mục MoeTruyenProvider + móc `render_pages`.
+  **Đã test (dev, `--out` thư mục tạm, 30/09)**: metadata HTTP 92 chương có tên, bìa `-md`; E2E `--chapters 1` →
+  bìa + 72/72 trang đúng cỡ gốc (70×1116×1584, 1200×626, 1224×868), `.done`, 17MB, 94s, rc 0; chạy lại → bỏ qua
+  1s không mở Chromium; xoá `.done` + 3 trang → chỉ chụp bù 3 (12s), trang chụp lại lệch 0/255 so bản cũ;
+  `check_one` → `ok` 92/thiếu 2-92, không nạp Playwright; `check_library` 0 hỏng/0 khuyết/0 một-màu (+1 báo nhầm
+  "tráo ô" trang 72 gần trắng); hồi quy ZetTruyen ch0 26/26 (nhánh HTTP) + qqcomvn `--fetch browser` ch3 53/53
+  (sau khi đặt bìa giả — xem lỗi bìa 403 ở Lưu ý); 0 Chromium `qqvn|moe-profile` sót. **CHƯA test**: server (HDD,
+  phiên desktop), chương lẻ (chưa gặp bộ có chương .5), truyện 18+/cần đăng nhập, site bị Cloudflare challenge.
+  **Deploy**: commit/push (day-len.bat) → `/update` là ĐỦ (không đụng `supervisor.py`; `moe-profile` đã khớp
+  `TOOL_CHROME_RE`) → `/tai <link moetruyen> 1` thử 1 chương trên server.
 - **[28/09] Reader: BỘ ĐO (diag) + sửa "bấm đọc đơ >5s" — ĐÃ code + test dev (Chromium localhost:8099), ĐÃ commit/push 30/09 (28→30/09 code nằm quên trên máy dev, /update khi đó chỉ kéo được qqcomvn), CHƯA nghiệm thu iPhone** (`reader_server.py`, `diag_report.py` [mới], `supervisor.py`).
   *Bối cảnh (21–28/09, user đo tay trên iPhone)*: web app trắng 3–5s khi mở (login lâu hơn khách, tăng dần theo lượng đọc); laptop cùng link nhanh; xoá Website Data + gỡ/cài lại web app → mở <1s, đọc 40 chương → 1–2s (Cài đặt Safari báo 21.7MB → 1.3MB, không tăng theo ảnh — số này KHÔNG đáng tin cho bộ nhớ riêng web app). Sau khi xoá: lần ĐẦU mở Yu-Gi-Oh (mỗi "Tap" = tập ~60 trang, chưa từng đọc) → list chương hiện dở + bấm đọc đơ >5s, về Home 1–2 lần mới vào được.
   *Chẩn đoán "đơ" (chắc chắn cao, khớp mọi chi tiết)*: render chương nguội = stat + mở PIL TỪNG ảnh (dims chỉ trong RAM, mất mỗi lần restart) → tập 60 trang trên HDD nguội vài giây; **prefetch bắn ở `pointerdown` kể cả khi chạm-để-CUỘN** → vuốt list = prefetch mọi tập dưới ngón tay, hàng đợi SW không giới hạn, vẫn chạy sau khi rời trang; bấm thật trúng chương đang prefetch → SW gửi request thứ 2 = render trùng tranh đĩa; web app standalone không có thanh tải → trông như đơ. Về Home rồi vào lại = prefetch đã xong, trúng cache.
@@ -327,6 +345,11 @@
 - **[10/08] Tool LÀM NÉT Real-ESRGAN — ĐÃ push. Tích hợp tự động vào `/tai` CHƯA làm.**
 
 ## Quyết định gần đây (mới nhất trước)
+- **30/09: moetruyen = provider thường + móc `render_pages` trong core (không custom_run, không reverse IMGX)** —
+  site không có URL ảnh; chụp trang hiển thị giữ được toàn bộ vòng tải chung (.done/bù trang/tổng kết/into:/
+  check_updates). KHÔNG đào worker/page-access vì site gửi `X-AI-Policy: no-reverse-engineering`. Lưu WebP **q90**
+  (user chốt; chỉ nặng hơn q85 ~4%). Ghi chú: comix VẪN re-nén q85 lúc tải (`--comix-q` mặc định 85) — user tưởng
+  đã bỏ, đã đối chiếu code: chưa bỏ.
 - **28/09: Đo trước khi sửa phần "trắng khi mở app"; chỉ sửa ngay phần "bấm đọc đơ" (đã đủ chắc)** — user chốt làm cả hai: bộ đo 3 nguồn (iPhone/SW/server) dồn về 1 chỗ trên server + bot `/diag` gửi link để Claude tự đọc. Giả thuyết cũ "IMG_CACHE phình → iOS evict" đã BỊ BÁC bởi số đo (21.7MB, không tăng theo ảnh); giả thuyết "origin quick-tunnel đổi" không phải nguyên nhân khi dùng bình thường (link mới vẫn trắng). User KHÔNG muốn dùng domain (giữ quick-tunnel).
 - **28/09: Chạm (touch) KHÔNG prefetch** — `pointerdown` bắn trước khi trình duyệt biết là cuộn; prefetch theo ý định chỉ hợp với chuột. Cú bấm thật tự điều hướng, SW gộp nếu có lượt đang chạy.
 - **25/09: Bỏ task onlogon `ToonyServer`, watchdog là nơi DUY NHẤT bật supervisor** — `schtasks /create` gắn sẵn giới
@@ -472,6 +495,10 @@
   09-10/08 về comix loop/relaunch đã ghi đầy đủ ở ARCHITECTURE.)
 
 ## Việc tiếp theo
+- **[moetruyen — deploy & nghiệm thu server]** commit/push → `/update` → `/tai https://moetruyen.net/manga/1200-dragon-quest-emblem-of-roto 1`
+  (hoặc bộ user muốn): cửa sổ Chromium `moe-profile` hiện trên server, 72/72, không stall; reader hiển thị
+  `Chapter 1 - …` đúng; `/watch` bộ đó → auto-check báo `ok`. Khi gặp bộ có chương lẻ: kiểm dạng URL `/chapters/N.5`.
+- **[qqcomvn bìa 403]** đã tách task riêng (chip "Fix qqcomvn crash on cover 403 under Cloudflare").
 - **[Bộ đo + sửa đơ — deploy & đo]** commit/push → `/update` → restart supervisor → `/diag clear` → kịch bản thử (xem mục Đang làm) → `/diag` → gửi link. Đọc báo cáo để CHỐT: (R1) SW khởi động trên iOS có chiếm phần lớn thời gian trắng không (`workerStart`→`fetchStart`, SW `age`<2s) vs `responseStart`/server `ms`; (R4) `/api/state` dung lượng + chênh login/khách; "đứng luồng" lúc list chương hiện dở; `chsort` còn sống sau xoá dữ liệu (phần bộ nhớ nào sót). Ứng viên sửa tiếp tuỳ số liệu: HTML network-first timeout ~1.5–2s (+ Navigation Preload nếu iOS hỗ trợ) thay SWR; LRU `PAGE_CACHE`/`IMG_CACHE`; `/api/state` home bỏ `read`; `_library_signature()` hết chạy mỗi request (xem `lib` trong báo cáo server).
 - **[Nút reading tươi — nghiệm thu LIVE]** `/update` qua bot (chỉ `reader_server.py`). Kịch bản đúng bug gốc:
   đăng nhập trên điện thoại, đọc dở chương N, **Next sang N+1**, đọc dở rồi TẮT hẳn app/tab → mở lại link →
@@ -544,6 +571,13 @@
 - (Tùy chọn, gốc rễ) **Named tunnel + domain** để URL cố định — nếu mua domain rẻ.
 
 ## Lưu ý / rủi ro đang mở
+- **qqcomvn CRASH khi Cloudflare chặn HTTP (có sẵn từ 28/09, lộ ra 30/09)**: bìa `truyenqq.com.vn/media/book/…`
+  nay cũng bị challenge → `download_image` 403 → `Forbidden`; `download_cover` nằm NGOÀI `try` của `core.run` →
+  traceback, exit 1 trước khi tải chương nào (thang leo Chromium chỉ lo HTML, không lo bìa). Đặt sẵn `cover.*`
+  trong folder thì chạy được. Chưa sửa (task riêng).
+- **moetruyen phụ thuộc giao diện site**: đổi selector/cơ chế IMGX hoặc bật `capture-guard` → 5 trang liền hụt
+  = `Blocked` dừng sạch (không lưu rác) + HTML mẫu `.reader-meta/moe-debug/`. Chụp chậm (~1.2s/trang) và cần
+  phiên desktop như comix. `check_library` báo nhầm "tráo ô" trang gần trắng — đừng `--repair-scramble`.
 - **Bộ đo ghi 1 dòng cho MỌI request** (kể cả từng ảnh) + 1 beacon/trang — nhẹ nhưng không miễn phí; xong đợt đo thì `/diag off` (file cờ, reader kiểm ≤10s/lần). `dims-cache.json` giữ cả mục của file đã xoá (trần 400k → xoá sạch, đo lại dần). Đổi logic SW → `SW_VERSION` tự đổi → lần mở đầu sau deploy `PAGE_CACHE` bị dọn (trắng 1 lần là bình thường).
 - **Comix re-nén q85 là transcode LOSSY→LOSSY — nhưng chốt-tiết-kiệm 10% đã chặn nén-chồng**: cả
   `_recompress_webp` (inline lúc tải, chỉ ảnh mới trong `jobs`) lẫn `convert_webp.py` (tree/in-place) nay

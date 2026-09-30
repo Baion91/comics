@@ -4,6 +4,8 @@ __pycache__/
 *.pyc
 .venv/
 download-queue.txt
+# file nén thả vào repo (tool/tài liệu tham khảo) — day-len.bat chạy `git add -A` lên repo Public
+*.zip
 
 # Cấu hình Claude Code riêng theo máy
 .claude/settings.local.json

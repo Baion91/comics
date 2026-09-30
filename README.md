@@ -25,7 +25,8 @@ Các script trong thư mục này, mỗi cái một việc:
 ## 1. Tải truyện — `comic_downloader.py` (hoặc bấm `Tai truyen.bat`)
 
 Một tool cho MỌI site, tự nhận site theo link (hiện hỗ trợ **Asura**, **Raven**, **Dilib**,
-**MangaDex**, **TruyenQQ**, **TruyenQQ.com.vn**, **Comix**, **ACGN**, **NetTruyen**, **ZetTruyen**).
+**MangaDex**, **TruyenQQ**, **TruyenQQ.com.vn**, **Comix**, **ACGN**, **NetTruyen**, **ZetTruyen**,
+**MoeTruyen**).
 
 > **Raven Scans đã đổi `ravenscans.org` → `ravenscans.net`** (và đổi cấu trúc URL chương) —
 > dùng link `.net` mới; link `.org` cũ vẫn được nhận.
@@ -56,6 +57,21 @@ Một tool cho MỌI site, tự nhận site theo link (hiện hỗ trợ **Asura
 > - Chất lượng ảnh: phần lớn **giống hệt** TruyenQQ (truyenqqko), có chương nét hơn, có chương kém
 >   hơn — không phải "bản xịn" đồng loạt.
 > - Chạy tay: `--fetch browser` ép dùng Chromium ngay; `--fetch http` chỉ HTTP (bị chặn thì dừng).
+
+> **MoeTruyen** (moetruyen.net — Mòe Truyện, truyện tiếng Việt, tên provider `moetruyen`): dán link
+> trang truyện `https://moetruyen.net/manga/{id-slug}` (link 1 chương `/chapters/N` cũng được). Cần biết:
+> - Site **chống tải ảnh** (không có link ảnh), nên tool **mở Chromium thật và chụp từng trang** đúng
+>   như trình duyệt hiển thị — cửa sổ trình duyệt hiện trên máy (server) trong lúc tải, **đừng đóng**.
+>   Danh sách chương / tên / bìa vẫn lấy thẳng bằng HTTP, nên chương đã đủ ảnh thì bỏ qua ngay mà
+>   không mở trình duyệt, và auto-check chương mới chạy bình thường.
+> - Ảnh chụp **đúng kích thước gốc** của trang, lưu **WebP q90** (~250 KB/trang, ~17 MB/chương 72
+>   trang). Chậm hơn site thường: ~1,2 giây/trang (~1,5 phút/chương).
+> - Trang chụp hụt (chưa hiện, khung trống…) KHÔNG được lưu → chạy lại tự chụp bù đúng trang đó.
+>   Hụt **5 trang liền** thì tool dừng hẳn và báo lý do (nghi site đổi giao diện, bật chống chụp, hoặc
+>   truyện cần đăng nhập/xác nhận 18+).
+> - Tên chương có sẵn trên site nên folder dạng `Chapter 12 - Tên chương`.
+> - `check_library` có thể báo nhầm "trang tráo ô" ở trang gần trắng (bộ dò đó dành cho comix) —
+>   bỏ qua, KHÔNG chạy `--repair-scramble` cho truyện MoeTruyen.
 
 > **ZetTruyen** (zettruyen1.com — truyện tiếng Việt): dán link trang truyện
 > `https://www.zettruyen1.com/truyen-tranh/{slug}` (dán link 1 chương cũng được). Site HTML tĩnh

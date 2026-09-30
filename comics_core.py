@@ -1055,19 +1055,32 @@ def run(provider, args):
             done = have
             print(f"\r{prefix} — {done}/{len(urls)} ảnh, đang tải...   ",
                   end="", flush=True)
-            with ThreadPoolExecutor(max_workers=args.workers) as pool:
-                futures = [pool.submit(download_image, u, d) for u, d in jobs]
-                try:
-                    for f in as_completed(futures):
-                        if f.result():
-                            ok += 1
-                        done += 1
-                        print(f"\r{prefix} — {done}/{len(urls)} ảnh, đang tải...   ",
-                              end="", flush=True)
-                except (Blocked, TooMany429):
-                    gate.abort = True  # cho các luồng đang chờ thoát nhanh
-                    pool.shutdown(cancel_futures=True)
-                    raise
+            render = getattr(provider, "render_pages", None)
+            if render is not None:
+                # Site KHÔNG có URL ảnh tải thẳng (moetruyen: ảnh chỉ hiện trong trình duyệt)
+                # -> provider tự dựng từng trang còn thiếu vào đúng đích, TUẦN TỰ ở main thread
+                # (Playwright sync API cấm gọi chéo luồng). Hợp đồng: generator yield 1 bool /
+                # job; CHỈ ghi file khi ảnh đạt kiểm tra -> trang hụt để trống, tầng 3 bên dưới
+                # đếm thiếu y như đường HTTP, lượt sau tự bù. Blocked bay ra = dừng phiên sạch.
+                for good in render(c, jobs):
+                    ok += bool(good)
+                    done += 1
+                    print(f"\r{prefix} — {done}/{len(urls)} ảnh, đang tải...   ",
+                          end="", flush=True)
+            else:
+                with ThreadPoolExecutor(max_workers=args.workers) as pool:
+                    futures = [pool.submit(download_image, u, d) for u, d in jobs]
+                    try:
+                        for f in as_completed(futures):
+                            if f.result():
+                                ok += 1
+                            done += 1
+                            print(f"\r{prefix} — {done}/{len(urls)} ảnh, đang tải...   ",
+                                  end="", flush=True)
+                    except (Blocked, TooMany429):
+                        gate.abort = True  # cho các luồng đang chờ thoát nhanh
+                        pool.shutdown(cancel_futures=True)
+                        raise
 
             # Tầng 3 — đủ trang: ảnh trượt tầng 1/2 KHÔNG được ghi -> đích khuyết.
             # Số kỳ vọng lấy từ provider (Asura API / Raven ts_reader). Tách 2 loại:

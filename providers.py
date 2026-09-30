@@ -12,19 +12,28 @@ Mỗi provider phải cung cấp đúng "hợp đồng" sau (engine chỉ cần 
     chapter_images(chapter)  -> [url, ...]   - URL ảnh đúng thứ tự trang ([] nếu khóa)
     cover_url(slug)          -> str | None   - URL ảnh bìa
 
+TÙY CHỌN (site ảnh KHÔNG có URL tải thẳng, vd moetruyen): render_pages(chapter, jobs) —
+generator; core.run gọi ở main thread thay cho pool HTTP, jobs = [(url, đích)] các trang
+còn thiếu; yield 1 bool mỗi job, CHỈ ghi file khi ảnh đạt kiểm tra.
+
 THÊM SITE MỚI: viết 1 class như dưới rồi thêm vào PROVIDERS. Không đụng comics_core.
 ĐỔI DOMAIN  : thêm domain mới vào `domains` (giữ cả domain cũ). Nếu đổi cả host
               API/CDN thì sửa hằng BASE/API trong đúng provider đó.
 """
 
+import hashlib
 import html as html_lib
+import io
 import json
 import os
+import random
 import re
 import sys
+import time
 from urllib.parse import urlparse
 
-from comics_core import META_DIR, Blocked, Challenged, Chapter, get_json, get_text
+from comics_core import (META_DIR, Blocked, Challenged, Chapter, check_image_bytes, clear_bad,
+                         get_json, get_text, uniform_frame)
 
 # File override domain/base/referer do người dùng thêm qua bot (KHÔNG cần sửa code +
 # push khi site xoay tên miền — vd TruyenQQ). Nằm trong .reader-meta/ (gitignore) nên
@@ -985,10 +994,402 @@ class TruyenQQVNProvider:
         return None
 
 
+class MoeTruyenProvider:
+    """moetruyen.net (Mòe Truyện) — truyện tiếng Việt. Ảnh trang bị bảo vệ IMGX: KHÔNG có
+    URL ảnh tải thẳng (bytes qua `page-access` + worker, vẽ lên lớp canvas chặn đọc ngược).
+    Nên tách 2 đường:
+
+      - METADATA bằng HTTP thường (Cloudflare hiện không challenge GET; bị challenge thì
+        THANG LEO sang Chromium như qqcomvn). Trang truyện `/manga/{slug}` chỉ liệt kê ~30
+        chương mới nhất -> lấy 1 link chương làm MỐC: dropdown trang chương (`data-href=
+        ".../chapters/N"` + "Ch. N — Tên") có ĐỦ cả bộ; gộp thêm list trang truyện cho chắc.
+        Tên: `data-reading-manga-title`. Bìa: og:image (bản -md; bản lớn có chỗ 403 ->
+        download_image ném Forbidden = dừng phiên, nên KHÔNG đoán URL). Số trang:
+        `data-reader-total-pages` -> chapter_images trả URL GIẢ `moe://page/N.webp` để core
+        đặt tên 001.webp… và biết trang nào thiếu MÀ KHÔNG mở trình duyệt (chương đủ -> .done
+        ngay; check_updates dò chương bằng HTTP).
+      - ẢNH = CHỤP trang đã hiển thị trong Chromium thật (cf_browser, profile `moe-profile`)
+        qua móc `render_pages` của core.run. Chỉ QUAN SÁT DOM + chụp phần tử, KHÔNG đụng
+        worker/page-access (site gửi header `X-AI-Policy: no-reverse-engineering`).
+
+    Đo thực 30/09/2026 (Dragon Quest Emblem Of Roto ch.1, 72 trang, ~1.2 s/trang):
+      - Cỡ trong HTML (`data-imgx-width/height`) SAI (960x1440); site ghi lại cỡ thật
+        (1116x1584) khi img có `data-imgx-rendered="1"` -> CHỈ đọc cỡ trong trình duyệt.
+      - Bố cục mặc định bóp khung ~955px -> chụp mất nét (lưới chấm bệt). Nới `.reader-pages`
+        = đúng cỡ gốc W (ép từng `.page-frame` KHÔNG ăn) -> ảnh chụp đúng W px; nới SAU khi đã
+        vẽ ra y hệt nới trước (lệch 0/255) -> đổi W theo từng trang là đủ.
+      - Khung có viền 0.67px -> border:0; ảnh chụp có lúc dư 1px cao -> cắt về W×H.
+      - Vẽ xong = `.page-protected-shell.is-loaded` + img `data-imgx-rendered="1"`.
+      - Lớp phủ cố định: `aside.reader-dock` (ẩn cả lớp fixed/sticky ngoài khối trang). Khung
+        "Chương kế tiếp" (`.reader-chapter-bridge`) nằm SAU trang cuối -> loại bằng selector.
+      - Bytes ảnh do JS site fetch từ `*.ibyteimg.com` -> phải mở host đó cho Chromium.
+    Lưu WebP q90 (PNG chụp ~1.3MB/trang; q90 ~260KB, lệch TB 0.54/255 — user chốt 30/09).
+    Là lần mã hoá ĐẦU (không có byte gốc để giữ), không phải nén lại."""
+
+    name = "moetruyen"
+    BASE = "https://moetruyen.net"
+    domains = ["moetruyen.net"]
+    referer = None               # đã kiểm: bìa u.truyen.moe KHÔNG đòi Referer
+    PROFILE = "moe-profile"      # profile Chromium riêng trong .reader-meta
+    LABEL = "MoeTruyen"
+    # Host ngoài site mà JS trang đọc gọi (đo 30/09): bytes ảnh ở *.ibyteimg.com, api/ảnh
+    # *.truyen.moe; tiktokcdn + jsdelivr có trong CSP của site. Google/fonts/analytics bị
+    # chặn vẫn hiển thị đủ.
+    EXTRA_HOSTS = ("truyen.moe", "ibyteimg.com", "tiktokcdn.com", "cdn.jsdelivr.net")
+    WEBP_Q = 90
+    READY_TIMEOUT = 25           # giây chờ 1 trang vẽ xong
+    PAGE_TRIES = 2               # số lần chụp 1 trang trước khi để lượt sau
+    FAIL_STREAK_LIMIT = 5        # số trang LIỀN hụt -> dừng phiên (site đổi / chặn chụp)
+    LAYOUT_FAIL_LIMIT = 3        # số chương LIỀN không đọc được cấu trúc -> dừng phiên
+    VIEW_MIN_W, VIEW_H, VIEW_MARGIN = 1280, 900, 200
+
+    _CARD = ".page-card:not(.reader-chapter-bridge)"
+    _CSS = (".page-protected-shell,.page-media{border:0!important}"
+            ".reader-dock{visibility:hidden!important}")
+    _READY_JS = """(i) => {
+      const c = document.querySelectorAll('%s')[i]; if (!c) return false;
+      const s = c.querySelector('.page-protected-shell'), im = c.querySelector('img[data-imgx-width]');
+      return !!(s && s.classList.contains('is-loaded') && im && im.dataset.imgxRendered === '1');
+    }""" % _CARD
+    _DIMS_JS = """(i) => {
+      const c = document.querySelectorAll('%s')[i];
+      const im = c.querySelector('img[data-imgx-width]'), s = c.querySelector('.page-protected-shell');
+      return [+im.dataset.imgxWidth || 0, +im.dataset.imgxHeight || 0,
+              s ? Math.round(s.getBoundingClientRect().width) : 0];
+    }""" % _CARD
+    _WIDTH_JS = """(w) => {
+      let s = document.getElementById('moe-dl-width');
+      if (!s) { s = document.createElement('style'); s.id = 'moe-dl-width'; document.head.appendChild(s); }
+      s.textContent = '.reader-pages{width:' + w + 'px!important;max-width:none!important}'
+                    + '.page-card,.page-frame{max-width:none!important}';
+    }"""
+    _HIDE_JS = """() => {
+      const keep = document.querySelector('.reader-pages');
+      for (const e of document.querySelectorAll('body *')) {
+        const p = getComputedStyle(e).position;
+        if ((p === 'fixed' || p === 'sticky') && !(keep && keep.contains(e)))
+          e.style.setProperty('visibility', 'hidden', 'important');
+      }
+    }"""
+    _TITLE_TXT = re.compile(r"^\s*Ch(?:apter|ương)?\.?\s*[0-9]+(?:\.[0-9]+)?\s*(?:[—–:-]\s*(.*))?$",
+                            re.I | re.S)
+
+    def __init__(self):
+        self.fetch_mode = "auto"    # auto | http | browser (--fetch) — chỉ cho METADATA
+        self.allow_browser = True   # check_updates tắt: dò chương không mở Chromium
+        self._escalated = False
+        self._browser = None
+        self._hint = {}             # slug -> URL chương người dùng dán (mốc ưu tiên)
+        self._series = {}           # slug -> HTML trang truyện
+        self._anchor = {}           # slug -> (url, html) trang chương mốc (cả khi hụt)
+        self._n_pages = {}          # chapter.ref -> số trang theo HTML
+        self._layout_fail = 0
+        self._render_fail = 0
+
+    # -- tải HTML: HTTP -> (challenge) -> Chromium (y khuôn qqcomvn) --------------------
+
+    def _fetch(self, url):
+        if self.fetch_mode != "browser" and not self._escalated:
+            try:
+                page = get_text(url)
+                if page is None or not re.search(
+                        r"<title>\s*(?:just a moment|attention required)", page[:4000], re.I):
+                    return page
+                raise Challenged(f"Cloudflare trả trang xác minh tại {url}")
+            except Challenged as e:
+                if self.fetch_mode == "http" or not self.allow_browser:
+                    raise
+                print(f"\n  ! {e}\n  -> Chuyển sang TRÌNH DUYỆT THẬT (Chromium) cho phần còn "
+                      "lại của phiên...", flush=True)
+                self._escalated = True
+        return self._get_browser().get_html(url)
+
+    def _get_browser(self):
+        if self._browser is None:
+            import cf_browser    # lười: Playwright chỉ nạp khi cần chụp trang / bị chặn
+            host = urlparse(self.BASE).hostname or "moetruyen.net"
+            b = cf_browser.CFBrowser(self.PROFILE, host, self.LABEL,
+                                     extra_hosts=self.EXTRA_HOSTS, block_types=())
+            b.open()
+            self._browser = b
+        return self._browser
+
+    def close(self):
+        """comic_downloader gọi trong finally -> không để Chromium mồ côi ôm profile."""
+        if self._browser is not None:
+            self._browser.close()
+            self._browser = None
+
+    def _debug_dump(self, name, page):
+        try:
+            d = META_DIR / "moe-debug"
+            d.mkdir(parents=True, exist_ok=True)
+            p = d / f"{name}.html"
+            p.write_text(page or "", encoding="utf-8")
+            return p
+        except OSError:
+            return None
+
+    # -- metadata -------------------------------------------------------------------
+
+    def _series_page(self, slug):
+        if slug not in self._series:
+            self._series[slug] = self._fetch(f"{self.BASE}/manga/{slug}") or ""
+        return self._series[slug]
+
+    def _chapter_links(self, slug, page):
+        """[(số, đoạn URL, tên)] từ dropdown trang chương (có tên) + mọi link chương (dự
+        phòng, không tên). Đoạn URL giữ nguyên để dựng ref; số lẻ nhận cả '.'/'-'."""
+        base = r'(?:https?://[^/"]+)?/manga/' + re.escape(slug) + r'/chapters/([^"/?#]+)"'
+        out = []
+        for seg, inner in re.findall(r'data-href="' + base + r'[^>]*>\s*<span[^>]*'
+                                     r'reader-dropdown-option-text[^>]*>(.*?)</span>', page or "", re.S):
+            txt = html_lib.unescape(re.sub(r"<[^>]+>", "", inner)).strip()
+            m = self._TITLE_TXT.match(txt)
+            out.append((seg, (m.group(1) or "").strip() if m else ""))
+        out += [(seg, "") for seg in re.findall(r'(?:href|data-href|value)="' + base, page or "")]
+        res = []
+        for seg, title in out:
+            if not re.fullmatch(r"[0-9]+(?:[.-][0-9]+)?", seg):
+                continue
+            res.append((float(seg.replace("-", ".")), seg, title))
+        return res
+
+    def _anchor_page(self, slug):
+        """(url, html) trang chương có dropdown đủ bộ; ('', '') nếu không lấy được. Thử link
+        người dùng dán trước, rồi 2 link chương đầu tiên thấy trên trang truyện."""
+        if slug in self._anchor:
+            return self._anchor[slug]
+        cands = [self._hint.get(slug)]
+        cands += [f"{self.BASE}/manga/{slug}/chapters/{seg}"
+                  for _, seg, _ in self._chapter_links(slug, self._series_page(slug))[:2]]
+        tried, got = [], ("", "")
+        for url in cands:
+            if not url or url in tried:
+                continue
+            tried.append(url)
+            page = self._fetch(url)
+            if page and "data-reader-option" in page and self._chapter_links(slug, page):
+                got = (url, page)
+                break
+            if page:
+                p = self._debug_dump(f"{slug}-anchor", page)
+                print(f"  ! {url}: không thấy danh sách chương (site đổi giao diện?)"
+                      + (f" — HTML lưu tại {p}" if p else ""), file=sys.stderr)
+        self._anchor[slug] = got
+        return got
+
+    def series_slug(self, text: str) -> str:
+        t = re.split(r"[?#]", text.strip())[0]
+        m = re.search(r"/manga/([^/]+)(?:/chapters/([^/]+))?", t)
+        if not m:
+            return t.rstrip("/").rsplit("/", 1)[-1]
+        slug = m.group(1)
+        if m.group(2):
+            self._hint[slug] = f"{self.BASE}/manga/{slug}/chapters/{m.group(2)}"
+        return slug
+
+    def title_from_slug(self, slug: str) -> str:
+        _, page = self._anchor_page(slug)
+        m = re.search(r'data-reading-manga-title="([^"]*)"', page)
+        name = html_lib.unescape(m.group(1)).strip() if m else ""
+        if not name:   # og:title trang truyện: "Tên [Tới Chap 92]"
+            m = re.search(r'<meta\s+property="og:title"\s+content="([^"]*)"',
+                          self._series_page(slug), re.I)
+            if m:
+                name = re.sub(r"\s*\[[^\]]*\]\s*$", "", html_lib.unescape(m.group(1))).strip()
+        return name or re.sub(r"^\d+-", "", slug).replace("-", " ").title()
+
+    def list_chapters(self, slug: str):
+        _, page = self._anchor_page(slug)
+        found = {}   # số -> (đoạn URL, tên); dropdown (đủ bộ, có tên) trước, trang truyện bù
+        for src in (page, self._series_page(slug)):
+            for num, seg, title in self._chapter_links(slug, src):
+                if num not in found or (title and not found[num][1]):
+                    found[num] = (seg, title)
+        return [Chapter(n, found[n][1], f"{self.BASE}/manga/{slug}/chapters/{found[n][0]}")
+                for n in sorted(found)]
+
+    def cover_url(self, slug: str):
+        for page in (self._series_page(slug), self._anchor_page(slug)[1]):
+            m = re.search(r'<meta\s+property="og:image"\s+content="([^"]+)"', page or "", re.I)
+            if m and m.group(1).strip():
+                u = html_lib.unescape(m.group(1).strip())
+                return u if u.startswith("http") else self.BASE + "/" + u.lstrip("/")
+        return None
+
+    def chapter_images(self, chapter):
+        """URL GIẢ cho từng trang (ảnh thật do render_pages chụp). Số trang lấy từ HTML
+        (HTTP) -> chương đủ ảnh trên đĩa thì core đánh .done mà không mở trình duyệt."""
+        cached = [pg for (u, pg) in self._anchor.values() if u and u == chapter.ref]
+        page = cached[0] if cached else self._fetch(chapter.ref)
+        if not page:
+            return []    # 404/mạng: coi như chưa có ảnh, KHÔNG .done -> lượt sau thử lại
+        m = re.search(r'data-reader-total-pages="(\d+)"', page)
+        n = int(m.group(1)) if m else len(re.findall(r'class="page-card"', page))
+        if not m and not n:
+            self._layout_fail += 1
+            p = self._debug_dump(urlparse(chapter.ref).path.strip("/").replace("/", "-"), page)
+            print(f"  ! Chapter {chapter.number:g}: không nhận ra trang đọc (khoá/cần đăng nhập, "
+                  "hoặc site đổi giao diện)" + (f" — HTML lưu tại {p}" if p else ""),
+                  file=sys.stderr)
+            if self._layout_fail >= self.LAYOUT_FAIL_LIMIT:
+                raise Blocked(f"{self.LABEL}: {self._layout_fail} chương liền không đọc được "
+                              "trang (site đổi giao diện?) — xem .reader-meta/moe-debug/")
+            return []
+        self._layout_fail = 0
+        self._n_pages[chapter.ref] = n
+        return [f"moe://page/{k}.webp" for k in range(1, n + 1)]
+
+    # -- chụp trang (móc render_pages của core.run) ----------------------------------
+
+    def _open_chapter(self, ref):
+        """Mở trang chương trên Chromium + CSS chụp; None nếu không mở được."""
+        b = self._get_browser()
+        if not b.goto(ref):
+            return None
+        page = b.page
+        page.add_style_tag(content=self._CSS)
+        if page.locator("[data-reader-capture-guard-enabled='true']").count():
+            print(f"\n  ! {self.LABEL} đang BẬT chống chụp (capture-guard) — ảnh chụp có thể "
+                  "hỏng; bộ kiểm sẽ loại khung phẳng.", file=sys.stderr, flush=True)
+        return page
+
+    def _wait_ready(self, page, i):
+        end = time.monotonic() + self.READY_TIMEOUT
+        while time.monotonic() < end:
+            if page.evaluate(self._READY_JS, i):
+                return True
+            time.sleep(0.25)
+        return False
+
+    def _capture(self, page, i, cur_w):
+        """Chụp trang i (0-based). Trả (bytes WebP | None, lý do hụt, W đang áp, chữ ký)."""
+        card = page.locator(self._CARD).nth(i)
+        card.scroll_into_view_if_needed(timeout=15000)
+        if not self._wait_ready(page, i):
+            return None, f"chưa vẽ xong sau {self.READY_TIMEOUT}s", cur_w, None
+        w, h, _ = page.evaluate(self._DIMS_JS, i)
+        if not (w and h):
+            return None, "không đọc được cỡ trang", cur_w, None
+        if w != cur_w:
+            # Nới khối trang = đúng cỡ gốc (viewport rộng hơn để không bị bóp) rồi chờ khung
+            # giãn đủ + site vẽ lại. Trang liền nhau thường cùng W -> ít khi phải đổi.
+            page.set_viewport_size({"width": max(self.VIEW_MIN_W, w + self.VIEW_MARGIN),
+                                    "height": self.VIEW_H})
+            page.evaluate(self._WIDTH_JS, w)
+            cur_w = w
+            card.scroll_into_view_if_needed(timeout=15000)
+            end = time.monotonic() + 5
+            while page.evaluate(self._DIMS_JS, i)[2] != w and time.monotonic() < end:
+                time.sleep(0.2)
+            if not self._wait_ready(page, i):
+                return None, "chưa vẽ lại xong sau khi nới khung", cur_w, None
+            time.sleep(0.3)
+        page.evaluate(self._HIDE_JS)
+        png = card.locator(".page-protected-shell").screenshot(
+            type="png", animations="disabled", caret="hide", timeout=30000)
+        data, why, sig = self._encode(png, w, h)
+        return data, why, cur_w, sig
+
+    def _encode(self, png, w, h):
+        """PNG chụp -> (WebP q90 | None, lý do hụt, chữ ký pixel). Kiểm: đúng cỡ gốc (±2px,
+        cắt về W×H), không phải khung một màu, WebP ra giải mã được."""
+        from PIL import Image
+        try:
+            im = Image.open(io.BytesIO(png))
+            im.load()
+        except Exception as e:
+            return None, f"ảnh chụp lỗi ({e.__class__.__name__})", None
+        iw, ih = im.size
+        if abs(iw - w) > 2 or abs(ih - h) > 2:
+            return None, f"cỡ chụp {iw}x{ih} lệch cỡ gốc {w}x{h}", None
+        if (iw, ih) != (w, h):
+            im = im.crop((0, 0, min(iw, w), min(ih, h)))
+        flat = uniform_frame(im)
+        if flat:
+            return None, f"khung một màu — {flat[1]}", None
+        rgb = im.convert("RGB")
+        buf = io.BytesIO()
+        rgb.save(buf, "WEBP", quality=self.WEBP_Q, method=4)
+        data = buf.getvalue()
+        verdict, detail = check_image_bytes(data)
+        if verdict not in ("ok", "unsupported"):
+            return None, f"WebP hỏng: {detail}", None
+        return data, "", hashlib.sha1(rgb.tobytes()).digest()
+
+    def render_pages(self, chapter, jobs):
+        """Chụp các trang còn thiếu của 1 chương, TUẦN TỰ ở main thread; yield True/False
+        mỗi job. Trang hụt KHÔNG ghi file -> core đếm thiếu, lượt sau chụp bù."""
+        page = self._open_chapter(chapter.ref)
+        n = page.locator(self._CARD).count() if page is not None else 0
+        want = self._n_pages.get(chapter.ref)
+        if page is None or (want and n != want):
+            why = ("trình duyệt không mở được trang" if page is None
+                   else f"trình duyệt thấy {n} trang, HTML báo {want}")
+            print(f"\n  ! Chapter {chapter.number:g}: {why} — bỏ chương này, để lượt sau.",
+                  file=sys.stderr, flush=True)
+            self._render_fail += 1
+            if self._render_fail >= self.LAYOUT_FAIL_LIMIT:
+                raise Blocked(f"{self.LABEL}: {self._render_fail} chương liền không mở/đếm được "
+                              f"trang trong trình duyệt ({why})")
+            for _ in jobs:
+                yield False
+            return
+        self._render_fail = 0
+        cur_w, prev_sig, streak = None, None, 0
+        for url, dest in jobs:
+            if page is None:        # mất trình duyệt, dựng lại cũng không mở được chương
+                yield False
+                continue
+            i = int(url.rsplit("/", 1)[-1].split(".")[0]) - 1
+            data, why, sig = None, "", None
+            for attempt in range(self.PAGE_TRIES):
+                try:
+                    data, why, cur_w, sig = self._capture(page, i, cur_w)
+                except Blocked:
+                    raise
+                except Exception as e:
+                    data, why = None, f"lỗi trình duyệt ({e.__class__.__name__})"
+                    if not self._browser.alive():
+                        page = self._open_chapter(chapter.ref)   # dựng lại + mở lại chương
+                        cur_w = None
+                        if page is None:
+                            break
+                    continue
+                if data is not None and sig == prev_sig and attempt + 1 < self.PAGE_TRIES:
+                    data, why = None, "giống hệt trang trước"   # nghi chụp nhầm -> thử lại
+                    time.sleep(1)
+                    continue
+                if data is not None:
+                    break
+                time.sleep(1)
+            if data is None:
+                streak += 1
+                print(f"\n    ! Trang {i + 1}: {why} — để lượt sau chụp bù.",
+                      file=sys.stderr, flush=True)
+                if streak >= self.FAIL_STREAK_LIMIT:
+                    raise Blocked(f"{self.LABEL}: {streak} trang liền không chụp được ({why}) — "
+                                  "site đổi giao diện / bật chống chụp / truyện cần đăng nhập?")
+                yield False
+                continue
+            if sig == prev_sig:
+                print(f"\n    ~ Trang {i + 1} giống hệt trang trước (đã thử lại) — vẫn lưu, "
+                      "nên xem tay.", file=sys.stderr, flush=True)
+            streak = 0
+            tmp = dest.with_name(dest.name + ".tmp")
+            tmp.write_bytes(data)
+            os.replace(tmp, dest)
+            clear_bad(dest)
+            prev_sig = sig
+            yield True
+            time.sleep(random.uniform(0.2, 0.5))
+
+
 # --- Đăng ký: thêm site mới = thêm 1 dòng vào đây -------------------------------
 PROVIDERS = [AsuraProvider(), RavenProvider(), DilibProvider(), MangaDexProvider(),
              TruyenQQProvider(), ACGNProvider(), NetTruyenProvider(), ZetTruyenProvider(),
-             TruyenQQVNProvider()]
+             TruyenQQVNProvider(), MoeTruyenProvider()]
 
 
 def load_overrides() -> dict:

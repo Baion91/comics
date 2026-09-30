@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """Tầng TRÌNH DUYỆT THẬT cho site nằm sau Cloudflare — lấy HTML 1 trang khi request
 thường bị challenge. Provider gọi LƯỜI (chỉ import/mở khi thật sự bị chặn); ngày thường
-không đụng tới. Hiện dùng bởi: qqcomvn (truyenqq.com.vn).
+không đụng tới. Hiện dùng bởi: qqcomvn (truyenqq.com.vn) — chỉ lấy HTML; moetruyen — mở
+trang chương (`goto`) rồi CHỤP trang đã hiển thị (ảnh không có URL tải thẳng), cần mở
+thêm host CDN qua `extra_hosts` và cho tải ảnh (`block_types`).
 
 VÌ SAO MODULE RIÊNG (không tái dùng ComixSession): comix gắn cứng profile/route/hook
 JSON.parse; refactor module mong manh nhất hệ thống để chia sẻ = rủi ro hồi quy. Ở đây
@@ -146,12 +148,19 @@ class CFBrowser:
 
     get_html trả HTML THÔ của response (y như request thường -> provider dùng CHUNG
     parser cho 2 tầng), None nếu trang 404/410; ném core.Challenged nếu không qua được
-    Cloudflare, BrowserGone nếu Chromium hỏng liên tục."""
+    Cloudflare, BrowserGone nếu Chromium hỏng liên tục. `goto` = cùng đường điều hướng
+    nhưng để trang mở trên `self.page` cho provider thao tác DOM tiếp (không lấy HTML).
 
-    def __init__(self, profile, host, label):
+    `extra_hosts`: host NGOÀI site được phép tải (khớp cả subdomain) — vd CDN ảnh mà JS
+    site tự fetch; mặc định rỗng = chỉ site + Cloudflare. `block_types`: loại resource bị
+    chặn trên host site (mặc định ảnh/media/font — đủ cho lấy HTML)."""
+
+    def __init__(self, profile, host, label, extra_hosts=(), block_types=_BLOCK_TYPES):
         self.profile_dir = core.META_DIR / profile
         self.host = host.lower()
         self.label = label
+        self.extra_hosts = tuple(h.lower() for h in extra_hosts)
+        self.block_types = set(block_types)
         self._pw = self.ctx = self.page = None
         self._relaunch_streak = 0
         self._last_notify = None      # monotonic lần gửi "cần tick" gần nhất
@@ -260,8 +269,10 @@ class CFBrowser:
             host = (urllib.parse.urlparse(req.url).hostname or "").lower()
             if host == self.host or host.endswith("." + self.host):
                 # Trang + script/xhr của site (gồm /cdn-cgi/challenge-platform của CF);
-                # ảnh/font/media bỏ — chỉ cần HTML, ảnh tải riêng bằng HTTP.
-                ok = req.resource_type not in _BLOCK_TYPES
+                # mặc định bỏ ảnh/font/media — chỉ cần HTML, ảnh tải riêng bằng HTTP.
+                ok = req.resource_type not in self.block_types
+            elif any(host == h or host.endswith("." + h) for h in self.extra_hosts):
+                ok = True                     # CDN provider khai báo (vd ảnh moetruyen)
             else:
                 # Ô tick Turnstile nằm trong iframe challenges.cloudflare.com -> mở hết.
                 ok = host == "cloudflare.com" or host.endswith(".cloudflare.com")
@@ -359,6 +370,15 @@ class CFBrowser:
     def get_html(self, url):
         """HTML thô của `url` (str), None nếu 404/410. Qua challenge thì goto LẠI để lấy
         response sạch (sau khi tick, CF tự reload nhưng response gốc là trang challenge)."""
+        return self._load(url, want_html=True)
+
+    def goto(self, url):
+        """Mở `url` trên `self.page` (qua Cloudflare nếu cần) để provider thao tác DOM tiếp.
+        True = đã mở trang thật; False = 404/410. Lỗi như get_html (Challenged/BrowserGone).
+        Sau lời gọi này luôn đọc lại `self.page` — Chromium có thể đã được dựng lại."""
+        return self._load(url, want_html=False) is not None
+
+    def _load(self, url, want_html):
         last_err = None
         n_challenge = 0                       # chỉ chờ NGƯỜI tick 1 lần cho mỗi URL
         for attempt in range(NAV_ATTEMPTS):
@@ -390,11 +410,13 @@ class CFBrowser:
                 last_err = RuntimeError(f"HTTP {resp.status}")
                 time.sleep(3 * (attempt + 1))
                 continue
-            try:
-                html = resp.text()
-            except Exception as e:
-                last_err = e
-                continue
+            html = ""
+            if want_html:
+                try:
+                    html = resp.text()
+                except Exception as e:
+                    last_err = e
+                    continue
             self._relaunch_streak = 0         # đợt sự cố (nếu có) đã qua
             return html
         if self.alive() and self._challenge_present():

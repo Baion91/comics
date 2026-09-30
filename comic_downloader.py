@@ -156,10 +156,11 @@ def main(default_provider=None):
                          "chương còn trang TRÁO Ô — bước xem trước của lệnh bot /repair all "
                          "(in kèm dòng REPAIR_SCAN_JSON)")
     ap.add_argument("--fetch", choices=("auto", "http", "browser"), default="auto",
-                    help="Site có tầng trình duyệt (truyenqq.com.vn): auto = HTTP thường, bị "
-                         "Cloudflare chặn thì tự chuyển sang Chromium (mặc định); http = chỉ "
-                         "HTTP (bị chặn thì dừng); browser = ép Chromium ngay từ đầu (thử tầng "
-                         "trình duyệt / khi biết chắc đang bị chặn)")
+                    help="Site có tầng trình duyệt (truyenqq.com.vn, moetruyen.net — với "
+                         "moetruyen chỉ áp cho phần DANH SÁCH CHƯƠNG, ảnh luôn chụp bằng "
+                         "Chromium): auto = HTTP thường, bị Cloudflare chặn thì tự chuyển sang "
+                         "Chromium (mặc định); http = chỉ HTTP (bị chặn thì dừng); browser = ép "
+                         "Chromium ngay từ đầu (thử tầng trình duyệt / khi biết chắc đang bị chặn)")
     ap.add_argument("--out", default="downloads", help="Thư mục lưu (mặc định: downloads)")
     ap.add_argument("--dest-name", dest="dest_name", metavar="FOLDER",
                     help="GHÉP vào folder truyện CÓ SẴN tên này (tải bù chương thiếu từ "
