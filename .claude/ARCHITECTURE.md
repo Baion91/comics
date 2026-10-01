@@ -430,7 +430,7 @@ cách chạy thật + decode thử ảnh.
   **Hồ sơ đọc CHUNG server-side** (`user-data.json` + `GET/POST /api/state`): bookmark
   + vị trí đọc `progress{sid:{rel,y,name}}` + chương đã đọc `read{sid:[rel]}` — một
   hồ sơ duy nhất, KHÔNG login/cookie/device-id (mọi client chung); reader ghi progress
-  debounce ~2.5s + flush khi rời trang (`keepalive`), đánh dấu đã đọc qua op `read`.
+  debounce ~2.5s (**10s từ 01/10**, mirror localStorage 1s) + flush khi rời trang (`keepalive`), đánh dấu đã đọc qua op `read`.
   imgw + chsort vẫn localStorage per-máy. **Trạng thái + thứ tự truyện**:
   `series_status()`/`series_order()`/`load_series_meta()` đọc `series-meta.json` (nạp
   theo mtime → sửa tay F5 ăn); `get_library()` gọi `sync_series_meta()` thêm truyện
@@ -804,7 +804,7 @@ cách chạy thật + decode thử ảnh.
   **[BỔ SUNG 23/08 — chữ ký tự-bust khi thêm/xoá chương]**: TTL 60s một mình khiến số chương trễ tới 60s (chương
   đổi ngoài tiến trình reader, không ai gọi `bust_library_cache`). Thêm `_library_signature()` — chữ ký RẺ quét
   2 tầng thư mục (mtime folder truyện + folder con arc/chương, **KHÔNG lặn xuống ảnh** = chỗ đắt của scan), chạy
-  mỗi lần `get_library`. `_lib_cache` nay là `(ts, series, sig)`: chữ ký khớp → dùng cache bất kể tuổi; chữ ký đổi
+  mỗi lần `get_library` (**từ 01/10: chỉ trong thread nền, tối đa `SIG_EVERY`=10s/lần** — xem mục "Bộ đo + đợt sửa 01/10"). `_lib_cache` nay là `(ts, series, sig)`: chữ ký khớp → dùng cache bất kể tuổi; chữ ký đổi
   (thêm/xoá chương/arc/truyện) → bust + quét nền NGAY (không đợi 60s), TTL chỉ còn là lưới an toàn. `bust_library_cache`
   vẫn giữ cho thay đổi META (title/order/status/cover — không đổi mtime thư mục nên chữ ký không bắt).
 - **Số chương / trạng thái / bìa tự cập nhật xuyên bfcache+SW — `GET /api/library-meta` + sync khi hiển thị**
@@ -905,7 +905,7 @@ cách chạy thật + decode thử ảnh.
   (FOLLOWDATA/BM/LOGGEDIN/SDATA/D) inline TRƯỚC các file — home doc 35.9KB→11.5KB. **② `/cover` gắn ETag**
   `"{cover_ver}-{len}"` (+ If-None-Match→304). **③ Service Worker** `SW_JS` phục vụ ở `/sw.js`
   (`Cache-Control: no-cache` để cập nhật ngay, header `Service-Worker-Allowed: /`), `SW_VERSION` = hash
-  của precache-list nên đổi asset ⇒ SW mới ⇒ dọn cache cũ (activate): **cache-first** cho `/cover` `/img`
+  của precache-list nên đổi asset ⇒ SW mới ⇒ dọn cache cũ (activate): **cache-first** cho `/cover` `/img` (**`/img` bỏ khỏi SW từ 01/10**)
   `/static` + icon (an toàn VÌ URL đều versioned — `/cover?v=cover_ver`, `/static?v=sha1`, ảnh chương
   `/img/...?v=mtime`, xem ⑧), **stale-while-revalidate** cho điều hướng HTML
   (first paint từ cache tức thì, cập nhật nền cho lần sau), POST/`api/*` bỏ qua. **④** login/logout gọi
@@ -918,7 +918,7 @@ cách chạy thật + decode thử ảnh.
   SWR): SW có hàng đợi `pfQ`/`pumpPrefetch` (giới hạn `PF_MAX=2`, nhận `{type:'prefetch',urls}`, bỏ cái đã
   cache, xoá khi purge); HOME_JS nạp trước theo `pointerdown` [ý định] + `IntersectionObserver`+`requestIdleCallback`
   [card lọt viewport] → lần bấm đầu cũng cache-hit. **⑦ Prefetch trang CHƯƠNG kế/trước** (trị khựng 1-2s khi
-  bấm Next / chọn chương): READER_JS lúc rảnh (`requestIdleCallback`) postMessage `{type:'prefetch',urls:[D.next,D.prev]}`
+  bấm Next / chọn chương): READER_JS lúc rảnh (`requestIdleCallback`) postMessage `{type:'prefetch',urls:[D.next,D.prev]}` (**từ 01/10 chỉ `D.next`**)
   cho cùng hàng đợi SW → Next/Prev sau đó lấy HTML từ cache gần như tức thì; việc render trước còn WARM luôn
   `_dim_cache` phía server (html_reader hết phải mở PIL từng ảnh khi chương nguội). Chỉ nạp HTML, KHÔNG kéo ảnh.
   **⑧ Ảnh chương versioned `?v=mtime`** (22/08, trị **méo ảnh trong reader dù file trên ĐĨA ĐÚNG**): SW cache
@@ -967,6 +967,37 @@ cách chạy thật + decode thử ảnh.
   Safari có thể evict SW sau ~7 ngày không dùng (mở lại chịu cold 1 lượt); prefetch tốn thêm băng thông
   (đã chặn 2 luồng + chỉ nạp cái chưa cache). *Gotcha*: header logo là `/brand` (KHÁC favicon `/logo`); đổi
   logo gốc thì phải để ý brand.webp cache-first sẽ giữ bản cũ tới khi SW_VERSION đổi.
+- **Bộ đo tốc độ (diag) + đợt sửa theo số đo** (28/09 → 01/10). *Vì sao*: nhiều vòng đoán nguyên nhân màn trắng
+  /đơ trên iPhone web app sai (origin đổi, SW khởi động chậm, quota evict…) → dựng bộ đo 3 nguồn rồi mới sửa.
+  **Bộ đo**: `DIAG_JS` (trong base.js) gửi `POST /api/diag` mỗi lần mở trang (Navigation Timing: `workerStart`→
+  `fetchStart` = SW khởi động, `responseStart`, DCL/FCP; kiểu mở; SW điều khiển?; đăng nhập?; bấm→trang mới qua
+  `sessionStorage toony_tap`; đứng luồng chính >350ms; resume/bfcache; localStorage; vòng đệm sự kiện SW
+  nav hit/miss/`open`/`match`/`net`/`dup`/`age`, pf, pfdrop; ở home ≤30'/lần thêm `storage.estimate` + số mục
+  mỗi cache) → `.reader-meta/diag/client.jsonl`; server ghi 1 dòng/request (loại qua header `X-Toony-Kind`
+  do SW gắn cho prefetch/revalidate, hoặc `Sec-Fetch-*`; ms; `lib`; ảnh đo nguội/ấm `dc/dw`; số request đồng
+  thời; thiết bị) → `server.jsonl`, xoay vòng 5MB. Báo cáo `diag_report.py` (CLI / bot `/diag [clear|off|on]`
+  / `GET /api/diag/report|raw?k=<token diag/token.txt>`, admin web không cần token). Tắt ghi: file `diag-off`.
+  **Kết quả đo 30/09–01/10 (iPhone web app)**: (1) trắng khi mở app = `caches.open()` lúc SW vừa khởi động lạnh,
+  tăng theo dung lượng Cache Storage (9ms khi 1.8MB → 1.3s khi ~527MB, kho ảnh `toony-img` tăng ~500MB/ngày,
+  không giới hạn); SW khởi động chỉ ~5ms; SW đang chạy mở cache 0ms; đăng nhập/khách KHÔNG phải yếu tố. (2) tập
+  Yu-Gi-Oh ~290 trang mở nguội 12–13s (PIL từng ảnh) + prefetch-rảnh 2 nút cùng lúc. (3) `_library_signature()`
+  mỗi request: 78ms trung vị, 58% thời gian server. (4) tunnel ~380ms/request. Số "Website Data" trong Cài đặt
+  Safari KHÔNG phản ánh bộ nhớ web app.
+  **Sửa 01/10**: ① SW **không chặn `/img/`** nữa — ảnh chương giao HTTP cache trình duyệt (`/img?v=` trả
+  `Cache-Control: public, max-age=31536000, immutable`; thiếu `?v` vẫn 7 ngày); bìa sang `COVER_CACHE='toony-cover'`
+  (trần 150 mục); `PAGE_CACHE` trần 60 mục (`trim()` sau mỗi put — put lại 1 key đưa nó về cuối `keys()`, xoá từ
+  đầu); activate xoá mọi cache khác (kể cả `toony-img` cũ). *Đánh đổi*: không còn đọc offline chương cũ; đọc lại
+  chương cũ có thể tải lại nếu trình duyệt đã dọn HTTP cache. ② `html_reader` / `/api/pages` không chờ PIL:
+  `dims_budget()` đo đồng bộ tối đa `DIMS_SYNC_BUDGET`=0.25s, còn lại `img_dims_nowait()` xếp hàng cho thread
+  `_dims_worker` (ưu tiên); ảnh chưa đo mang `class="nd"` + tỉ lệ ước lượng (trung vị chương, không có thì 2/3),
+  reader.js sửa tỉ lệ thật khi ảnh `load` (capture trên `#strip`). Thread `_dims_sweep` (sau khởi động 120s) đo cả
+  thư viện ưu tiên thấp (chờ khi có request, 10ms/ảnh; tắt bằng file `dims-sweep-off`); `dims-cache.json` (28/09)
+  ghi 20s/lần, cache >20k mục thì 90s/lần (json.dump giữ GIL). Series chỉ đón đầu **1** nút (reading, không có thì
+  First); reader chỉ đón đầu chương kế. ③ `get_library()` trả cache ngay, kiểm chữ ký trong thread nền tối đa
+  10s/lần (`_lib_checked`), chương mới hiện sau ~10s + thời gian quét. ④ lưu vị trí: localStorage 1s, server 10s.
+  **Gotcha đã dính**: SW chuẩn hoá URL prefetch thành TUYỆT ĐỐI (`new URL(raw, origin)`) — trang đọc gửi `D.next`
+  tương đối; bản 28/09 gọi `new URL(url)` không base → ném lỗi sau khi tải xong → prefetch chương kế KHÔNG được
+  lưu (Next luôn ra mạng 30/09–01/10) và key lệch key điều hướng (chống trùng hụt).
 - **Hồ sơ đọc = 1 JSON CHUNG server-side, không login/cookie/device-id** (05/08): trước đây
   vị trí đọc/chương-đã-đọc để localStorage → **chết theo origin**; user chia sẻ bằng
   cloudflared quick tunnel (`Chia se link doc thu.bat`) đổi URL ngẫu nhiên mỗi lần bật →

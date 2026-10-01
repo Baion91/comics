@@ -1,9 +1,17 @@
-# Handoff — cập nhật lần cuối: 2026-09-30 23:36 (provider MỚI `moetruyen` — chụp trang qua Chromium, ĐÃ code + test dev, CHƯA commit/push. Trước đó 28/09: reader BỘ ĐO `/diag` + sửa "bấm đọc đơ" [đã push 30/09, chờ `/update` + restart]; provider `qqcomvn`)
+# Handoff — cập nhật lần cuối: 2026-10-01 (reader: sửa theo SỐ ĐO bộ đo — ảnh chương bỏ khỏi cache SW, trang chương không chờ PIL + đo nền, get_library hết quét mỗi request, lưu vị trí 10s, sửa lỗi prefetch chương kế không lưu — ĐÃ code + test dev, ĐÃ commit/push, CHỜ `/update`)
 
 > Kiến trúc ổn định (reader, provider, comix, supervisor, mạng…) nằm ở `.claude/ARCHITECTURE.md`.
 > File này chỉ ghi TRẠNG THÁI hiện tại + việc đang dở.
 
 ## Đang làm / dở dang
+- **[01/10] ĐÃ SỬA theo số đo (code + test dev Chromium 8099, ĐÃ commit/push, CHỜ `/update` — chỉ `reader_server.py` + `diag_report.py`, KHÔNG cần restart supervisor)**: ① SW không chặn `/img/` (HTTP cache `immutable`), bìa → `toony-cover` (≤150), `PAGE_CACHE` ≤60, activate xoá `toony-img` 527MB; ② trang chương/`/api/pages` đo PIL tối đa 0.25s rồi xếp hàng thread nền (`class="nd"` + tỉ lệ ước lượng, JS sửa khi ảnh về) + quét kích thước cả thư viện ưu tiên thấp sau khởi động 120s (tắt: file `.reader-meta/dims-sweep-off`); series đón đầu 1 nút, reader chỉ chương kế; ③ `get_library()` kiểm chữ ký ở thread nền ≤10s/lần; ④ lưu vị trí server 10s (localStorage 1s); ⑤ báo cáo: tách `open` SW nguội/ấm, sửa `cache {}`. **Lỗi tự gây (28/09) đã sửa**: URL prefetch tương đối (`D.next`) làm `new URL()` ném lỗi → chương kế không bao giờ được lưu cache (30/09–01/10 bấm Next luôn ra mạng). Đã test dev: cold render 27 ảnh budget 0 = 7ms, đo nền xong <1.5s; `toony-img` cũ bị xoá khi activate; ảnh chương không vào cache SW, header immutable; Next = cache-hit (byte đầu 4ms); 200×get_library = 0.2ms. **CHƯA**: nghiệm thu iPhone (đo lại bằng `/diag` sau `/diag clear`).
+- **[01/10] KẾT QUẢ BỘ ĐO (30/09 12:26 → 01/10 12:18, iPhone web app đăng nhập; 200 bản ghi client, 8105 request server):**
+  (1) **Trắng khi mở app = `caches.open()` lúc SW vừa khởi động lạnh, tăng theo dung lượng cache**: SW nguội (age<2s) mở PAGE_CACHE 146→392→476→1329ms khi bộ nhớ web app tăng 1.8MB→154→197→327→527MB trong ~1 ngày (`toony-img` 14→1122 mục, không giới hạn, KHÔNG xoá theo SW_VERSION); SW ấm 0ms; tab Safari cache nhỏ 23ms. `workerStart`→`fetchStart` chỉ ~5ms (khởi động SW KHÔNG phải nút thắt). Mở app từ nền không tải lại (resume) 30 lần = tức thì. Đăng nhập/khách không phải yếu tố (`/api/state` 13–19KB, chạy sau khi trang hiện). Số "Website Data" trong Cài đặt Safari KHÔNG phản ánh bộ nhớ web app (thật: 527MB).
+  (2) **Đơ khi bấm tập Yu-Gi-Oh vẫn xảy ra 30/09 14:57 (sau deploy)**: mỗi "Tap" ~280–380 trang (không phải 60); mở series → prefetch-rảnh nút First (Tap 1, 289 ảnh) + reading (Tap 2, 280 ảnh) cùng lúc bấm Tap 3 (298 ảnh) → 3 render nguội song song 12.4–13.0s (PIL ~20–45ms/ảnh HDD). Sửa touch-prefetch có tác dụng (không thấy bão prefetch khi cuộn); dims lưu đĩa có tác dụng (lần sau 53ms).
+  (3) **`get_library()` mỗi request: trung vị 78ms / p90 232ms / max 1.1s** — chiếm 83/93ms của mỗi request ảnh, 58% tổng thời gian xử lý server (506/868s).
+  (4) Đường truyền tunnel + mạng điện thoại: ~380ms/request (p90 ~650ms), có đột biến 3.5s (DQ ch18: server 375ms, client chờ 4.2s).
+  (5) POST `/api/state` (lưu vị trí 2.5s/lần) 3027 lần/ngày, mỗi lần ghi users.json. Đứng luồng chính: chủ yếu 0.4–1s ở trang đọc ảnh lớn; 1 lần 67.9s gần như chắc là iOS treo trang không bắn visibilitychange (không phải lỗi thật).
+  Báo cáo lỗi nhỏ: mục [10] in `cache {}` khi bản ghi cuối không có số đếm.
 - **[30/09] Provider MỚI `moetruyen` (moetruyen.net) — ĐÃ code + test dev, CHƯA commit/push, CHƯA nghiệm thu
   server** (`providers.py` [MoeTruyenProvider], `comics_core.py` [móc `render_pages`], `cf_browser.py`
   [`extra_hosts`/`block_types`/`goto`], `comic_downloader.py` [help `--fetch`], `.gitignore` [`*.zip`], README,
@@ -345,6 +353,8 @@
 - **[10/08] Tool LÀM NÉT Real-ESRGAN — ĐÃ push. Tích hợp tự động vào `/tai` CHƯA làm.**
 
 ## Quyết định gần đây (mới nhất trước)
+- **01/10: Ảnh chương ra khỏi cache SW (giao HTTP cache `immutable`), không dùng LRU trong SW** — user chọn; kho ảnh SW không giới hạn là nguyên nhân đo được của màn trắng khi mở app (caches.open lạnh 9ms→1.3s trong 1 ngày); HTTP cache do trình duyệt tự giới hạn/dọn. Đổi lại mất đọc offline chương cũ.
+- **01/10: Trang chương không bao giờ chờ đo hết kích thước ảnh** (ngân sách 0.25s + đo nền + quét cả thư viện ưu tiên thấp) — tập ~290 trang mở lần đầu từng mất 12–13s.
 - **30/09: moetruyen = provider thường + móc `render_pages` trong core (không custom_run, không reverse IMGX)** —
   site không có URL ảnh; chụp trang hiển thị giữ được toàn bộ vòng tải chung (.done/bù trang/tổng kết/into:/
   check_updates). KHÔNG đào worker/page-access vì site gửi `X-AI-Policy: no-reverse-engineering`. Lưu WebP **q90**
@@ -495,6 +505,7 @@
   09-10/08 về comix loop/relaunch đã ghi đầy đủ ở ARCHITECTURE.)
 
 ## Việc tiếp theo
+- **[Nghiệm thu sửa 01/10]** `/update` → `/diag clear` → dùng 1–2 ngày (gồm mở app sau khi để nền lâu, mở 1 tập/chương chưa đọc, bấm Next liên tiếp) → `/diag` gửi link. Kỳ vọng: [4] "mở cache: SW vừa khởi động" trung vị < 50ms và không tăng theo ngày; [10] dung lượng web app vài MB thay vì trăm MB; [6] `get_library` ~0ms; prefetch chương kế có hit (Next byte đầu vài ms); [7] không còn render `/read/` >2s. Xong thì `/diag off`.
 - **[moetruyen — deploy & nghiệm thu server]** commit/push → `/update` → `/tai https://moetruyen.net/manga/1200-dragon-quest-emblem-of-roto 1`
   (hoặc bộ user muốn): cửa sổ Chromium `moe-profile` hiện trên server, 72/72, không stall; reader hiển thị
   `Chapter 1 - …` đúng; `/watch` bộ đó → auto-check báo `ok`. Khi gặp bộ có chương lẻ: kiểm dạng URL `/chapters/N.5`.
@@ -570,6 +581,7 @@
 - (Tùy chọn, gốc rễ) **Named tunnel + domain** để URL cố định — nếu mua domain rẻ.
 
 ## Lưu ý / rủi ro đang mở
+- **Sửa 01/10**: (a) đọc lại chương cũ có thể tải lại ảnh qua tunnel nếu iOS đã dọn HTTP cache (đánh đổi đã chốt); (b) `_dims_sweep` đọc header MỌI ảnh thư viện 1 lần (HDD, nhường request nhưng có thể tranh với downloader) — tắt bằng `.reader-meta/dims-sweep-off`; (c) chương mới tải về hiện trên web sau ~10s + thời gian quét (trước: ~1–2s); (d) lần đầu mở chương có ảnh chưa đo: ảnh mang tỉ lệ ước lượng tới khi tải về (trang có thể "nhảy" nhẹ phía dưới vị trí đang đọc).
 - **qqcomvn khi Cloudflare chặn HTTP: ĐÃ SỬA 01/10 (chưa push)** — bìa `/media/book/…` bị 403 → trước đây
   traceback exit 1 trước mọi chương; nay core coi bìa là phụ (cảnh báo, tải chương tiếp). Test dev: thư mục
   trống, `--fetch auto` → tự leo Chromium, bỏ bìa, ch3 53/53, rc 0; Zet vẫn tải bìa. Folder qqcomvn tải lúc site

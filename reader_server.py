@@ -14,6 +14,7 @@ Chạy:  python reader_server.py  (tùy chọn: --port 8080)
 import argparse
 import base64
 import binascii
+import collections
 import hashlib
 import html
 import io
@@ -55,6 +56,10 @@ MIME = {
     ".avif": "image/avif",
 }
 CACHE_TTL = 60          # giây; quét lại thư viện sau chừng này để thấy chương mới
+# Chữ ký thư mục (bắt thêm/xoá chương) kiểm tối đa 1 lần / SIG_EVERY giây, TRONG THREAD
+# NỀN. Trước 01/10 mỗi request (kể cả từng ảnh) tự quét 2 tầng thư mục: bộ đo trên
+# server đo trung vị 78ms / max 1.1s mỗi request = 58% tổng thời gian xử lý.
+SIG_EVERY = 10
 COVER_WIDTH = 480       # bề ngang ảnh bìa thu nhỏ ở trang chủ
 META_DIR = os.path.join(BASE_DIR, ".reader-meta")
 SPREADS_FILE = os.path.join(META_DIR, "spreads.json")
@@ -277,36 +282,42 @@ def _library_signature():
     return h.hexdigest()
 
 
+_lib_checked = 0.0      # lần gần nhất đã khởi động kiểm chữ ký nền
+
+
 def _refresh_library():
-    """Quét lại ở nền rồi thay cache. Chạy trong daemon thread (stale-while-revalidate)."""
+    """Thread nền: tính chữ ký thư mục; đổi (thêm/xoá chương) hoặc cache quá TTL ->
+    quét lại toàn bộ rồi thay cache. Không request nào phải chờ scandir."""
     global _lib_cache, _lib_refreshing
     try:
-        series = _scan_library()
         sig = _library_signature()
         with _lib_lock:
-            _lib_cache = (time.time(), series, sig)
+            cache = _lib_cache
+            fresh = bool(cache) and cache[2] == sig and time.time() - cache[0] < CACHE_TTL
+        if not fresh:
+            series = _scan_library()
+            sig = _library_signature()
+            with _lib_lock:
+                _lib_cache = (time.time(), series, sig)
     finally:
         with _lib_lock:
             _lib_refreshing = False
 
 
 def get_library():
-    """Trả thư viện. Chữ ký thư mục KHÔNG đổi -> dùng cache luôn (bất kể tuổi). Chữ
-    ký đổi (thêm/xoá chương) hoặc hết TTL -> nếu còn bản cũ, trả stale NGAY và quét
-    lại ở nền (không ai chờ scandir); lần đồng bộ kế (pageshow/visibility) sẽ nhận số
-    mới. Chưa có cache (khởi động / vừa bust) -> buộc quét đồng bộ một lần."""
-    global _lib_cache, _lib_refreshing
-    sig = _library_signature()
+    """Trả thư viện từ cache NGAY (không chạm đĩa). Tối đa mỗi SIG_EVERY giây, request
+    tới lúc đó khởi động 1 thread nền kiểm chữ ký thư mục; đổi (thêm/xoá chương) hoặc
+    quá TTL -> thread đó quét lại và thay cache. Chương mới hiện sau ~SIG_EVERY giây +
+    thời gian quét; lần đồng bộ kế (pageshow/visibility) nhận số mới. Chưa có cache
+    (khởi động / vừa bust) -> buộc quét đồng bộ một lần."""
+    global _lib_cache, _lib_refreshing, _lib_checked
     with _lib_lock:
         cache = _lib_cache
-        # cache[2] = chữ ký lúc quét. Còn khớp + còn hạn TTL -> tươi chắc chắn.
-        if cache and cache[2] == sig and time.time() - cache[0] < CACHE_TTL:
-            return cache[1]
         if cache:
-            # chữ ký đổi HOẶC quá TTL: phục vụ stale + làm mới nền (ngay lần này,
-            # không đợi thêm 60s như trước -> số chương tự lành trong ~1-2s).
-            if not _lib_refreshing:
+            now = time.time()
+            if not _lib_refreshing and now - _lib_checked >= SIG_EVERY:
                 _lib_refreshing = True
+                _lib_checked = now
                 threading.Thread(target=_refresh_library, daemon=True).start()
             return cache[1]
     # build lạnh: tuần tự hoá để nhiều request đồng thời không cùng quét
@@ -318,6 +329,7 @@ def get_library():
         sig2 = _library_signature()
         with _lib_lock:
             _lib_cache = (time.time(), series, sig2)
+            _lib_checked = time.time()
         return series
 
 
@@ -924,13 +936,19 @@ def _dims_load_locked():
 
 
 def _dims_saver():
-    """Ghi cache kích thước ra đĩa (nguyên tử) mỗi 20s nếu có mục mới."""
+    """Ghi cache kích thước ra đĩa (nguyên tử) khi có mục mới: 20s/lần; cache lớn
+    (>20k mục, vd đang quét cả thư viện) thì 90s/lần — json.dump giữ GIL, ghi dày
+    sẽ làm khựng request."""
     global _dim_dirty
+    last = 0.0
     while True:
         time.sleep(20)
         with _dim_lock:
             if not _dim_dirty:
                 continue
+            if time.time() - last < (90 if len(_dim_cache) > 20000 else 20):
+                continue
+            last = time.time()
             _dim_dirty = 0
             snap = {p: [mt, wh[0] if wh else 0, wh[1] if wh else 0]
                     for p, (mt, wh) in _dim_cache.items()}
@@ -941,6 +959,97 @@ def _dims_saver():
             os.replace(tmp, DIMS_FILE)
         except OSError:
             pass
+
+
+# --- Đo kích thước ở NỀN (01/10): render chương chưa từng mở KHÔNG chờ PIL nữa. Bộ đo
+# 30/09: 3 tập Yu-Gi-Oh ~290 trang mở nguội song song mất 12.4-13s (PIL ~20-45ms/ảnh
+# trên HDD). Giờ html_reader/api pages chỉ đo đồng bộ trong DIMS_SYNC_BUDGET giây, phần
+# còn lại xếp hàng cho thread nền đo (ảnh tạm dùng tỉ lệ ước lượng, JS sửa khi ảnh về).
+# Thêm 1 lượt QUÉT CẢ THƯ VIỆN ưu tiên thấp sau khởi động (nhường khi có request; tắt
+# bằng file .reader-meta/dims-sweep-off) -> mọi chương có sẵn kích thước trước khi mở.
+DIMS_SYNC_BUDGET = 0.25
+DIMS_SWEEP_DELAY = 120          # giây sau khởi động mới bắt đầu quét cả thư viện
+DIMS_SWEEP_OFF_FLAG = os.path.join(META_DIR, "dims-sweep-off")
+_dim_q = collections.deque()    # (path, mt) chờ đo — ảnh của chương VỪA mở (ưu tiên)
+_dim_qset = set()
+_dim_ev = threading.Event()
+_dim_worker_on = False
+
+
+def img_dims_nowait(path, mt):
+    """Kích thước nếu ĐÃ có trong cache; chưa có -> xếp hàng đo nền, trả None."""
+    global _dim_worker_on
+    with _dim_lock:
+        if not _dim_loaded:
+            _dims_load_locked()
+        c = _dim_cache.get(path)
+        if c and c[0] == mt:
+            _dim_count("dw")
+            return c[1]
+        if path not in _dim_qset:
+            _dim_qset.add(path)
+            _dim_q.append((path, mt))
+        start = not _dim_worker_on
+        _dim_worker_on = True
+    if start:
+        threading.Thread(target=_dims_worker, daemon=True).start()
+    _dim_ev.set()
+    return None
+
+
+def _dims_worker():
+    while True:
+        _dim_ev.wait(30)
+        _dim_ev.clear()
+        while True:
+            with _dim_lock:
+                if not _dim_q:
+                    break
+                path, mt = _dim_q.popleft()
+                _dim_qset.discard(path)
+            img_dims(path, mt)
+            time.sleep(0.002)
+
+
+def dims_budget():
+    """Hàm đo cho 1 lần render: đo đồng bộ tới hết DIMS_SYNC_BUDGET giây, sau đó
+    chỉ lấy từ cache + xếp hàng đo nền."""
+    t_end = time.perf_counter() + DIMS_SYNC_BUDGET
+
+    def dims(path, mt):
+        if time.perf_counter() < t_end:
+            return img_dims(path, mt)
+        return img_dims_nowait(path, mt)
+    return dims
+
+
+def _dims_sweep():
+    """1 lượt quét CẢ thư viện, đo ảnh chưa có kích thước. Ưu tiên thấp: chờ khi có
+    request đang chạy, nghỉ 10ms mỗi ảnh. Kết quả lưu dims-cache.json -> lượt sau
+    (lần khởi động kế) chỉ còn duyệt thư mục, gần như không mở ảnh."""
+    time.sleep(DIMS_SWEEP_DELAY)
+    if os.path.exists(DIMS_SWEEP_OFF_FLAG):
+        return
+    try:
+        lib = get_library()
+    except Exception:
+        return
+    for s in list(lib.values()):
+        for rel in list(s.get("order") or []):
+            ch_dir = os.path.join(s["path"], *rel.split("/"))
+            files, mts = list_images_mt(ch_dir)
+            for f in files:
+                path, mt = os.path.join(ch_dir, f), mts.get(f)
+                with _dim_lock:
+                    c = _dim_cache.get(path)
+                if c and c[0] == mt:
+                    continue
+                while _inflight_n[0] > 0 or _dim_q:     # nhường request + đo ưu tiên
+                    time.sleep(0.5)
+                if os.path.exists(DIMS_SWEEP_OFF_FLAG):
+                    return
+                img_dims(path, mt)
+                time.sleep(0.01)
 
 
 def _dim_count(kind):
@@ -1867,11 +1976,12 @@ def chapter_pages(s, rel):
     sid = s["id"]
     ch_dir = os.path.join(s["path"], *rel.split("/"))
     files, mts = list_images_mt(ch_dir)
+    dims = dims_budget()
     pages = []
     for f in files:
         v = mts.get(f, 0)
         base = u("img", sid, *rel.split("/"), f)
-        wh = img_dims(os.path.join(ch_dir, f), v or None)
+        wh = dims(os.path.join(ch_dir, f), v or None)
         pages.append({"n": f, "url": f"{base}?v={v}" if v else base,
                       "w": wh[0] if wh else 0, "h": wh[1] if wh else 0})
     return {"version": pages_version(files, mts), "pages": pages}
@@ -1889,6 +1999,14 @@ def html_reader(s, rel, user=None):
 
     ch_dir = os.path.join(s["path"], *rel.split("/"))
     files, mts = list_images_mt(ch_dir)
+    dims = dims_budget()
+    known = {}                     # fname -> (w, h) đã có -> ước lượng tỉ lệ cho ảnh chưa đo
+    for fname in files:
+        wh = dims(os.path.join(ch_dir, fname), mts.get(fname))
+        if wh:
+            known[fname] = wh
+    ratios = sorted(w / h for w, h in known.values() if h)
+    guess = ratios[len(ratios) // 2] if ratios else 2 / 3   # chưa đo được ảnh nào: dáng trang manga
 
     # gom các cặp đã ghép thủ công thành 1 đơn vị hiển thị
     pairmap = {}
@@ -1929,8 +2047,10 @@ def html_reader(s, rel, user=None):
             return f' src="{url}"' if ui < 3 else f' data-src="{url}"'
         if unit[0] == "img":
             fname = unit[1]
-            wh = img_dims(os.path.join(ch_dir, fname), mts.get(fname))
-            ar = f' style="aspect-ratio:{wh[0]}/{wh[1]}"' if wh else ""
+            wh = known.get(fname)
+            # chưa đo (đang đo nền): tỉ lệ ước lượng + class nd -> JS sửa đúng khi ảnh về
+            ar = (f' style="aspect-ratio:{wh[0]}/{wh[1]}"' if wh
+                  else f' class="nd" style="aspect-ratio:{guess:.4f}"')
             imgs.append(f'<img{src_attr(img_url(fname))} data-f="{attr(fname)}" '
                         f'decoding="async"{ar} alt="">')
             # nút ghép với trang kế (chỉ giữa 2 trang đơn, chỉ hiện ở chế độ ghép)
@@ -1941,8 +2061,7 @@ def html_reader(s, rel, user=None):
                     f'data-b="{attr(nxt[1])}">⧉ Join 2 pages (top–bottom)</button></div>')
         else:
             _, left, right = unit
-            wl = img_dims(os.path.join(ch_dir, left), mts.get(left))
-            wr = img_dims(os.path.join(ch_dir, right), mts.get(right))
+            wl, wr = known.get(left), known.get(right)
             if wl and wr:
                 rl, rr = wl[0] / wl[1], wr[0] / wr[1]
                 ar = f'aspect-ratio:{rl + rr:.4f};'
@@ -2626,12 +2745,14 @@ SERIES_JS = """
     if(a&&a.href) pf([a.href]);
   },{passive:true});
   (function(){                                              // đón đầu nút chính
-    var urls=[];
-    document.querySelectorAll('.chapbtns .cbtn').forEach(function(a){
-      if(a.href) urls.push(a.href); });
-    if(!urls.length) return;
+    // CHỈ 1 nút: "reading" (đọc tiếp) nếu có, không thì First. Trước đón đầu cả First
+    // lẫn reading/Latest: 30/09 mở Yu-Gi-Oh = 2 tập ~290 trang render nguội cùng lúc
+    // với tập bấm thật (12-13s mỗi cái, tranh HDD).
+    var a=document.querySelector('.chapbtns .cbtn.reading')
+        ||document.querySelector('.chapbtns .cbtn.first');
+    if(!a||!a.href) return;
     var idle=window.requestIdleCallback||function(f){return setTimeout(f,800);};
-    idle(function(){ pf(urls); });
+    idle(function(){ pf([a.href]); });
   })();
 
   // --- Đồng bộ nút "reading" + làm-mờ-đã-đọc từ NGUỒN SỐNG. HTML server render
@@ -2703,9 +2824,16 @@ READER_JS = """
     bot.classList.toggle('hide',h);
     hideCue();                                 // mọi thao tác bar -> gỡ pill hẳn
   }
-  // lưu vị trí đọc lên server theo tài khoản (guest thì bỏ qua). Gộp ghi tối đa
-  // mỗi 2.5s, và ghi ngay khi rời/ẩn trang để không mất vị trí cuối.
-  var netT=0, netTimer=null;
+  // lưu vị trí đọc: localStorage (guest = nơi lưu chính; tài khoản = mirror) tối đa
+  // 1s/lần khi cuộn; lên server theo tài khoản gộp tối đa 10s/lần (trước 2.5s: bộ đo
+  // 30/09 đếm 3027 POST/ngày, lần nào cũng ghi users.json), và ghi ngay khi rời/ẩn
+  // trang để không mất vị trí cuối.
+  var netT=0, netTimer=null, lsT=0;
+  function mirrorPos(){
+    lsT=Date.now();
+    var y=Math.round(scrollY);
+    try{ if(LOGGEDIN) LS.mset(D.uk,D.sid,D.rel,y,D.name); else LS.setProg(D.sid,D.rel,y,D.name); }catch(e){}
+  }
   function sendPos(){
     netT=Date.now();
     if(netTimer){clearTimeout(netTimer);netTimer=null;}
@@ -2722,7 +2850,9 @@ READER_JS = """
     }catch(e){}
   }
   function savePos(){
-    var wait=2500-(Date.now()-netT);
+    if(Date.now()-lsT>1000) mirrorPos();
+    if(!LOGGEDIN) return;                     // guest: chỉ localStorage
+    var wait=10000-(Date.now()-netT);
     if(wait<=0) sendPos();
     else if(!netTimer) netTimer=setTimeout(sendPos,wait);
   }
@@ -2857,6 +2987,18 @@ READER_JS = """
     }
   }catch(e){}
   markRead(); // chương ngắn hiện trọn trong 1 màn hình
+  // Ảnh server chưa kịp đo (đang đo nền, class nd) mang tỉ lệ ƯỚC LƯỢNG -> khi ảnh về
+  // thì đặt tỉ lệ thật. 'load' không nổi bọt -> nghe ở pha capture trên #strip.
+  (function(){
+    var strip=document.getElementById('strip'); if(!strip) return;
+    function fix(im){
+      if(!im.classList.contains('nd')||!im.naturalWidth||im.closest('.spread')) return;
+      im.style.aspectRatio=im.naturalWidth+'/'+im.naturalHeight;
+      im.classList.remove('nd');
+    }
+    strip.addEventListener('load',function(e){ if(e.target.tagName==='IMG') fix(e.target); },true);
+    [].forEach.call(strip.querySelectorAll('img.nd'),function(im){ if(im.complete) fix(im); });
+  })();
   // --- bộ nạp tuần tự: tải dần cả chương, ưu tiên ảnh từ vị trí đọc trở xuống.
   // Ảnh lỗi tự thử lại 3 lần (1s-3s-8s); hết lượt thì thành ô "chạm để tải
   // lại". Chạm 1 ô, có mạng lại, hay mở lại màn hình -> cả cụm ảnh lỗi hồi.
@@ -2982,13 +3124,13 @@ READER_JS = """
   document.addEventListener('visibilitychange',function(){
     if(document.visibilityState==='visible') syncPages();
   });
-  // --- Prefetch trang chương KẾ (và trước) vào cache SW khi rảnh -> bấm Next/Prev
-  // gần như tức thì (SW trả HTML từ cache, khỏi round-trip qua tunnel). Việc render
-  // trước cũng WARM luôn cache kích thước ảnh (_dim_cache) phía server -> hết cảnh
-  // mở nguội quét PIL từng ảnh. Chỉ nạp HTML (2 doc nhẹ), KHÔNG kéo ảnh chương.
+  // --- Prefetch trang chương KẾ vào cache SW khi rảnh -> bấm Next gần như tức thì
+  // (SW trả HTML từ cache, khỏi round-trip qua tunnel). Việc render trước cũng WARM
+  // luôn cache kích thước ảnh phía server. Chỉ nạp HTML, KHÔNG kéo ảnh chương. Bỏ
+  // chương TRƯỚC (01/10): hiếm khi bấm, mà mỗi lượt là 1 render (tập ~300 trang).
   (function(){
     if(!('serviceWorker' in navigator)) return;
-    var urls=[]; if(D.next) urls.push(D.next); if(D.prev) urls.push(D.prev);
+    var urls=[]; if(D.next) urls.push(D.next);
     if(!urls.length) return;
     var idle=window.requestIdleCallback||function(f){return setTimeout(f,800);};
     function send(){ var c=navigator.serviceWorker.controller;
@@ -3069,10 +3211,13 @@ def brand_src():
 
 
 # ---------------------------------------------------------------------------
-# Service Worker: cache-first cho tài nguyên tĩnh + ảnh (bìa/trang), stale-
-# while-revalidate cho trang HTML. Trị: (a) màn trắng khi mở nguội - shell trả
-# từ cache tức thì không chờ mạng; (b) bìa nháy đen khi reload - ảnh lấy từ
-# cache, không tải lại qua tunnel.
+# Service Worker: cache-first cho tài nguyên tĩnh + ảnh BÌA, stale-while-revalidate
+# cho trang HTML. Trị: (a) màn trắng khi mở nguội - shell trả từ cache tức thì không
+# chờ mạng; (b) bìa nháy đen khi reload - bìa lấy từ cache, không tải lại qua tunnel.
+# Ảnh CHƯƠNG (/img/) KHÔNG đi qua SW từ 01/10: bộ đo cho thấy kho ảnh SW lớn không
+# giới hạn (~500MB/ngày đọc) làm caches.open() lúc SW khởi động lạnh chậm dần
+# (9ms -> 1.3s trong 1 ngày) = màn trắng khi mở app. Ảnh chương có URL ?v=mtime nên
+# để bộ nhớ đệm HTTP của trình duyệt giữ (immutable) — trình duyệt tự giới hạn/dọn.
 # ---------------------------------------------------------------------------
 
 # Danh sách precache lúc cài SW (shell tối thiểu để trang chủ hiện được ngay).
@@ -3087,8 +3232,20 @@ _SW_TEMPLATE = ("""
 const VER = '__VER__';
 const STATIC_CACHE = 'toony-static-' + VER;
 const PAGE_CACHE   = 'toony-pages-' + VER;
-const IMG_CACHE    = 'toony-img';           // ảnh: URL đã versioned/độc nhất
+const COVER_CACHE  = 'toony-cover';         // bìa: URL ?v= đổi khi bìa đổi
+// Trần số mục: Cache Storage phình làm caches.open() lúc SW khởi động lạnh chậm dần
+// (đo 01/10). put() lại 1 key đưa nó về CUỐI danh sách keys() -> xoá từ đầu = bỏ trang
+// lâu không mở/không revalidate nhất.
+const PAGE_MAX = 60, COVER_MAX = 150;
 const PRECACHE = __PRECACHE__;
+
+async function trim(name, max) {
+  try {
+    const c = await caches.open(name);
+    const keys = await c.keys();
+    for (let i = 0; i < keys.length - max; i++) await c.delete(keys[i]);
+  } catch (e) {}
+}
 
 self.addEventListener('install', (e) => {
   self.skipWaiting();
@@ -3099,8 +3256,8 @@ self.addEventListener('activate', (e) => {
   e.waitUntil((async () => {
     const keys = await caches.keys();
     await Promise.all(keys.map((k) => {
-      if (k === STATIC_CACHE || k === PAGE_CACHE || k === IMG_CACHE) return null;
-      return caches.delete(k);   // dọn phiên bản shell/pages cũ
+      if (k === STATIC_CACHE || k === PAGE_CACHE || k === COVER_CACHE) return null;
+      return caches.delete(k);   // dọn shell/pages đời cũ + kho ảnh 'toony-img' cũ
     }));
     await self.clients.claim();
   })());
@@ -3143,7 +3300,11 @@ function pumpPrefetch() {
         const res = await fetch(url, {credentials: 'same-origin',
                                       headers: {'X-Toony-Kind': 'prefetch'}});
         ev({e: 'pf', u: new URL(url).pathname, st: res.status, net: Date.now() - t0});
-        if (res && res.ok) { await cache.put(url, res.clone()); return true; }
+        if (res && res.ok) {
+          await cache.put(url, res.clone());
+          await trim(PAGE_CACHE, PAGE_MAX);
+          return true;
+        }
       } catch (e) { ev({e: 'pf', u: new URL(url).pathname, err: 1, net: Date.now() - t0}); }
       return false;
     }).catch(() => false);
@@ -3174,7 +3335,12 @@ self.addEventListener('message', (e) => {
       .then(() => { if (e.ports && e.ports[0]) e.ports[0].postMessage({ok: true}); }));
   } else if (d.type === 'prefetch' && Array.isArray(d.urls)) {
     for (const raw of d.urls) {
-      const u = nokey(raw);
+      // URL TUYỆT ĐỐI: trang đọc gửi D.next dạng '/read/..' (tương đối). Bản 28/09 giữ
+      // nguyên -> new URL(url) trong pumpPrefetch ném lỗi SAU khi tải xong -> không lưu
+      // cache (Next luôn ra mạng 30/09-01/10), và key lệch key điều hướng (req.url tuyệt
+      // đối) nên chống trùng cũng hụt.
+      let u;
+      try { u = nokey(new URL(raw, self.location.origin).href); } catch (x) { continue; }
       if (pfQ.indexOf(u) < 0 && !inflight.has(u)) pfQ.push(u);
     }
     if (pfQ.length > PF_QMAX) {
@@ -3200,8 +3366,8 @@ self.addEventListener('message', (e) => {
   }
 });
 
-function isImg(url) {
-  return url.pathname.startsWith('/cover/') || url.pathname.startsWith('/img/');
+function isCover(url) {
+  return url.pathname.startsWith('/cover/');
 }
 function isStatic(url) {
   return url.pathname.startsWith('/static/')
@@ -3216,16 +3382,18 @@ self.addEventListener('fetch', (e) => {
   const url = new URL(req.url);
   if (url.origin !== self.location.origin) return;
 
-  // Ảnh + tài nguyên tĩnh: cache-first (URL đã đổi khi nội dung đổi).
-  if (isImg(url) || isStatic(url)) {
-    const cacheName = isImg(url) ? IMG_CACHE : STATIC_CACHE;
+  // Ảnh chương /img/: KHÔNG chặn -> trình duyệt tự lo bằng HTTP cache (immutable).
+  // Bìa + tài nguyên tĩnh: cache-first (URL đã đổi khi nội dung đổi).
+  if (isCover(url) || isStatic(url)) {
+    const cover = isCover(url), cacheName = cover ? COVER_CACHE : STATIC_CACHE;
     e.respondWith((async () => {
       const cache = await caches.open(cacheName);
       const hit = await cache.match(req);
       if (hit) return hit;
       const res = await fetch(req);
       // waitUntil: giữ SW sống tới khi put xong (iOS tắt SW ngay sau respondWith).
-      if (res && res.ok) e.waitUntil(cache.put(req, res.clone()).catch(() => {}));
+      if (res && res.ok) e.waitUntil(cache.put(req, res.clone())
+        .then(() => cover ? trim(COVER_CACHE, COVER_MAX) : null).catch(() => {}));
       return res;
     })());
     return;
@@ -3258,6 +3426,7 @@ self.addEventListener('fetch', (e) => {
           fetch(req.url, {credentials: 'same-origin', cache: 'no-store',
                           headers: {'X-Toony-Kind': 'revalidate'}})
             .then((res) => { if (res && res.ok) return cache.put(req.url, res.clone()); })
+            .then(() => trim(PAGE_CACHE, PAGE_MAX))
             .catch(() => {}));
         return hit;
       }
@@ -3287,7 +3456,7 @@ self.addEventListener('fetch', (e) => {
         if (res && res.ok) {
           const put = cache.put(req, res.clone()).then(() => true, () => false);
           put.then(done);
-          e.waitUntil(put);
+          e.waitUntil(put.then(() => trim(PAGE_CACHE, PAGE_MAX)));
         } else done(false);
         return res;
       } catch (err) {
@@ -3525,7 +3694,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_page(page("Not found", '<div class="wrap"><h1>404 — Not found</h1>'
                             '<a class="navbtn" href="/">Back to Library</a></div>'), 404)
 
-    def send_file_bytes(self, ctype, data, etag=None):
+    def send_file_bytes(self, ctype, data, etag=None, cache="public, max-age=604800"):
         # Hỗ trợ HTTP Range (206) và HEAD: một số proxy ảnh khó tính của Meta
         # (bong bóng link trong chat Messenger) HEAD hoặc xin từng phần trước khi
         # nhận; thiếu là chúng bỏ, ra ô ảnh trắng. Client dễ tính vẫn GET như cũ.
@@ -3557,7 +3726,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         if status == 206:
             self.send_header("Content-Range", f"bytes {start}-{end}/{total}")
-        self.send_header("Cache-Control", "public, max-age=604800")
+        self.send_header("Cache-Control", cache)
         if etag:
             self.send_header("ETag", etag)
         self.end_headers()
@@ -3812,15 +3981,21 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_notfound()
             st = os.stat(full)
             etag = f'"{st.st_mtime_ns}-{st.st_size}"'
+            # Ảnh chương KHÔNG còn nằm trong cache SW (01/10) -> bộ nhớ đệm HTTP của trình
+            # duyệt giữ. URL có ?v=mtime (đổi khi file đổi) => immutable 1 năm: không
+            # revalidate qua tunnel. Thiếu ?v (link cũ) -> 7 ngày như trước.
+            cc = ("public, max-age=31536000, immutable"
+                  if "v=" in urlsplit(self.path).query else "public, max-age=604800")
             if self.headers.get("If-None-Match") == etag:
                 self.send_response(304)
                 self.send_header("ETag", etag)
+                self.send_header("Cache-Control", cc)
                 self.send_header("Content-Length", "0")
                 self.end_headers()
                 return
             with open(full, "rb") as f:
                 data = f.read()
-            return self.send_file_bytes(MIME.get(ext, "application/octet-stream"), data, etag)
+            return self.send_file_bytes(MIME.get(ext, "application/octet-stream"), data, etag, cc)
 
         if segs[0] == "static" and len(segs) == 2:
             a = STATIC_ASSETS.get(segs[1])
@@ -4036,6 +4211,8 @@ def main():
         sys.exit(1)
     # Heartbeat reader RA healthchecks.io (độc lập supervisor) — trống url trong config = tắt.
     threading.Thread(target=reader_heartbeat_loop, args=(args.port,), daemon=True).start()
+    # Đo trước kích thước ảnh cả thư viện, ưu tiên thấp (xem _dims_sweep).
+    threading.Thread(target=_dims_sweep, daemon=True).start()
     try:
         srv.serve_forever()
     except KeyboardInterrupt:

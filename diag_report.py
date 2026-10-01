@@ -223,7 +223,10 @@ def build_report(meta_dir, hours=48.0, brief=False):
         dups = [e for e in nav_ev if e.get("dup")]
         add(f"  điều hướng: {len(nav_ev)} | trúng cache {len(hits)} | ra mạng {len(miss)}"
             f" | chờ prefetch sẵn có {len(dups)}")
-        add(f"  mở cache {_stat([e.get('open') for e in nav_ev])}"
+        cold = [e for e in nav_ev if (e.get("age") or 0) < 2000]
+        warm = [e for e in nav_ev if (e.get("age") or 0) >= 2000]
+        add(f"  mở cache: SW vừa khởi động {_stat([e.get('open') for e in cold])} (n={len(cold)})"
+            f" | SW đang chạy {_stat([e.get('open') for e in warm])}"
             f" | tra cache {_stat([e.get('match') for e in nav_ev])}")
         add(f"  mạng khi trượt cache {_stat([e.get('net') for e in miss])}")
         add(f"  SW vừa khởi động (<2s) lúc điều hướng: "
@@ -304,18 +307,26 @@ def build_report(meta_dir, hours=48.0, brief=False):
     # [10] lưu trữ
     add("")
     add("[10] LƯU TRỮ TRÊN THIẾT BỊ (bản đo gần nhất mỗi thiết bị)")
-    last = {}
+    # dung lượng và số mục cache lấy RIÊNG bản gần nhất có từng thứ (có lần đo có
+    # dung lượng mà SW không kịp trả số mục -> trước đây in nhầm 'cache {}')
+    last_st, last_cc = {}, {}
     for r in navs:
-        if r.get("st") or (isinstance(r.get("sw"), dict) and r["sw"].get("cc")):
-            last[_dev(r)] = r
-    for dev, r in sorted(last.items()):
-        stg = r.get("st") or {}
-        cc = (r.get("sw") or {}).get("cc") or {}
-        ls = r.get("ls") or {}
-        add(f"  {dev}: {_hm(r.get('rt'))} dùng {(stg.get('u') or 0) / 1e6:.1f}MB / quota "
-            f"{(stg.get('q') or 0) / 1e6:.0f}MB | cache {cc} | localStorage {ls.get('n')} khoá "
-            f"{(ls.get('sz') or 0) / 1000:.0f}K ký tự, chsort={ls.get('chsort')}")
-    if not last:
+        if r.get("st"):
+            last_st[_dev(r)] = r
+        if isinstance(r.get("sw"), dict) and r["sw"].get("cc"):
+            last_cc[_dev(r)] = r
+    for dev in sorted(set(last_st) | set(last_cc)):
+        rs, rc = last_st.get(dev), last_cc.get(dev)
+        line = f"  {dev}:"
+        if rs:
+            stg, ls = rs.get("st") or {}, rs.get("ls") or {}
+            line += (f" {_hm(rs.get('rt'))} dùng {(stg.get('u') or 0) / 1e6:.1f}MB / quota "
+                     f"{(stg.get('q') or 0) / 1e6:.0f}MB | localStorage {ls.get('n')} khoá "
+                     f"{(ls.get('sz') or 0) / 1000:.0f}K ký tự, chsort={ls.get('chsort')}")
+        if rc:
+            line += f" | số mục cache ({_hm(rc.get('rt'))}): {rc['sw']['cc']}"
+        add(line)
+    if not last_st and not last_cc:
         add("  (chưa có — đo ở trang chủ, tối đa 30 phút/lần)")
     vers = sorted({(r.get("sw") or {}).get("ver") for r in navs
                    if isinstance(r.get("sw"), dict) and (r.get("sw") or {}).get("ver")})
