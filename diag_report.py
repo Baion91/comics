@@ -260,7 +260,7 @@ def build_report(meta_dir, hours=48.0, brief=False):
     add(f"  mở lại app từ nền không tải lại trang: {len(res)} | khôi phục bfcache: {len(bf)}")
 
     # [6] server
-    real = [r for r in sv if r.get("k") != "selfping"]
+    real = [r for r in sv if r.get("k") not in ("selfping", "sweep")]
     add("")
     add("[6] SERVER theo loại request (thời gian xử lý)")
     kinds = {}
@@ -274,6 +274,12 @@ def build_report(meta_dir, hours=48.0, brief=False):
     dw = sum(r.get("dw") or 0 for r in real)
     add(f"  kích thước ảnh: đo nguội (mở PIL) {dc} | có sẵn {dw}")
     add(f"  số request đồng thời tối đa: {max([r.get('fl') or 0 for r in real] or [0])}")
+    sw = [r for r in sv if r.get("k") == "sweep"]
+    if sw:
+        r = sw[-1]
+        add(f"  luồng đo kích thước nền: {r.get('p')} lúc {_hm(r.get('t'))} — {r.get('ch')} chương,"
+            f" đo mới {r.get('new')} ảnh, có sẵn {r.get('had')}, chạy {_fmt(r.get('ms'))}"
+            f" (bắt đầu {_hm(sw[0].get('t') - (sw[0].get('ms') or 0))})")
 
     add("")
     add("[7] REQUEST SERVER CHẬM NHẤT (giờ | loại | path | ms | ảnh nguội/ấm | đồng thời | thư viện)")

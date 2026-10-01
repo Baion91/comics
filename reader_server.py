@@ -969,6 +969,7 @@ def _dims_saver():
 # bằng file .reader-meta/dims-sweep-off) -> mọi chương có sẵn kích thước trước khi mở.
 DIMS_SYNC_BUDGET = 0.25
 DIMS_SWEEP_DELAY = 120          # giây sau khởi động mới bắt đầu quét cả thư viện
+DIMS_SWEEP_IDLE = 3             # chỉ quét khi request cuối đã xong >= chừng này giây
 DIMS_SWEEP_OFF_FLAG = os.path.join(META_DIR, "dims-sweep-off")
 _dim_q = collections.deque()    # (path, mt) chờ đo — ảnh của chương VỪA mở (ưu tiên)
 _dim_qset = set()
@@ -1023,33 +1024,63 @@ def dims_budget():
     return dims
 
 
+def _sweep_wait():
+    """Chờ server RẢNH: không request nào đang chạy, request cuối xong >= DIMS_SWEEP_IDLE
+    giây, không còn ảnh ưu tiên chờ đo. False = bị tắt bằng file cờ. Bản 01/10 đầu chỉ
+    nhường khi CÓ request đang chạy -> khe hở giữa 2 ảnh (mạng tunnel) vẫn quét thư mục
+    liên tục, chiếm HDD: bộ đo thấy 7 ảnh Tap 3 mất 1.1-4.7s (13:09 01/10)."""
+    while True:
+        if os.path.exists(DIMS_SWEEP_OFF_FLAG):
+            return False
+        if (_inflight_n[0] == 0 and not _dim_q
+                and time.time() - _last_req_t[0] >= DIMS_SWEEP_IDLE):
+            return True
+        time.sleep(0.5)
+
+
 def _dims_sweep():
-    """1 lượt quét CẢ thư viện, đo ảnh chưa có kích thước. Ưu tiên thấp: chờ khi có
-    request đang chạy, nghỉ 10ms mỗi ảnh. Kết quả lưu dims-cache.json -> lượt sau
-    (lần khởi động kế) chỉ còn duyệt thư mục, gần như không mở ảnh."""
+    """1 lượt quét CẢ thư viện, đo ảnh chưa có kích thước. Ưu tiên thấp: chỉ chạy khi
+    server rảnh (_sweep_wait trước MỖI chương và mỗi ảnh phải mở), nghỉ giữa các bước.
+    Kết quả lưu dims-cache.json -> lượt sau (lần khởi động kế) chỉ còn duyệt thư mục.
+    Tiến độ ghi vào bộ đo (server.jsonl, k='sweep') để xem trong /diag."""
     time.sleep(DIMS_SWEEP_DELAY)
-    if os.path.exists(DIMS_SWEEP_OFF_FLAG):
-        return
     try:
         lib = get_library()
     except Exception:
         return
+    t0 = time.time()
+    st = {"ch": 0, "new": 0, "had": 0}
+
+    def mark(phase):
+        diag_write("server", {"t": int(time.time() * 1000), "k": "sweep", "p": phase,
+                              "ms": round((time.time() - t0) * 1000), **st})
+
+    if not _sweep_wait():
+        return
+    mark("start")
     for s in list(lib.values()):
         for rel in list(s.get("order") or []):
+            if not _sweep_wait():
+                return mark("stop")
             ch_dir = os.path.join(s["path"], *rel.split("/"))
             files, mts = list_images_mt(ch_dir)
+            st["ch"] += 1
             for f in files:
                 path, mt = os.path.join(ch_dir, f), mts.get(f)
                 with _dim_lock:
                     c = _dim_cache.get(path)
                 if c and c[0] == mt:
+                    st["had"] += 1
                     continue
-                while _inflight_n[0] > 0 or _dim_q:     # nhường request + đo ưu tiên
-                    time.sleep(0.5)
-                if os.path.exists(DIMS_SWEEP_OFF_FLAG):
-                    return
+                if not _sweep_wait():
+                    return mark("stop")
                 img_dims(path, mt)
+                st["new"] += 1
                 time.sleep(0.01)
+            if st["ch"] % 300 == 0:
+                mark("progress")
+            time.sleep(0.02)
+    mark("done")
 
 
 def _dim_count(kind):
@@ -1639,7 +1670,10 @@ DIAG_JS = """
       r[p.name==='first-contentful-paint'?'fcp':'fp']=Math.round(p.startTime); }); }catch(e){}
     try{ var tp=JSON.parse(sessionStorage.getItem('toony_tap')||'null'); sessionStorage.removeItem('toony_tap');
       var org=P.timeOrigin||(P.timing&&P.timing.navigationStart);
-      if(tp&&org&&tp.h===location.href.split('#')[0]) r.tap=Math.round(org-tp.t); }catch(e){}
+      // chỉ nhận mốc bấm MỚI (<30s): trang bị iOS bỏ khi ở nền rồi tự tải lại sẽ gặp
+      // mốc cũ còn sót (01/10 ra "bấm -> trang mới 81s" ảo)
+      var dt=tp&&org?org-tp.t:-1;
+      if(tp&&tp.h===location.href.split('#')[0]&&dt>=0&&dt<30000) r.tap=Math.round(dt); }catch(e){}
     r.ls=lsInfo();
     return r;
   }
@@ -1656,12 +1690,19 @@ DIAG_JS = """
       send(r);
     });
   }
-  addEventListener('pagehide',function(){
-    flushGaps();
-    if(!reported){ reported=true; var r=navRec(); r.early=1; send(r); }
+  function early(){ if(!reported){ reported=true; var r=navRec(); r.early=1; send(r); } }
+  addEventListener('pagehide',function(){ flushGaps(); early(); });
+  // app vào nền: iOS hay KHÔNG bắn pagehide mà bỏ luôn trang -> gửi bản rút gọn ngay
+  document.addEventListener('visibilitychange',function(){
+    if(document.visibilityState==='hidden') early();
   });
+  // Đo sau 'load' 1.5s, HOẶC muộn nhất 5s sau khi DOM xong: trang đọc nạp ảnh nối tiếp
+  // nên 'load' có thể tới rất muộn / không bao giờ (bản đầu mất số đo trang đọc).
   function later(){ setTimeout(report,1500); }
   if(document.readyState==='complete') later(); else addEventListener('load',later);
+  if(document.readyState==='loading')
+    document.addEventListener('DOMContentLoaded',function(){ setTimeout(report,5000); });
+  else setTimeout(report,5000);
 })();
 """
 
@@ -3514,6 +3555,7 @@ _diag_sizes = {}
 _diag_flag = [True, 0.0]        # [đang bật, lần kiểm cờ gần nhất]
 _inflight_lock = threading.Lock()
 _inflight_n = [0]
+_last_req_t = [0.0]             # lúc request gần nhất bắt đầu/kết thúc (luồng đo nền chờ rảnh)
 
 
 def diag_enabled():
@@ -3583,6 +3625,7 @@ class Handler(BaseHTTPRequestHandler):
         _dim_tl.dw = 0
         with _inflight_lock:
             _inflight_n[0] += 1
+            _last_req_t[0] = time.time()
             self._dg_fl = _inflight_n[0]
 
     def _dg_kind(self, path):
@@ -3607,6 +3650,7 @@ class Handler(BaseHTTPRequestHandler):
     def _dg_end(self):
         with _inflight_lock:
             _inflight_n[0] -= 1
+            _last_req_t[0] = time.time()
         try:
             path = urlsplit(self.path).path
             if path.startswith("/api/diag"):      # chính bộ đo -> không ghi

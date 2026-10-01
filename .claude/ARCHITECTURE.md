@@ -991,10 +991,14 @@ cách chạy thật + decode thử ảnh.
   `dims_budget()` đo đồng bộ tối đa `DIMS_SYNC_BUDGET`=0.25s, còn lại `img_dims_nowait()` xếp hàng cho thread
   `_dims_worker` (ưu tiên); ảnh chưa đo mang `class="nd"` + tỉ lệ ước lượng (trung vị chương, không có thì 2/3),
   reader.js sửa tỉ lệ thật khi ảnh `load` (capture trên `#strip`). Thread `_dims_sweep` (sau khởi động 120s) đo cả
-  thư viện ưu tiên thấp (chờ khi có request, 10ms/ảnh; tắt bằng file `dims-sweep-off`); `dims-cache.json` (28/09)
+  thư viện ưu tiên thấp (`_sweep_wait`: chỉ chạy khi không request nào đang chạy VÀ request cuối xong ≥`DIMS_SWEEP_IDLE`=3s, kiểm trước mỗi chương + mỗi ảnh phải mở; 10ms/ảnh, 20ms/chương; tiến độ ghi bộ đo `k='sweep'` start/progress mỗi 300 chương/done/stop; tắt bằng file `dims-sweep-off`. Bản đầu 01/10 chỉ nhường khi CÓ request đang chạy → khe giữa 2 ảnh vẫn quét thư mục liên tục, chiếm HDD: 7 ảnh 1.1–4.7s); `dims-cache.json` (28/09)
   ghi 20s/lần, cache >20k mục thì 90s/lần (json.dump giữ GIL). Series chỉ đón đầu **1** nút (reading, không có thì
   First); reader chỉ đón đầu chương kế. ③ `get_library()` trả cache ngay, kiểm chữ ký trong thread nền tối đa
   10s/lần (`_lib_checked`), chương mới hiện sau ~10s + thời gian quét. ④ lưu vị trí: localStorage 1s, server 10s.
+  **Bộ đo — 2 bẫy đo đã sửa 01/10**: (a) trang đọc nạp ảnh nối tiếp nên `load` tới rất muộn/không bao giờ → DIAG_JS
+  đo muộn nhất DOMContentLoaded+5s, và gửi bản rút gọn khi `visibilitychange→hidden` (iOS hay bỏ trang ở nền mà
+  không bắn `pagehide`); (b) mốc bấm `toony_tap` chỉ nhận nếu <30s (trang bị iOS bỏ rồi tự tải lại từng lấy mốc cũ
+  → "bấm→trang mới 81s" ảo).
   **Gotcha đã dính**: SW chuẩn hoá URL prefetch thành TUYỆT ĐỐI (`new URL(raw, origin)`) — trang đọc gửi `D.next`
   tương đối; bản 28/09 gọi `new URL(url)` không base → ném lỗi sau khi tải xong → prefetch chương kế KHÔNG được
   lưu (Next luôn ra mạng 30/09–01/10) và key lệch key điều hướng (chống trùng hụt).
