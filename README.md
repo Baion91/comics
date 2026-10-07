@@ -74,8 +74,10 @@ Một tool cho MỌI site, tự nhận site theo link (hiện hỗ trợ **Asura
 > **Raven Scans đã đổi `ravenscans.org` → `ravenscans.net`** (và đổi cấu trúc URL chương) —
 > dùng link `.net` mới; link `.org` cũ vẫn được nhận.
 
-> **MangaDex**: dán link `https://mangadex.org/title/...` như bình thường. Chỉ tải bản dịch
-> **tiếng Anh**, tự chọn bản mới/nét nhất khi 1 chương có nhiều nhóm dịch. Truyện đã có bản
+> **MangaDex**: dán link `https://mangadex.org/title/...` như bình thường. Mặc định tải bản dịch
+> **tiếng Anh**; muốn ngôn ngữ khác thì gắn `?lang=` sau link (vd `...?lang=vi` = tiếng Việt,
+> mã theo MangaDex: `es-la`, `pt-br`...) → vào folder riêng `"<tên> [VI]"`. Tự chọn bản
+> mới/nét nhất khi 1 chương có nhiều nhóm dịch. Truyện đã có bản
 > quyền tiếng Anh đôi khi **thiếu vài chương** (bản "external" trỏ ra trang đọc chính thức,
 > ảnh không nằm trên MangaDex) — đó là giới hạn nguồn, không phải lỗi tool.
 

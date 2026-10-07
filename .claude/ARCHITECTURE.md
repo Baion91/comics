@@ -771,6 +771,11 @@ cách chạy thật + decode thử ảnh.
   `chapter=null` (oneshot) gán số `0.0` chứ không bỏ. Ảnh qua
   **@Home**: `/at-home/server/{chapterId}` → ghép `{baseUrl}/data/{hash}/{file}` (đuôi
   .png/.jpg thật). Bìa: relationship `cover_art` → `uploads.mangadex.org/covers/{uuid}/{fileName}`.
+- **MangaDex chọn ngôn ngữ bằng `?lang=xx` trong URL** (07/10; mặc định `en`): `series_slug`
+  trả `"{uuid}@vi"` (EN giữ UUID trần), các hàm còn lại tách bằng `_split()`. Mã ngôn ngữ
+  NẰM TRONG URL vì URL là thứ duy nhất chảy nguyên vẹn qua hàng đợi bot, watchlist,
+  `check_updates`, `into:` → không phải sửa supervisor. Bản khác EN → folder `"<tên> [VI]"`
+  riêng (chương EN/VI cùng số không trộn; folder EN cũ không đổi tên).
 - **Đối chiếu tool `mansuf/mangadex-downloader` v3** (nguồn logic trên): khớp dedup
   `f"{volume}:{chapter}"` + order + contentRating. Chỗ **CHƯA làm** (chấp nhận): không
   report về `api.mangadex.network/report`, không tự xin node @Home khác khi 1 node hỏng,
@@ -1141,7 +1146,7 @@ cách chạy thật + decode thử ảnh.
 
 ```
 python comic_downloader.py <URL> [--from A --to B | --chapters 5,7,20-25] [--cbz]   # tự nhận site
-python comic_downloader.py "https://mangadex.org/title/{uuid}/..."   # MangaDex (bản dịch en)
+python comic_downloader.py "https://mangadex.org/title/{uuid}/..."   # MangaDex (bản dịch en; ?lang=vi = tiếng Việt)
 python comic_downloader.py --site raven <slug>     # ép site khi gõ slug trần
 python comic_downloader.py --pack "downloads\<Tên>"
 python check_library.py [downloads\<Tên>] [--fix] [--recheck] [--workers N] [--black]  # kiểm ảnh đã tải
