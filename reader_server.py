@@ -12,6 +12,7 @@ Chạy:  python reader_server.py  (tùy chọn: --port 8080)
 """
 
 import argparse
+import array
 import base64
 import binascii
 import collections
@@ -285,20 +286,38 @@ def _library_signature():
 _lib_checked = 0.0      # lần gần nhất đã khởi động kiểm chữ ký nền
 
 
+def _lib_scan_diag(why, sig_ms, scan_ms, series):
+    """Bộ đo: 1 dòng mỗi lần QUÉT LẠI cả thư viện (k='libscan') — đo xem việc quét lại
+    mỗi CACHE_TTL giây tốn bao nhiêu trước khi đổi sang quét theo truyện có thay đổi."""
+    try:
+        diag_write("server", {"t": int(time.time() * 1000), "k": "libscan", "why": why,
+                              "ms": round(scan_ms, 1), "sig": round(sig_ms, 1),
+                              "n": len(series),
+                              "ch": sum(x["total"] for x in series.values())})
+    except Exception:
+        pass
+
+
 def _refresh_library():
     """Thread nền: tính chữ ký thư mục; đổi (thêm/xoá chương) hoặc cache quá TTL ->
     quét lại toàn bộ rồi thay cache. Không request nào phải chờ scandir."""
     global _lib_cache, _lib_refreshing
     try:
+        t0 = time.perf_counter()
         sig = _library_signature()
+        sig_ms = (time.perf_counter() - t0) * 1000
         with _lib_lock:
             cache = _lib_cache
             fresh = bool(cache) and cache[2] == sig and time.time() - cache[0] < CACHE_TTL
         if not fresh:
+            why = ("ttl" if cache[2] == sig else "dir") if cache else "bust"
+            t0 = time.perf_counter()
             series = _scan_library()
+            scan_ms = (time.perf_counter() - t0) * 1000
             sig = _library_signature()
             with _lib_lock:
                 _lib_cache = (time.time(), series, sig)
+            _lib_scan_diag(why, sig_ms, scan_ms, series)
     finally:
         with _lib_lock:
             _lib_refreshing = False
@@ -325,11 +344,14 @@ def get_library():
         with _lib_lock:
             if _lib_cache:  # request khác vừa build xong trong lúc ta chờ lock
                 return _lib_cache[1]
+        t0 = time.perf_counter()
         series = _scan_library()
+        t1 = time.perf_counter()
         sig2 = _library_signature()
         with _lib_lock:
             _lib_cache = (time.time(), series, sig2)
             _lib_checked = time.time()
+        _lib_scan_diag("cold", (time.perf_counter() - t1) * 1000, (t1 - t0) * 1000, series)
         return series
 
 
@@ -903,99 +925,214 @@ def continue_info(s, progress=None):
 
 
 # ---------------------------------------------------------------------------
-# Cache kích thước ảnh (đặt aspect-ratio để trang không nhảy khi ảnh tải)
+# Kích thước ảnh (đặt aspect-ratio để trang không nhảy khi ảnh tải)
 # và cache ảnh bìa thu nhỏ
 # ---------------------------------------------------------------------------
+# Thiết kế 07/10, thay cache THEO TỪNG ẢNH + luồng quét cả thư viện (28/09-01/10). Bản
+# cũ: trần 400k mục < 639k ảnh của thư viện -> chạm trần là xoá sạch -> sau MỖI lần
+# khởi động lại quét đo cả thư viện ~5 giờ, HDD đọc nguyên file WebP (Pillow 12 mở WebP
+# = WebPAnimDecoder(fp.read())), cache ~175MB RAM + ~50MB JSON ghi lại 90s/lần.
+# - Chỉ đo chương ĐANG mở / được render trước (prefetch chương kế), không quét nền.
+# - Đo bằng ĐẦU file (_hdr_size): WebP/PNG <= 30 byte, JPEG tới đoạn SOF. Pillow chỉ
+#   còn là dự phòng cho định dạng/file lạ (GIF/BMP/AVIF...; bộ đo đếm 'dp').
+# - Lưu THEO CHƯƠNG: khoá "<sid>/<rel>" -> (pages_version, array [w0,h0,w1,h1,...] theo
+#   đúng thứ tự list_images_mt; 0,0 = không đo được). pages_version đổi (thêm/xoá/thay
+#   file) -> đo lại cả chương đó. KHÔNG bao giờ xoá sạch: chỉ dọn chương không còn trong
+#   thư viện (so với _lib_cache trong RAM). File .reader-meta/dims-v2.json.
+
+DIMS_FILE = os.path.join(META_DIR, "dims-v2.json")
+_DIMS_OLD = [os.path.join(META_DIR, n)                  # file của bản cũ -> xoá khi nạp
+             for n in ("dims-cache.json", "dims-cache.json.tmp", "dims-sweep-off")]
+DIMS_SYNC_BUDGET = 0.25         # giây đo đồng bộ / 1 lần render, phần còn lại đo nền
+DIMS_SAVE_EVERY = 30            # giây; chỉ ghi khi có chương mới đo xong / vừa dọn
+DIMS_PRUNE_EVERY = 3600
+JPEG_SCAN_MAX = 1 << 20         # JPEG: SOF nằm sau APPn (EXIF/ICC); quá 1MB chưa thấy -> Pillow
+_JPEG_SOF = {0xC0, 0xC1, 0xC2, 0xC3, 0xC5, 0xC6, 0xC7, 0xC9, 0xCA, 0xCB, 0xCD, 0xCE, 0xCF}
 
 _dim_lock = threading.Lock()
-_dim_cache = {}
-# Cache kích thước ảnh LƯU RA ĐĨA: trước chỉ nằm trong RAM -> mỗi lần reader restart
-# (update/Windows update/watchdog) mọi chương trở lại "nguội": mở chương lần đầu phải
-# mở PIL TỪNG ảnh (tập ~60 trang trên HDD nguội = vài giây, sự cố "bấm đọc đơ" 25/09).
-# Khoá = đường dẫn tuyệt đối, kèm mtime_ns -> file đổi thì tự đo lại.
-DIMS_FILE = os.path.join(META_DIR, "dims-cache.json")
-DIMS_MAX = 400_000              # quá ngưỡng (rác file đã xoá tích luỹ) -> bỏ, đo lại dần
-_dim_loaded = False
-_dim_dirty = 0
-_dim_tl = threading.local()     # đếm ảnh đo nguội/ấm trong request hiện tại (bộ đo)
+_dims_store = {}                # khoá chương -> (ver, array('I')) — chương đã đo ĐỦ
+_dims_part = {}                 # khoá chương -> [ver, ch_dir, files, [(w,h)|None...]] đang đo dở
+_dims_loaded = False
+_dims_dirty = 0
+_dim_q = collections.deque()    # khoá chương chờ luồng nền đo nốt
+_dim_qset = set()
+_dim_ev = threading.Event()
+_dim_worker_on = False
+_dim_tl = threading.local()     # đếm trong request hiện tại (bộ đo): dc/dp/dw/dq
+_dims_stat = {"hdr": 0, "pil": 0}   # cộng dồn từ lúc khởi động (ghi vào nhịp tự kiểm 5')
+
+
+def _dim_count(kind, n=1):
+    try:
+        setattr(_dim_tl, kind, getattr(_dim_tl, kind, 0) + n)
+    except Exception:
+        pass
+
+
+def _jpeg_size(f, buf):
+    """(w, h) từ đoạn SOF cuối cùng trước SOS — y như Pillow (handler SOF ghi đè size).
+    Nhảy qua các đoạn APPn/DQT/DHT bằng độ dài đoạn, đọc lại 4KB tại chỗ cần."""
+    base, pos, wh = 0, 2, None
+    while True:
+        if pos + 9 > len(buf):
+            if base + pos > JPEG_SCAN_MAX:
+                return None
+            f.seek(base + pos)
+            base, pos = base + pos, 0
+            buf = f.read(4096)
+            if len(buf) < 9:                # file cụt: để Pillow quyết
+                return None
+            continue
+        if buf[pos] != 0xFF:
+            return None                     # rác giữa các đoạn: để Pillow xử lý
+        m = buf[pos + 1]
+        if m == 0xFF:                       # byte đệm
+            pos += 1
+            continue
+        if m == 0xD8 or m == 0x01 or 0xD0 <= m <= 0xD7:   # đoạn không có độ dài
+            pos += 2
+            continue
+        if m == 0xDA:                       # SOS: hết phần đầu
+            return wh
+        if m == 0xD9 or m == 0x00:
+            return None
+        seg = (buf[pos + 2] << 8) | buf[pos + 3]
+        if seg < 2:
+            return None
+        if m in _JPEG_SOF:
+            wh = ((buf[pos + 7] << 8) | buf[pos + 8], (buf[pos + 5] << 8) | buf[pos + 6])
+        pos += 2 + seg
+
+
+def _hdr_size(f):
+    """(w, h) đọc từ PHẦN ĐẦU file, không giải mã. Định dạng khác -> None (gọi Pillow).
+    GIF cũng để Pillow: Pillow nới size theo khung đầu nếu khung tràn màn hình logic."""
+    head = f.read(4096)
+    if head[:4] == b"RIFF" and head[8:12] == b"WEBP" and len(head) >= 30:
+        cc = head[12:16]
+        if cc == b"VP8 " and head[23:26] == b"\x9d\x01\x2a":      # lossy: 14 bit + 2 bit scale
+            return (head[26] | head[27] << 8) & 0x3FFF, (head[28] | head[29] << 8) & 0x3FFF
+        if cc == b"VP8L" and head[20] == 0x2F:                     # lossless: 14 bit (−1)
+            b = int.from_bytes(head[21:25], "little")
+            return (b & 0x3FFF) + 1, (b >> 14 & 0x3FFF) + 1
+        if cc == b"VP8X":                                          # mở rộng: canvas 24 bit (−1)
+            return (int.from_bytes(head[24:27], "little") + 1,
+                    int.from_bytes(head[27:30], "little") + 1)
+        return None
+    if head[:8] == b"\x89PNG\r\n\x1a\n" and head[12:16] == b"IHDR" and len(head) >= 24:
+        return int.from_bytes(head[16:20], "big"), int.from_bytes(head[20:24], "big")
+    if head[:3] == b"\xff\xd8\xff":
+        return _jpeg_size(f, head)
+    return None
+
+
+def _measure(path):
+    """(w, h) của 1 ảnh; (0, 0) = không đo được (file hỏng/mất)."""
+    try:
+        with open(path, "rb") as f:
+            try:
+                wh = _hdr_size(f)
+            except Exception:
+                wh = None
+    except OSError:
+        return (0, 0)
+    if wh and wh[0] > 0 and wh[1] > 0:
+        _dims_stat["hdr"] += 1
+        _dim_count("dc")
+        return wh
+    _dims_stat["pil"] += 1
+    _dim_count("dp")
+    if Image is None:
+        return (0, 0)
+    try:
+        with Image.open(path) as im:
+            return im.size
+    except Exception:
+        return (0, 0)
 
 
 def _dims_load_locked():
-    global _dim_loaded
-    _dim_loaded = True
+    global _dims_loaded
+    _dims_loaded = True
+    for p in _DIMS_OLD:
+        try:
+            os.remove(p)
+        except OSError:
+            pass
     try:
-        with open(DIMS_FILE, encoding="utf-8") as f:
-            raw = json.load(f)
-        if isinstance(raw, dict) and len(raw) <= DIMS_MAX:
-            for p, v in raw.items():
-                if isinstance(v, list) and len(v) == 3:
-                    _dim_cache[p] = (v[0], (v[1], v[2]) if v[1] else None)
-    except (OSError, ValueError):
+        with open(DIMS_FILE, "rb") as f:
+            raw = json.loads(f.read().decode("utf-8", "surrogatepass"))
+        for k, v in raw["c"].items():
+            try:
+                _dims_store[k] = (v[0], array.array("I", v[1]))
+            except (TypeError, ValueError, OverflowError, IndexError, KeyError):
+                continue
+    except (OSError, ValueError, TypeError, KeyError, AttributeError):
         pass
     threading.Thread(target=_dims_saver, daemon=True).start()
 
 
-def _dims_saver():
-    """Ghi cache kích thước ra đĩa (nguyên tử) khi có mục mới: 20s/lần; cache lớn
-    (>20k mục, vd đang quét cả thư viện) thì 90s/lần — json.dump giữ GIL, ghi dày
-    sẽ làm khựng request."""
-    global _dim_dirty
-    last = 0.0
-    while True:
-        time.sleep(20)
-        with _dim_lock:
-            if not _dim_dirty:
-                continue
-            if time.time() - last < (90 if len(_dim_cache) > 20000 else 20):
-                continue
-            last = time.time()
-            _dim_dirty = 0
-            snap = {p: [mt, wh[0] if wh else 0, wh[1] if wh else 0]
-                    for p, (mt, wh) in _dim_cache.items()}
-        try:
-            tmp = DIMS_FILE + ".tmp"
-            with open(tmp, "w", encoding="utf-8") as f:
-                json.dump(snap, f, ensure_ascii=False, separators=(",", ":"))
-            os.replace(tmp, DIMS_FILE)
-        except OSError:
-            pass
-
-
-# --- Đo kích thước ở NỀN (01/10): render chương chưa từng mở KHÔNG chờ PIL nữa. Bộ đo
-# 30/09: 3 tập Yu-Gi-Oh ~290 trang mở nguội song song mất 12.4-13s (PIL ~20-45ms/ảnh
-# trên HDD). Giờ html_reader/api pages chỉ đo đồng bộ trong DIMS_SYNC_BUDGET giây, phần
-# còn lại xếp hàng cho thread nền đo (ảnh tạm dùng tỉ lệ ước lượng, JS sửa khi ảnh về).
-# Thêm 1 lượt QUÉT CẢ THƯ VIỆN ưu tiên thấp sau khởi động (nhường khi có request; tắt
-# bằng file .reader-meta/dims-sweep-off) -> mọi chương có sẵn kích thước trước khi mở.
-DIMS_SYNC_BUDGET = 0.25
-DIMS_SWEEP_DELAY = 120          # giây sau khởi động mới bắt đầu quét cả thư viện
-DIMS_SWEEP_IDLE = 3             # chỉ quét khi request cuối đã xong >= chừng này giây
-DIMS_SWEEP_OFF_FLAG = os.path.join(META_DIR, "dims-sweep-off")
-_dim_q = collections.deque()    # (path, mt) chờ đo — ảnh của chương VỪA mở (ưu tiên)
-_dim_qset = set()
-_dim_ev = threading.Event()
-_dim_worker_on = False
-
-
-def img_dims_nowait(path, mt):
-    """Kích thước nếu ĐÃ có trong cache; chưa có -> xếp hàng đo nền, trả None."""
-    global _dim_worker_on
+def _dims_prune():
+    """Bỏ mục của chương không còn trong thư viện (đã xoá/đổi tên). So với _lib_cache
+    trong RAM — không chạm đĩa; thư viện rỗng/đang dựng lại thì không dọn gì."""
+    with _lib_lock:
+        cache = _lib_cache
+    if not cache or not cache[1]:
+        return 0
+    live = {f"{sid}/{rel}" for sid, s in cache[1].items() for rel in s["order"]}
     with _dim_lock:
-        if not _dim_loaded:
-            _dims_load_locked()
-        c = _dim_cache.get(path)
-        if c and c[0] == mt:
-            _dim_count("dw")
-            return c[1]
-        if path not in _dim_qset:
-            _dim_qset.add(path)
-            _dim_q.append((path, mt))
-        start = not _dim_worker_on
-        _dim_worker_on = True
-    if start:
-        threading.Thread(target=_dims_worker, daemon=True).start()
-    _dim_ev.set()
-    return None
+        dead = [k for k in _dims_store if k not in live]
+        for k in dead:
+            del _dims_store[k]
+    return len(dead)
+
+
+def _dims_saver():
+    """Ghi kho kích thước ra đĩa (nguyên tử) khi có chương mới đo xong hoặc vừa dọn.
+    json.dumps (bộ mã hoá C) — không dùng json.dump (thuần Python, giữ GIL lâu)."""
+    global _dims_dirty
+    last_prune = 0.0
+    while True:
+        time.sleep(DIMS_SAVE_EVERY)
+        try:
+            pruned = 0
+            if time.time() - last_prune >= DIMS_PRUNE_EVERY:
+                pruned = _dims_prune()
+                last_prune = time.time()
+            with _dim_lock:
+                if not _dims_dirty and not pruned:
+                    continue
+                _dims_dirty = 0
+                snap = dict(_dims_store)    # giá trị là tuple + array không sửa tại chỗ
+            t0 = time.perf_counter()
+            data = json.dumps({"v": 2, "c": {k: [v, a.tolist()] for k, (v, a) in snap.items()}},
+                              ensure_ascii=False, separators=(",", ":"))
+            data = data.encode("utf-8", "surrogatepass")
+            tmp = DIMS_FILE + ".tmp"
+            with open(tmp, "wb") as f:
+                f.write(data)
+            os.replace(tmp, DIMS_FILE)
+            diag_write("server", {"t": int(time.time() * 1000), "k": "dims", "ch": len(snap),
+                                  "img": sum(len(a) for _v, a in snap.values()) // 2,
+                                  "kb": len(data) // 1024, "pr": pruned,
+                                  "ms": round((time.perf_counter() - t0) * 1000, 1)})
+        except Exception:
+            with _dim_lock:
+                _dims_dirty += 1            # lần sau thử ghi lại
+
+
+def _dims_finish(key, part):
+    """Chương đo đủ -> chuyển từ _dims_part sang kho (chỉ khi part còn là bản hiện hành:
+    trong lúc đo nền, file đổi -> request mới đã thay bằng part ver mới)."""
+    global _dims_dirty
+    a = array.array("I")
+    for wh in part[3]:
+        a.extend(wh or (0, 0))
+    with _dim_lock:
+        if _dims_part.get(key) is part:
+            del _dims_part[key]
+            _dims_store[key] = (part[0], a)
+            _dims_dirty += 1
 
 
 def _dims_worker():
@@ -1006,120 +1143,77 @@ def _dims_worker():
             with _dim_lock:
                 if not _dim_q:
                     break
-                path, mt = _dim_q.popleft()
-                _dim_qset.discard(path)
-            img_dims(path, mt)
-            time.sleep(0.002)
-
-
-def dims_budget():
-    """Hàm đo cho 1 lần render: đo đồng bộ tới hết DIMS_SYNC_BUDGET giây, sau đó
-    chỉ lấy từ cache + xếp hàng đo nền."""
-    t_end = time.perf_counter() + DIMS_SYNC_BUDGET
-
-    def dims(path, mt):
-        if time.perf_counter() < t_end:
-            return img_dims(path, mt)
-        return img_dims_nowait(path, mt)
-    return dims
-
-
-def _sweep_wait():
-    """Chờ server RẢNH: không request nào đang chạy, request cuối xong >= DIMS_SWEEP_IDLE
-    giây, không còn ảnh ưu tiên chờ đo. False = bị tắt bằng file cờ. Bản 01/10 đầu chỉ
-    nhường khi CÓ request đang chạy -> khe hở giữa 2 ảnh (mạng tunnel) vẫn quét thư mục
-    liên tục, chiếm HDD: bộ đo thấy 7 ảnh Tap 3 mất 1.1-4.7s (13:09 01/10)."""
-    while True:
-        if os.path.exists(DIMS_SWEEP_OFF_FLAG):
-            return False
-        if (_inflight_n[0] == 0 and not _dim_q
-                and time.time() - _last_req_t[0] >= DIMS_SWEEP_IDLE):
-            return True
-        time.sleep(0.5)
-
-
-def _dims_sweep():
-    """1 lượt quét CẢ thư viện, đo ảnh chưa có kích thước. Ưu tiên thấp: chỉ chạy khi
-    server rảnh (_sweep_wait trước MỖI chương và mỗi ảnh phải mở), nghỉ giữa các bước.
-    Kết quả lưu dims-cache.json -> lượt sau (lần khởi động kế) chỉ còn duyệt thư mục.
-    Tiến độ ghi vào bộ đo (server.jsonl, k='sweep') để xem trong /diag."""
-    time.sleep(DIMS_SWEEP_DELAY)
-    try:
-        lib = get_library()
-    except Exception:
-        return
-    t0 = time.time()
-    st = {"ch": 0, "new": 0, "had": 0}
-
-    def mark(phase):
-        diag_write("server", {"t": int(time.time() * 1000), "k": "sweep", "p": phase,
-                              "ms": round((time.time() - t0) * 1000), **st})
-
-    if not _sweep_wait():
-        return
-    mark("start")
-    for s in list(lib.values()):
-        for rel in list(s.get("order") or []):
-            if not _sweep_wait():
-                return mark("stop")
-            ch_dir = os.path.join(s["path"], *rel.split("/"))
-            files, mts = list_images_mt(ch_dir)
-            st["ch"] += 1
-            for f in files:
-                path, mt = os.path.join(ch_dir, f), mts.get(f)
+                key = _dim_q.popleft()
+                _dim_qset.discard(key)
+                part = _dims_part.get(key)
+            if not part:
+                continue
+            try:
+                _ver, ch_dir, files, res = part
+                for i, f in enumerate(files):
+                    if res[i] is None:
+                        res[i] = _measure(os.path.join(ch_dir, f))
+                _dims_finish(key, part)
+            except Exception:
                 with _dim_lock:
-                    c = _dim_cache.get(path)
-                if c and c[0] == mt:
-                    st["had"] += 1
-                    continue
-                if not _sweep_wait():
-                    return mark("stop")
-                img_dims(path, mt)
-                st["new"] += 1
-                time.sleep(0.01)
-            if st["ch"] % 300 == 0:
-                mark("progress")
-            time.sleep(0.02)
-    mark("done")
+                    _dims_part.pop(key, None)
 
 
-def _dim_count(kind):
-    try:
-        setattr(_dim_tl, kind, getattr(_dim_tl, kind, 0) + 1)
-    except Exception:
-        pass
-
-
-def img_dims(path, mt=None):
-    """(w, h) của ảnh, cache theo (path, mtime). Truyền sẵn mt (lấy từ scandir) để
-    khỏi stat lại từng file."""
-    global _dim_dirty
-    if Image is None:
-        return None
-    if mt is None:
-        try:
-            mt = os.stat(path).st_mtime_ns
-        except OSError:
-            return None
+def chapter_dims(sid, rel, ch_dir, files, ver):
+    """[(w, h) | None] theo đúng thứ tự files (list_images_mt), ver = pages_version.
+    Chương đã đo -> lấy ngay từ kho. Chưa (hoặc ver đổi) -> đo đồng bộ tối đa
+    DIMS_SYNC_BUDGET giây, phần còn lại xếp hàng cho luồng nền (html_reader cho ảnh
+    chưa đo tỉ lệ ước lượng + class nd, JS sửa đúng khi ảnh về)."""
+    global _dim_worker_on
+    key = f"{sid}/{rel}"
+    n = len(files)
+    a = part = None
     with _dim_lock:
-        if not _dim_loaded:
+        if not _dims_loaded:
             _dims_load_locked()
-        c = _dim_cache.get(path)
-        if c and c[0] == mt:
+        ent = _dims_store.get(key)
+        if ent and ent[0] == ver and len(ent[1]) == 2 * n:
+            a = ent[1]
+        else:
+            part = _dims_part.get(key)
+            if not part or part[0] != ver:
+                part = [ver, ch_dir, files, [None] * n]
+                _dims_part[key] = part
+    if a is not None:
+        _dim_count("dw", n)
+        return [(a[2 * i], a[2 * i + 1]) if a[2 * i] and a[2 * i + 1] else None
+                for i in range(n)]
+    res = part[3]
+    t_end = time.perf_counter() + DIMS_SYNC_BUDGET
+    for i in range(n):
+        if res[i] is None:
+            if time.perf_counter() >= t_end:
+                break
+            res[i] = _measure(os.path.join(ch_dir, files[i]))
+        else:
             _dim_count("dw")
-            return c[1]
-    _dim_count("dc")
-    try:
-        with Image.open(path) as im:
-            wh = im.size
-    except Exception:
-        wh = None
+    left = sum(1 for r in res if r is None)
+    if left:
+        _dim_count("dq", left)
+        with _dim_lock:
+            if key not in _dim_qset:
+                _dim_qset.add(key)
+                _dim_q.append(key)
+            start = not _dim_worker_on
+            _dim_worker_on = True
+        if start:
+            threading.Thread(target=_dims_worker, daemon=True).start()
+        _dim_ev.set()
+    else:
+        _dims_finish(key, part)
+    return [r if r and r[0] and r[1] else None for r in res]
+
+
+def _dims_info():
+    """Số liệu kho kích thước cho nhịp tự kiểm 5' (bộ đo)."""
     with _dim_lock:
-        if len(_dim_cache) >= DIMS_MAX:
-            _dim_cache.clear()
-        _dim_cache[path] = (mt, wh)
-        _dim_dirty += 1
-    return wh
+        return {"dch": len(_dims_store), "dpart": len(_dims_part),
+                "dhd": _dims_stat["hdr"], "dpil": _dims_stat["pil"]}
 
 
 _cover_lock = threading.Lock()
@@ -2017,15 +2111,14 @@ def chapter_pages(s, rel):
     sid = s["id"]
     ch_dir = os.path.join(s["path"], *rel.split("/"))
     files, mts = list_images_mt(ch_dir)
-    dims = dims_budget()
+    ver = pages_version(files, mts)
     pages = []
-    for f in files:
+    for f, wh in zip(files, chapter_dims(sid, rel, ch_dir, files, ver)):
         v = mts.get(f, 0)
         base = u("img", sid, *rel.split("/"), f)
-        wh = dims(os.path.join(ch_dir, f), v or None)
         pages.append({"n": f, "url": f"{base}?v={v}" if v else base,
                       "w": wh[0] if wh else 0, "h": wh[1] if wh else 0})
-    return {"version": pages_version(files, mts), "pages": pages}
+    return {"version": ver, "pages": pages}
 
 
 def html_reader(s, rel, user=None):
@@ -2040,12 +2133,9 @@ def html_reader(s, rel, user=None):
 
     ch_dir = os.path.join(s["path"], *rel.split("/"))
     files, mts = list_images_mt(ch_dir)
-    dims = dims_budget()
-    known = {}                     # fname -> (w, h) đã có -> ước lượng tỉ lệ cho ảnh chưa đo
-    for fname in files:
-        wh = dims(os.path.join(ch_dir, fname), mts.get(fname))
-        if wh:
-            known[fname] = wh
+    pv = pages_version(files, mts)
+    # fname -> (w, h) đã có -> ước lượng tỉ lệ cho ảnh chưa đo
+    known = {f: wh for f, wh in zip(files, chapter_dims(sid, rel, ch_dir, files, pv)) if wh}
     ratios = sorted(w / h for w, h in known.values() if h)
     guess = ratios[len(ratios) // 2] if ratios else 2 / 3   # chưa đo được ảnh nào: dáng trang manga
 
@@ -2157,7 +2247,7 @@ def html_reader(s, rel, user=None):
             "uk": user_key(user),
             # chữ ký danh sách ảnh lúc render -> syncPages() (reader.js) so với
             # /api/pages để vá ảnh tại chỗ khi HTML này là bản SW cache cũ.
-            "pv": pages_version(files, mts)}
+            "pv": pv}
     body = (
         f'<header id="topbar" class="bar hide">'
         f'<a class="iconbtn home" href="/" title="Library">{HOME_SVG}</a>'
@@ -3555,7 +3645,6 @@ _diag_sizes = {}
 _diag_flag = [True, 0.0]        # [đang bật, lần kiểm cờ gần nhất]
 _inflight_lock = threading.Lock()
 _inflight_n = [0]
-_last_req_t = [0.0]             # lúc request gần nhất bắt đầu/kết thúc (luồng đo nền chờ rảnh)
 
 
 def diag_enabled():
@@ -3599,6 +3688,42 @@ def ua_device(ua):
     return "bot" if ua.startswith("Python") else "pc"
 
 
+_pm_api = []                    # hàm đo dựng 1 lần (proc_mem)
+
+
+def proc_mem():
+    """RAM của chính reader (MB) cho bộ đo: ws = working set, pm = private (commit).
+    Windows qua K32GetProcessMemoryInfo; nơi khác / lỗi -> {}."""
+    try:
+        if not _pm_api:
+            import ctypes
+            from ctypes import wintypes
+
+            class PMC(ctypes.Structure):
+                _fields_ = [("cb", wintypes.DWORD), ("PageFaultCount", wintypes.DWORD)] + [
+                    (n, ctypes.c_size_t) for n in (
+                        "PeakWorkingSetSize", "WorkingSetSize", "QuotaPeakPagedPoolUsage",
+                        "QuotaPagedPoolUsage", "QuotaPeakNonPagedPoolUsage",
+                        "QuotaNonPagedPoolUsage", "PagefileUsage", "PeakPagefileUsage")]
+            k32 = ctypes.WinDLL("kernel32")
+            k32.GetCurrentProcess.restype = wintypes.HANDLE
+            fn = k32.K32GetProcessMemoryInfo
+            fn.argtypes = [wintypes.HANDLE, ctypes.POINTER(PMC), wintypes.DWORD]
+            fn.restype = wintypes.BOOL
+
+            def call():
+                pmc = PMC()
+                pmc.cb = ctypes.sizeof(PMC)
+                if not fn(k32.GetCurrentProcess(), ctypes.byref(pmc), pmc.cb):
+                    return {}
+                return {"ws": round(pmc.WorkingSetSize / 1048576),
+                        "pm": round(pmc.PagefileUsage / 1048576)}
+            _pm_api.append(call)
+        return _pm_api[0]()
+    except Exception:
+        return {}
+
+
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
@@ -3621,11 +3746,9 @@ class Handler(BaseHTTPRequestHandler):
         self._dg_st = 0
         self._dg_len = 0
         self._dg_lib = None
-        _dim_tl.dc = 0
-        _dim_tl.dw = 0
+        _dim_tl.dc = _dim_tl.dp = _dim_tl.dw = _dim_tl.dq = 0
         with _inflight_lock:
             _inflight_n[0] += 1
-            _last_req_t[0] = time.time()
             self._dg_fl = _inflight_n[0]
 
     def _dg_kind(self, path):
@@ -3650,7 +3773,6 @@ class Handler(BaseHTTPRequestHandler):
     def _dg_end(self):
         with _inflight_lock:
             _inflight_n[0] -= 1
-            _last_req_t[0] = time.time()
         try:
             path = urlsplit(self.path).path
             if path.startswith("/api/diag"):      # chính bộ đo -> không ghi
@@ -3661,9 +3783,13 @@ class Handler(BaseHTTPRequestHandler):
                    "fl": self._dg_fl, "d": ua_device(self.headers.get("User-Agent"))}
             if self._dg_lib is not None:
                 rec["lib"] = round(self._dg_lib, 1)
-            dc, dw = getattr(_dim_tl, "dc", 0), getattr(_dim_tl, "dw", 0)
-            if dc or dw:
-                rec["dc"], rec["dw"] = dc, dw
+            for kd in ("dc", "dp", "dw", "dq"):
+                v = getattr(_dim_tl, kd, 0)
+                if v:
+                    rec[kd] = v
+            if rec["k"] == "selfping":            # nhịp 5': RAM reader + kho kích thước
+                rec.update(proc_mem())
+                rec.update(_dims_info())
             diag_write("server", rec)
         except Exception:
             pass
@@ -4255,8 +4381,6 @@ def main():
         sys.exit(1)
     # Heartbeat reader RA healthchecks.io (độc lập supervisor) — trống url trong config = tắt.
     threading.Thread(target=reader_heartbeat_loop, args=(args.port,), daemon=True).start()
-    # Đo trước kích thước ảnh cả thư viện, ưu tiên thấp (xem _dims_sweep).
-    threading.Thread(target=_dims_sweep, daemon=True).start()
     try:
         srv.serve_forever()
     except KeyboardInterrupt:

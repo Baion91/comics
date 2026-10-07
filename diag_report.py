@@ -4,7 +4,9 @@
 
 Nguồn dữ liệu (đều nằm trên máy SERVER):
   - server.jsonl : reader_server.py ghi 1 dòng / request — loại (nav/prefetch/img/...),
-                   thời gian xử lý, số ảnh phải đo PIL (nguội/ấm), số request đồng thời.
+                   thời gian xử lý, số ảnh phải đo kích thước (mới/có sẵn), số request
+                   đồng thời; thêm dòng nền: k='libscan' (quét lại thư viện), k='dims'
+                   (lưu kho kích thước), selfping 5' kèm RAM reader + số liệu kho.
   - client.jsonl : trình duyệt gửi POST /api/diag — Navigation Timing (SW khởi động,
                    byte đầu, trang hiện), bấm -> trang mới, đứng luồng chính, sự kiện SW.
 Xem báo cáo:
@@ -260,7 +262,7 @@ def build_report(meta_dir, hours=48.0, brief=False):
     add(f"  mở lại app từ nền không tải lại trang: {len(res)} | khôi phục bfcache: {len(bf)}")
 
     # [6] server
-    real = [r for r in sv if r.get("k") not in ("selfping", "sweep")]
+    real = [r for r in sv if r.get("k") not in ("selfping", "sweep", "libscan", "dims")]
     add("")
     add("[6] SERVER theo loại request (thời gian xử lý)")
     kinds = {}
@@ -270,11 +272,36 @@ def build_report(meta_dir, hours=48.0, brief=False):
         g = kinds[k]
         add(f"  {k:<10} n={len(g):<6} {_stat([r.get('ms') for r in g])}")
     add(f"  get_library (mỗi request) {_stat([r.get('lib') for r in real])}")
-    dc = sum(r.get("dc") or 0 for r in real)
-    dw = sum(r.get("dw") or 0 for r in real)
-    add(f"  kích thước ảnh: đo nguội (mở PIL) {dc} | có sẵn {dw}")
+    tot = {k: sum(r.get(k) or 0 for r in real) for k in ("dc", "dp", "dw", "dq")}
+    add(f"  kích thước ảnh: đo mới (đọc đầu file) {tot['dc']} | phải mở Pillow {tot['dp']}"
+        f" | có sẵn trong kho {tot['dw']} | hết ngân sách, để đo nền {tot['dq']}")
     add(f"  số request đồng thời tối đa: {max([r.get('fl') or 0 for r in real] or [0])}")
-    sw = [r for r in sv if r.get("k") == "sweep"]
+    dm = [r for r in sv if r.get("k") == "dims"]
+    if dm:
+        r = dm[-1]
+        add(f"  kho kích thước (lưu gần nhất {_hm(r.get('t'))}): {r.get('ch')} chương,"
+            f" {r.get('img')} ảnh, {r.get('kb')}KB, ghi {_fmt(r.get('ms'))} | {len(dm)} lần lưu,"
+            f" dọn {sum(x.get('pr') or 0 for x in dm)} chương đã xoá")
+    ls = [r for r in sv if r.get("k") == "libscan"]
+    if ls:
+        why = {}
+        for r in ls:
+            why[r.get("why")] = why.get(r.get("why"), 0) + 1
+        add(f"  quét lại thư viện: {len(ls)} lần ({', '.join(f'{k} {v}' for k, v in sorted(why.items()))})"
+            f" | quét {_stat([r.get('ms') for r in ls])} | chữ ký {_stat([r.get('sig') for r in ls])}"
+            f" | {ls[-1].get('n')} truyện, {ls[-1].get('ch')} chương")
+    sp = [r for r in sv if r.get("k") == "selfping"]
+    mem = [r for r in sp if r.get("ws")]
+    if sp:
+        line = f"  tự kiểm 5': n={len(sp)} {_stat([r.get('ms') for r in sp])}"
+        if mem:
+            ws = [r["ws"] for r in mem]
+            r = mem[-1]
+            line += (f" | RAM reader {min(ws)}–{max(ws)}MB (gần nhất {_hm(r.get('t'))}: {r['ws']}MB,"
+                     f" private {r.get('pm')}MB; kho {r.get('dch')} chương, đang đo dở"
+                     f" {r.get('dpart')}; từ lúc chạy: đầu file {r.get('dhd')}, Pillow {r.get('dpil')})")
+        add(line)
+    sw = [r for r in sv if r.get("k") == "sweep"]     # luồng quét cả thư viện (đã bỏ 07/10)
     if sw:
         r = sw[-1]
         add(f"  luồng đo kích thước nền: {r.get('p')} lúc {_hm(r.get('t'))} — {r.get('ch')} chương,"
@@ -282,7 +309,7 @@ def build_report(meta_dir, hours=48.0, brief=False):
             f" (bắt đầu {_hm(sw[0].get('t') - (sw[0].get('ms') or 0))})")
 
     add("")
-    add("[7] REQUEST SERVER CHẬM NHẤT (giờ | loại | path | ms | ảnh nguội/ấm | đồng thời | thư viện)")
+    add("[7] REQUEST SERVER CHẬM NHẤT (giờ | loại | path | ms | ảnh đo mới/có sẵn | đồng thời | thư viện)")
     for r in sorted(real, key=lambda r: -(r.get("ms") or 0))[:6 if brief else 15]:
         add(f"  {_hm(r.get('t'))} {r.get('k', '?'):<9} {(r.get('p') or '')[:55]:<55} "
             f"{_fmt(r.get('ms'))} | {r.get('dc', 0)}/{r.get('dw', 0)} | {r.get('fl')} | {_fmt(r.get('lib'))}")

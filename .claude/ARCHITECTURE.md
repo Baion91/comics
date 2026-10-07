@@ -1001,8 +1001,8 @@ cách chạy thật + decode thử ảnh.
   cache, xoá khi purge); HOME_JS nạp trước theo `pointerdown` [ý định] + `IntersectionObserver`+`requestIdleCallback`
   [card lọt viewport] → lần bấm đầu cũng cache-hit. **⑦ Prefetch trang CHƯƠNG kế/trước** (trị khựng 1-2s khi
   bấm Next / chọn chương): READER_JS lúc rảnh (`requestIdleCallback`) postMessage `{type:'prefetch',urls:[D.next,D.prev]}` (**từ 01/10 chỉ `D.next`**)
-  cho cùng hàng đợi SW → Next/Prev sau đó lấy HTML từ cache gần như tức thì; việc render trước còn WARM luôn
-  `_dim_cache` phía server (html_reader hết phải mở PIL từng ảnh khi chương nguội). Chỉ nạp HTML, KHÔNG kéo ảnh.
+  cho cùng hàng đợi SW → Next/Prev sau đó lấy HTML từ cache gần như tức thì; việc render trước còn đo luôn
+  kích thước ảnh chương đó vào kho phía server (`chapter_dims`, xem "Sửa 07/10"). Chỉ nạp HTML, KHÔNG kéo ảnh.
   **⑧ Ảnh chương versioned `?v=mtime`** (22/08, trị **méo ảnh trong reader dù file trên ĐĨA ĐÚNG**): SW cache
   `/img` cache-first + khoá theo URL, nhưng `img_url()` xưa KHÔNG gắn version (khác `/cover`). Khi 1 chương bị
   THAY bằng bản khác kích thước (vd upgrade comix: Asura 720×4000 → Official TappyToon 720×1334), URL
@@ -1072,11 +1072,31 @@ cách chạy thật + decode thử ảnh.
   chương cũ có thể tải lại nếu trình duyệt đã dọn HTTP cache. ② `html_reader` / `/api/pages` không chờ PIL:
   `dims_budget()` đo đồng bộ tối đa `DIMS_SYNC_BUDGET`=0.25s, còn lại `img_dims_nowait()` xếp hàng cho thread
   `_dims_worker` (ưu tiên); ảnh chưa đo mang `class="nd"` + tỉ lệ ước lượng (trung vị chương, không có thì 2/3),
-  reader.js sửa tỉ lệ thật khi ảnh `load` (capture trên `#strip`). Thread `_dims_sweep` (sau khởi động 120s) đo cả
+  reader.js sửa tỉ lệ thật khi ảnh `load` (capture trên `#strip`). [ĐÃ BỎ 07/10 — xem "Sửa 07/10"] Thread `_dims_sweep` (sau khởi động 120s) đo cả
   thư viện ưu tiên thấp (`_sweep_wait`: chỉ chạy khi không request nào đang chạy VÀ request cuối xong ≥`DIMS_SWEEP_IDLE`=3s, kiểm trước mỗi chương + mỗi ảnh phải mở; 10ms/ảnh, 20ms/chương; tiến độ ghi bộ đo `k='sweep'` start/progress mỗi 300 chương/done/stop; tắt bằng file `dims-sweep-off`. Bản đầu 01/10 chỉ nhường khi CÓ request đang chạy → khe giữa 2 ảnh vẫn quét thư mục liên tục, chiếm HDD: 7 ảnh 1.1–4.7s); `dims-cache.json` (28/09)
   ghi 20s/lần, cache >20k mục thì 90s/lần (json.dump giữ GIL). Series chỉ đón đầu **1** nút (reading, không có thì
   First); reader chỉ đón đầu chương kế. ③ `get_library()` trả cache ngay, kiểm chữ ký trong thread nền tối đa
   10s/lần (`_lib_checked`), chương mới hiện sau ~10s + thời gian quét. ④ lưu vị trí: localStorage 1s, server 10s.
+  **Sửa 07/10 — kích thước ảnh (bỏ quét cả thư viện)**: bộ đo 02–07/10 thấy `_dims_sweep` chạy ~5 GIỜ sau MỖI lần
+  reader khởi động: trần `DIMS_MAX`=400k mục < 639k ảnh thư viện → chạm trần `_dim_cache.clear()` → lần sau đo lại
+  từ đầu; Pillow 12 mở WebP = `WebPAnimDecoder(fp.read())` đọc NGUYÊN file; cache ~175MB RAM + ~50MB JSON ghi lại
+  bằng `json.dump` thuần Python (giữ GIL) 90s/lần; ảnh chậm ~10× trong lúc quét. Thay bằng: (a) **chỉ đo chương đang
+  mở / được render trước** — không còn luồng quét nền, không cờ `dims-sweep-off`; (b) `_hdr_size()` đọc 4KB đầu file:
+  WebP (VP8 14 bit / VP8L 14 bit −1 / VP8X canvas 24 bit −1), PNG IHDR, JPEG đi theo độ dài đoạn tới SOF cuối trước
+  SOS (y Pillow; đọc lại 4KB tại chỗ cần, quá 1MB → Pillow); GIF/BMP/AVIF/file lạ → Pillow dự phòng (`_measure`,
+  bộ đo đếm `dp`). Đã so khớp 2152 file (thư viện dev + mẫu WebP lossy/lossless/alpha/động/EXIF/ICC, JPEG
+  progressive/EXIF 60KB/ICC 200KB/CMYK/xám, PNG 4 kiểu, sai đuôi, file hỏng/cụt) = 0 lệch, nhanh ~57× kể cả OS cache
+  ấm. (c) **Kho theo CHƯƠNG** `_dims_store`: khoá `"<sid>/<rel>"` → `(pages_version, array('I') [w0,h0,w1,h1,…])`
+  theo thứ tự `list_images_mt`, 0,0 = không đo được; `pages_version` lệch (thêm/xoá/thay file) → đo lại cả chương;
+  đang đo dở nằm ở `_dims_part` (chia sẻ giữa render đồng bộ và `_dims_worker`; `_dims_finish` chỉ ghi nếu part còn
+  là bản hiện hành). `chapter_dims()` vẫn giữ ngân sách đồng bộ 0.25s + `class="nd"`. Lưu `.reader-meta/dims-v2.json`
+  (`json.dumps` bộ mã hoá C, tmp + `os.replace`, 30s/lần chỉ khi có chương mới); **không bao giờ xoá sạch** —
+  `_dims_prune()` mỗi giờ bỏ khoá không còn trong `_lib_cache` (RAM; thư viện rỗng/đang bust thì không dọn). Nạp lần
+  đầu tự xoá `dims-cache.json` + `dims-sweep-off` cũ. Bộ đo thêm: request `dc` (đọc đầu file) / `dp` (Pillow) /
+  `dw` (có sẵn) / `dq` (hết ngân sách → đo nền); `k='dims'` mỗi lần lưu (số chương/ảnh/KB/ms/dọn); `k='libscan'` mỗi
+  lần QUÉT LẠI cả thư viện (`why` ttl|dir|bust|cold, ms quét + ms chữ ký) — đo chi phí quét lại mỗi `CACHE_TTL`
+  trước khi quyết đổi sang quét theo truyện có thay đổi; selfping 5' kèm `ws`/`pm` (RAM reader MB, `proc_mem()` qua
+  `K32GetProcessMemoryInfo`) + `dch`/`dpart`/`dhd`/`dpil`. Báo cáo mục [6] hiện đủ.
   **Bộ đo — 2 bẫy đo đã sửa 01/10**: (a) trang đọc nạp ảnh nối tiếp nên `load` tới rất muộn/không bao giờ → DIAG_JS
   đo muộn nhất DOMContentLoaded+5s, và gửi bản rút gọn khi `visibilitychange→hidden` (iOS hay bỏ trang ở nền mà
   không bắn `pagehide`); (b) mốc bấm `toony_tap` chỉ nhận nếu <30s (trang bị iOS bỏ rồi tự tải lại từng lấy mốc cũ

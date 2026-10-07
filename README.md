@@ -390,8 +390,9 @@ python reader_server.py --port 8081
 - **Mở chương gần như tức thì**: bấm Next / chọn chương ở dropdown đã tải trước chương
   kề; và bấm chương **từ danh sách ở trang truyện** cũng nhanh — khi **chạm/di chuột**
   vào một chương (và với các nút First/Latest/reading lúc rảnh), trang nạp trước HTML
-  chương đó vào cache Service Worker, đồng thời làm nóng cache kích thước ảnh phía server
-  (`_dim_cache`) nên hết cảnh chờ 2–3 giây render nguội quét PIL từng ảnh.
+  chương đó vào cache Service Worker, đồng thời đo sẵn kích thước ảnh của chương ở phía
+  server (kho `.reader-meta/dims-v2.json`, chỉ đọc vài byte đầu mỗi file) nên lần mở
+  thật không phải chờ đo.
 - **Thứ tự chương**: dropdown chọn chương (lúc đang đọc) xếp **mới nhất trên cùng**;
   còn danh sách ở trang truyện mặc định mới-nhất-trên-cùng, bấm **Newest ⇄ Oldest**
   để đảo (xem mục Trang truyện). Prev/Next và First/Latest Chapter luôn đọc xuôi
