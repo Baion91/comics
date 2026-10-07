@@ -261,39 +261,58 @@ class MangaDexProvider:
     `f"{volume}:{chapter}"`, order[volume/chapter]=asc + order[readableAt]=desc,
     contentRating[] đủ 4 mức (mặc định API loại 'pornographic' -> manga 18+ ra rỗng
     nếu không xin rõ), chương oneshot (chapter=null) vẫn giữ.
+
+    NGÔN NGỮ: mặc định EN. Đổi bằng `?lang=xx` gắn sau link (vd `/tai <link>?lang=vi`,
+    mã theo MangaDex: vi, es-la, pt-br...). Mã ngôn ngữ đi KÈM slug dạng "{uuid}@vi" nên
+    tự chảy qua /tai, /watch, check_updates mà không phải sửa supervisor. Bản khác EN
+    vào folder riêng "{tên} [VI]" -> không trộn chương với bản EN đã tải; slug EN giữ
+    nguyên UUID trần -> folder EN cũ không đổi tên.
     """
 
     name = "mangadex"
     API = "https://api.mangadex.org"
     UPLOADS = "https://uploads.mangadex.org"
-    LANG = "en"                       # chỉ lấy bản dịch tiếng Anh
+    LANG = "en"                       # ngôn ngữ mặc định khi link không có ?lang=
+    _LANG_RE = re.compile(r"[?&#]lang=([a-zA-Z]{2,3}(?:-[a-zA-Z]{2})?)\b")
     domains = ["mangadex.org"]
     # CDN @Home đòi Referer mangadex.org: ảnh NGUỘI (chưa cache Cloudflare) mà thiếu
     # header này trả 404. Đặt ở đây -> core.run gắn vào session cho mọi request.
     referer = "https://mangadex.org/"
 
+    def _split(self, slug: str):
+        """'{uuid}@vi' -> (uuid, 'vi'); UUID trần -> (uuid, LANG)."""
+        uuid, _, lang = slug.partition("@")
+        return uuid, (lang or self.LANG)
+
     def series_slug(self, text: str) -> str:
         text = text.strip()
+        m = self._LANG_RE.search(text)
+        lang = m.group(1).lower() if m else self.LANG
         # URL chuẩn: https://mangadex.org/title/{uuid}/{slug}?tab=...
         m = re.search(r"/title/([0-9a-fA-F-]{36})", text)
-        if m:
-            return m.group(1).lower()
-        # người dùng lỡ dán thẳng UUID trần
-        m = re.search(
-            r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-"
-            r"[0-9a-fA-F]{4}-[0-9a-fA-F]{12}", text)
-        return m.group(0).lower() if m else text
+        if not m:
+            # người dùng lỡ dán thẳng UUID trần
+            m = re.search(
+                r"([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-"
+                r"[0-9a-fA-F]{4}-[0-9a-fA-F]{12})", text)
+        if not m:
+            return text
+        uuid = m.group(1).lower()
+        return uuid if lang == self.LANG else f"{uuid}@{lang}"
 
     def title_from_slug(self, slug: str) -> str:
-        data = get_json(f"{self.API}/manga/{slug}")
+        uuid, lang = self._split(slug)
+        data = get_json(f"{self.API}/manga/{uuid}")
         try:
             t = data["data"]["attributes"]["title"]
         except (TypeError, KeyError):
             return slug
         # ưu tiên 'en'; nhiều truyện chỉ có 'ja-ro'/'ja' -> lấy giá trị đầu tiên
-        return t.get("en") or next(iter(t.values()), slug)
+        name = t.get("en") or next(iter(t.values()), uuid)
+        return name if lang == self.LANG else f"{name} [{lang.upper()}]"
 
     def list_chapters(self, slug: str):
+        uuid, lang = self._split(slug)
         # key = "{volume}:{chương}"; bản GẶP ĐẦU của mỗi key được giữ, và vì feed sắp
         # order[readableAt]=desc nên "đầu" = bản upload MỚI NHẤT (newest-wins). Dedup
         # kèm volume để không gộp nhầm 2 chương cùng số ở 2 volume khác nhau.
@@ -301,8 +320,8 @@ class MangaDexProvider:
         offset, total = 0, None
         while total is None or offset < total:
             url = (
-                f"{self.API}/manga/{slug}/feed"
-                f"?translatedLanguage[]={self.LANG}"
+                f"{self.API}/manga/{uuid}/feed"
+                f"?translatedLanguage[]={lang}"
                 "&contentRating[]=safe&contentRating[]=suggestive"
                 "&contentRating[]=erotica&contentRating[]=pornographic"
                 "&order[volume]=asc&order[chapter]=asc&order[readableAt]=desc"
@@ -345,7 +364,8 @@ class MangaDexProvider:
         return [f"{base}/data/{h}/{f}" for f in files]
 
     def cover_url(self, slug: str):
-        data = get_json(f"{self.API}/manga/{slug}?includes[]=cover_art")
+        uuid, _ = self._split(slug)
+        data = get_json(f"{self.API}/manga/{uuid}?includes[]=cover_art")
         try:
             rels = data["data"]["relationships"]
         except (TypeError, KeyError):
@@ -354,7 +374,7 @@ class MangaDexProvider:
             if rel.get("type") == "cover_art":
                 fn = (rel.get("attributes") or {}).get("fileName")
                 if fn:
-                    return f"{self.UPLOADS}/covers/{slug}/{fn}"
+                    return f"{self.UPLOADS}/covers/{uuid}/{fn}"
         return None
 
 

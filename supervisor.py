@@ -234,6 +234,8 @@ HELP_TEXT = (
     "     chương đã ghim không bị thay bằng Official; bỏ ghim: /tai <link> 5 auto\n"
     "     GHÉP vào folder có sẵn (tải bù từ nguồn khác): /tai <link> 380-390 into:\"Tên folder\"\n"
     "        (xem kế hoạch rồi bấm ✅ xác nhận; chương .done được giữ, không tạo folder trùng)\n"
+    "     MangaDex mặc định bản EN; muốn ngôn ngữ khác gắn ?lang= sau link\n"
+    "        vd: /tai https://mangadex.org/title/<id>/<tên>?lang=vi  -> folder “<tên> [VI]”\n"
     "/repair <link comix> [chương] — vá trang bị TRÁO Ô (bản Official comix.to)\n"
     "     vd: /repair <link>  (cả bộ)  hoặc  /repair <link> 1  (thử 1 chương trước)\n"
     "/repair all — quét CẢ thư viện comix trên ổ, xem trước rồi bấm ✅ để vá hết\n"
