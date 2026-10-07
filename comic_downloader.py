@@ -160,7 +160,8 @@ def main(default_provider=None):
                          "moetruyen chỉ áp cho phần DANH SÁCH CHƯƠNG, ảnh luôn chụp bằng "
                          "Chromium): auto = HTTP thường, bị Cloudflare chặn thì tự chuyển sang "
                          "Chromium (mặc định); http = chỉ HTTP (bị chặn thì dừng); browser = ép "
-                         "Chromium ngay từ đầu (thử tầng trình duyệt / khi biết chắc đang bị chặn)")
+                         "Chromium ngay từ đầu (thử tầng trình duyệt / khi biết chắc đang bị chặn). "
+                         "lxmanga.org LUÔN dùng Chromium (nhà mạng chặn HTTP) — cờ này bỏ qua")
     ap.add_argument("--out", default="downloads", help="Thư mục lưu (mặc định: downloads)")
     ap.add_argument("--dest-name", dest="dest_name", metavar="FOLDER",
                     help="GHÉP vào folder truyện CÓ SẴN tên này (tải bù chương thiếu từ "

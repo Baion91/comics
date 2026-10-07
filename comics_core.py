@@ -79,6 +79,12 @@ _DECODABLE = {"png", "jpeg", "gif", "bmp", "webp"}
 SALVAGE_MIN = 0.50
 RETRY_BROKEN = False   # True = thử lại cả những ảnh đã biết hỏng ở nguồn (cờ --retry-broken)
 
+# Móc `png_to_webp` của provider (hentaivnx): trang PNG được mã hoá lại WebP lúc tải.
+# q90 như moetruyen (đo 01/10/2026 trên lát webtoon 729x5000: PNG 3.7MB -> 0.55MB, lệch TB
+# ~1.4/255). WebP chỉ chịu tối đa 16383px mỗi cạnh -> ảnh to hơn giữ nguyên bytes PNG.
+WEBP_TRANSCODE_Q = 90
+WEBP_MAX_DIM = 16383
+
 # ============================================================================
 # BẮT CRASH TẦNG C (Pillow/libwebp/OpenSSL... segfault / access violation)
 # ----------------------------------------------------------------------------
@@ -461,6 +467,39 @@ def check_image_bytes(data: bytes, who=None):
     return (verdict, detail)
 
 
+def png_to_webp(data: bytes, who=None):
+    """PNG ĐÃ QUA KIỂM -> bytes WebP q90 (móc `png_to_webp` của provider), hoặc None = ghi
+    nguyên bytes gốc: không phải PNG (URL .png mà bytes JPEG/WebP), cạnh > WEBP_MAX_DIM,
+    thiếu Pillow/codec, hay mã hoá lỗi. Mã hoá TRƯỚC khi ghi để tên `NNN.webp` khớp ngay nội
+    dung — chuyển SAU khi tải thì core/check_library tưởng thiếu `NNN.png` và tải lại."""
+    if Image is None or sniff_format(data) != "png":
+        return None
+    try:
+        with _gate.strict():
+            im = Image.open(io.BytesIO(data))
+            w, h = im.size
+            if max(w, h) > WEBP_MAX_DIM:
+                print(f"\n    ~ PNG {w}x{h} vượt giới hạn WebP {WEBP_MAX_DIM}px — giữ PNG: {who}",
+                      file=sys.stderr, flush=True)
+                return None
+            with _decoding(who or f"png->webp {w}x{h} {len(data)}B"):
+                im.load()
+                alpha = im.mode in ("RGBA", "LA", "PA") or (
+                    im.mode == "P" and "transparency" in im.info)
+                im = im.convert("RGBA" if alpha else "RGB")
+                if alpha and im.getchannel("A").getextrema()[0] == 255:
+                    im = im.convert("RGB")      # kênh alpha toàn đục -> bỏ cho nhẹ
+                buf = io.BytesIO()
+                im.save(buf, "WEBP", quality=WEBP_TRANSCODE_Q, method=4)
+        out = buf.getvalue()
+    except Exception as e:
+        print(f"\n    ~ Không chuyển được PNG->WebP ({e.__class__.__name__}: {e}) — giữ PNG: {who}",
+              file=sys.stderr, flush=True)
+        return None
+    verdict, _ = check_image_bytes(out, who=who)
+    return out if verdict == "ok" else None
+
+
 def bad_marker(dest: Path) -> Path:
     """Tên file cách ly: 001.jpg -> 001.jpg.bad (reader bỏ qua vì không đúng đuôi ảnh)."""
     return dest.with_name(dest.name + ".bad")
@@ -635,7 +674,7 @@ def get_text(url: str, retries: int = 3):
     return r.text if r is not None else None
 
 
-def download_image(url: str, dest: Path, client=None) -> bool:
+def download_image(url: str, dest: Path, client=None, to_webp: bool = False) -> bool:
     """Tải 1 ảnh, KIỂM TRA rồi mới ghi. Chỉ ghi khi qua tầng 1+2 -> file trên đĩa
     luôn là ảnh dùng được; ảnh hỏng KHÔNG để lại file chuẩn nên resume tự tải lại
     lần sau. Tải bù thành công thì xóa file .bad cách ly kế bên (nếu có).
@@ -643,7 +682,10 @@ def download_image(url: str, dest: Path, client=None) -> bool:
     `client` (tùy chọn): HTTP client thay cho `session` mặc định — comix truyền vào
     một client giả vân tay Chrome (curl_cffi) + mang cf_clearance/UA mượn từ browser.
     Chỉ cần có `.get(url, timeout=...)` trả response kiểu requests và tự gói lỗi mạng
-    thành requests.RequestException. 403 -> raise Forbidden để caller thử làm mới vé."""
+    thành requests.RequestException. 403 -> raise Forbidden để caller thử làm mới vé.
+
+    `to_webp` (móc `png_to_webp` của provider; `run` đã đổi đích `.png` -> `.webp`): ảnh
+    qua kiểm mà là PNG thì mã hoá WebP rồi mới ghi (xem `png_to_webp`)."""
     cli = client if client is not None else session
     if dest.exists() and dest.stat().st_size > 0:
         return True  # đã tải rồi -> bỏ qua, không tốn request
@@ -714,6 +756,8 @@ def download_image(url: str, dest: Path, client=None) -> bool:
                 time.sleep(1.5 * (attempt + 1))
                 continue
 
+            if to_webp and dest.suffix.lower() == ".webp":
+                data = png_to_webp(data, who=url) or data
             dest.write_bytes(data)
             clear_bad(dest)
             return True
@@ -932,6 +976,7 @@ def run(provider, args):
         session.headers.pop("Referer", None)
 
     slug = provider.series_slug(args.series)
+    to_webp = bool(getattr(provider, "png_to_webp", False))   # móc PNG->WebP lúc tải
     dest_name = getattr(args, "dest_name", None)
     merge = bool(dest_name)   # GHÉP vào folder có sẵn (tải bù từ provider khác)
     # merge -> tên folder = --dest-name (giữ nguyên, không title_from_slug -> khỏi 1 request)
@@ -1039,9 +1084,12 @@ def run(provider, args):
                 continue
 
             # 1 trang = (số thứ tự, url, đích). Giữ nguyên list để cuối còn soát đủ/thiếu.
+            # Provider bật `png_to_webp` -> trang .png lưu thành .webp (download_image mã hoá lại).
             pages = []
             for i, url in enumerate(urls, 1):
                 ext = url.split("?")[0].rsplit(".", 1)[-1] or "webp"
+                if to_webp and ext.lower() == "png":
+                    ext = "webp"
                 pages.append((i, url, folder / f"{i:03d}.{ext}"))
 
             def _have(d):  # ảnh coi là 'đã có' khi tồn tại & khác rỗng
@@ -1078,7 +1126,8 @@ def run(provider, args):
                           end="", flush=True)
             else:
                 with ThreadPoolExecutor(max_workers=args.workers) as pool:
-                    futures = [pool.submit(download_image, u, d) for u, d in jobs]
+                    futures = [pool.submit(download_image, u, d, to_webp=to_webp)
+                               for u, d in jobs]
                     try:
                         for f in as_completed(futures):
                             if f.result():

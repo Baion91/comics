@@ -26,7 +26,50 @@ Các script trong thư mục này, mỗi cái một việc:
 
 Một tool cho MỌI site, tự nhận site theo link (hiện hỗ trợ **Asura**, **Raven**, **Dilib**,
 **MangaDex**, **TruyenQQ**, **TruyenQQ.com.vn**, **Comix**, **ACGN**, **NetTruyen**, **ZetTruyen**,
-**MoeTruyen**).
+**MoeTruyen**, **nhentai.to**, **HentaiFC**, **HentaiVNX**, **LXManga**).
+
+> **LXManga** (lxmanga.org — truyện 18+ tiếng Việt, tên provider `lxmanga`): dán link trang truyện
+> `https://lxmanga.org/{slug}.html` (link 1 chương `https://lxmanga.org/{slug}/{chương}.html` cũng được).
+> Cần biết:
+> - **Nhà mạng VN chặn site này** với kết nối thường, nên tool **luôn mở Chromium** (cửa sổ trình duyệt
+>   hiện trên máy server — đừng đóng) để lấy trang; Chromium tự vượt được chặn và thường tự qua Cloudflare.
+>   Nếu Cloudflare đòi tick "Verify you are human", bot nhắn Telegram như TruyenQQ.com.vn. **Ảnh vẫn tải
+>   thẳng** (CDN ảnh không bị chặn) nên nhanh như site thường. Mỗi lần chạy mất thêm ~20 giây mở Chromium
+>   để đọc danh sách chương, kể cả khi không có chương mới.
+> - Trang PNG (ít) được chuyển WebP lúc tải như HentaiVNX.
+> - **Bộ thường** ("Chap 1, Chap 2…"): số chương thật, ghép `into:` được.
+> - **Bộ tuyển tập/"series"** (nhiều truyện ngắn chung 1 trang, nhãn chương tự do, trùng số — vd "Sex Tu
+>   Tiên Tổng Hợp"): tool đánh số **theo thứ tự trên site** (cũ nhất = 1), folder thêm hậu tố ` [LX]`, tên
+>   chương lấy nhãn site (site tự cắt cụt ~23 ký tự, vd `Chapter 1 - Lén lút cùng chị gái, A`). Nếu site
+>   xoá/chèn chương giữa chừng thì số thứ tự có thể lệch.
+> - Chương **Raw** (chưa dịch, vd "Phần 7 Raw [Sẽ Xóa Sau Khi Dịch Xong]") được **bỏ qua** — đợi bản dịch.
+> - Auto-check chương mới: không dò nhẹ được (cần Chromium) nên mỗi lượt kiểm sẽ xếp 1 job tải như comix
+>   — chương đã có thì bỏ qua nhanh.
+
+> **HentaiVNX** (hentaivnx.com — truyện 18+ tiếng Việt, tên provider `hentaivnx`): dán link trang truyện
+> `https://www.hentaivnx.com/truyen-hentai/{slug}-{số}` (link 1 chương cũng được, tool tự về trang truyện).
+> Tải thẳng HTTP, không cần mở trình duyệt. Cần biết:
+> - Ảnh **PNG được tự chuyển sang WebP q90 ngay lúc tải** (file lưu `NNN.webp`): chương PNG ~75MB còn
+>   ~8MB, mắt thường không thấy khác. Ảnh JPEG/WebP giữ nguyên. Ảnh PNG cao quá 16383px (giới hạn WebP)
+>   thì giữ PNG.
+> - Truyện dài dạng webtoon bị site cắt thành nhiều lát cao ~5000px — tool tải đúng các lát đó (reader
+>   xếp dọc liền nhau như trên web).
+> - Chất lượng tuỳ bộ ở nguồn: có bộ chỉ rộng ~384px.
+> - Trang truyện của site bị cache ~4 giờ: chương vừa ra có thể chưa thấy ngay — lần kiểm sau sẽ có.
+> - Số chương = số trên site (truyện one-shot cũ là `Chapter 0`), ghép `into:` được như site thường.
+
+> **nhentai.to** và **HentaiFC** (hentaifc.com) — gallery 18+ tiếng Anh, tên provider `nhentai` /
+> `hentaifc`: dán link cuốn `https://nhentai.to/g/{số}/` hoặc `https://hentaifc.com/e/{số}` (link 1
+> trang đọc cũng được). Cần biết:
+> - Mỗi link là 1 cuốn **one-shot** (trọn 1 tập, không chia chương) → 1 folder chứa đúng
+>   `Chapter 1`. Folder = **tên ngắn + mã cuốn**, vd `Ihen Deguch - The Exit Anomaly [nh624421]`,
+>   `Wonder Acute [fc89351]` — mã giữ mỗi cuốn 1 folder riêng (nhiều bản dịch trùng tên ngắn); tên quá
+>   100 ký tự bị cắt ở ranh giới từ.
+> - **Không dùng được `into:`** (ghép folder): số chương ở đây luôn là 1, không phải số thật của bộ nào.
+> - Chỉ nhận **nhentai.to** — `nhentai.net` là site khác (chưa hỗ trợ). Ảnh nhentai.to 1280px
+>   (WebP/JPEG), HentaiFC ~1100px JPEG; cả 2 tải thẳng HTTP, không cần mở trình duyệt.
+> - HentaiFC hiếm khi có cuốn nhiều chương; gặp thì tool tự đọc đủ danh sách (chương `c0` → `Chapter 1`,
+>   `c1` → `Chapter 2`…).
 
 > **Raven Scans đã đổi `ravenscans.org` → `ravenscans.net`** (và đổi cấu trúc URL chương) —
 > dùng link `.net` mới; link `.org` cũ vẫn được nhận.

@@ -3,7 +3,9 @@
 thường bị challenge. Provider gọi LƯỜI (chỉ import/mở khi thật sự bị chặn); ngày thường
 không đụng tới. Hiện dùng bởi: qqcomvn (truyenqq.com.vn) — chỉ lấy HTML; moetruyen — mở
 trang chương (`goto`) rồi CHỤP trang đã hiển thị (ảnh không có URL tải thẳng), cần mở
-thêm host CDN qua `extra_hosts` và cho tải ảnh (`block_types`).
+thêm host CDN qua `extra_hosts` và cho tải ảnh (`block_types`); lxmanga — LUÔN dùng (nhà
+mạng chặn SNI, Chromium qua nhờ ECH): `goto` trang bộ đọc DOM list chương + `get_html`
+trang chương.
 
 VÌ SAO MODULE RIÊNG (không tái dùng ComixSession): comix gắn cứng profile/route/hook
 JSON.parse; refactor module mong manh nhất hệ thống để chia sẻ = rủi ro hồi quy. Ở đây

@@ -24,6 +24,8 @@ cách chạy thật + decode thử ảnh.
     tầng 3 (đếm thiếu/`.done`/tổng kết) giữ nguyên, trang hụt lượt sau tự bù. `chapter_images`
     vẫn phải trả đủ N "URL" (có thể giả, đuôi quyết định đuôi file) để core tính trang thiếu.
     Provider không có móc → đường cũ y nguyên (đã hồi quy ZetTruyen + qqcomvn).
+    **Móc `png_to_webp` (01/10/2026, cho hentaivnx)**: trang PNG lưu thành `NNN.webp` mã hoá q90 lúc tải
+    (`png_to_webp()` + tham số `to_webp` của `download_image`) — chi tiết + lý do ở mục HentaiVNX bên dưới.
     **`Challenged(Blocked)` (28/09/2026)**: `_request` thấy header `cf-mitigated: challenge`
     (Cloudflare đòi xác minh — thường kèm 429/403) → ném NGAY, **không kéo cầu dao 429**.
     Trước đó 429-challenge bị coi là rate-limit: ngủ 90s→5'→15' rồi `gate.abort` → trong
@@ -47,7 +49,7 @@ cách chạy thật + decode thử ảnh.
     `list_chapters`→`[Chapter(number,title,ref)]`, `chapter_images`→`[url]`,
     `cover_url`. `ref` là "chìa" mờ mỗi site tự sinh/tự hiểu (Asura = URL API
     chương; Raven = URL trang chương). `PROVIDERS`/`by_name`/`REGISTRY` (map domain).
-    Đang có: **AsuraProvider** (API JSON), **RavenProvider** (parse HTML + `ts_reader`),
+    Đang có (+ nhentai/hentaifc one-shot 18+, xem cuối danh sách): **AsuraProvider** (API JSON), **RavenProvider** (parse HTML + `ts_reader`),
     **DilibProvider** (parse HTML PHP), **MangaDexProvider** (API JSON, bản dịch `en`),
     **TruyenQQProvider** (parse HTML, họ `truyenqqko/to/vn.com` — KHÔNG gồm `truyenqq.com.vn`,
     site khác, xem TruyenQQVNProvider), **ACGNProvider** (parse HTML tĩnh,
@@ -132,8 +134,83 @@ cách chạy thật + decode thử ảnh.
     điểm ảnh (ổn định); chạy lại `.done` 1s không mở Chromium; xoá 3 trang → chỉ chụp bù 3 (12s).
     Số chương = số thật (`data-chapter-number`) → KHÔNG hậu tố, ghép `into:` được. `check_library` báo
     NHẦM "trang tráo ô" trên trang gần trắng (bộ dò comix) — bỏ qua.
+    **Provider ONE-SHOT 18+ (01/10/2026): NHentaiToProvider (`name="nhentai"`, `nhentai.to`) +
+    HentaiFCProvider (`name="hentaifc"`, `hentaifc.com`)** — HTTP trần, không Chromium, referer=None (CDN
+    đã thử có/không). Mỗi link = 1 cuốn trọn → folder = `_short_title(tên ngắn, ≤100 ký tự cắt ở ranh giới
+    từ) + " [nh{id}]"/" [fc{id}]"` (user chốt: tên ngắn trùng giữa bản dịch/nhóm → mã giữ 1 cuốn 1 folder;
+    tên đầy đủ ~110 ký tự dễ vượt MAX_PATH) + `positional_numbers=True` (số chương không phải số thật →
+    CLI chặn `into:`). 18+ để CHUNG thư viện (user chốt, không tách). **nhentai.to**: chỉ 1 request trang
+    `/g/{id}/` — khối JS `new N.gallery({...})` (KHÔNG phải JSON hợp lệ: phẩy treo → regex từng trường):
+    `media_id`, `title.pretty|english|japanese`, `num_pages`, `images.pages` **2 dạng**: gallery cũ = MẢNG
+    (phần tử 0 = trang 1), gallery mới = DICT key LỆCH +1 ("2".."43" cho 42 trang; `43.webp` 404) → gom
+    theo thứ tự (dict sắp theo key số) lấy phần tử i-1, đúng cả 2 dạng; lệch `num_pages` → dự phòng đuôi
+    từ thumbnail `{n}t.{ext}`. id URL ≠ `"id"` JSON (id nội bộ) → dùng id URL. Ảnh `{cdn}/galleries/
+    {media_id}/{n}.{w→webp|j→jpg|p→png|g→gif}`, host CDN đọc từ HTML (hiện `supercdn.site`), bìa
+    `cover.{t}` 350px. CF có mặt nhưng không challenge GET. KHÔNG nhận nhentai.net (site khác).
+    **hentaifc**: nginx trần không CF. Trang gallery `/e/{id}` → tên `<h1 class="heading">` + bìa =
+    thumbnail ĐẦU khối `.thumbs` (`s3…/0.jpg`, bytes WebP 400px; khối "Same Artist" là bìa cuốn khác).
+    Trang đọc `/e/{id}/c{N}` → dropdown `chapter_select` (`<option value="cN">`) ∪ link `/c{N}` trang
+    gallery = danh sách chương; ảnh = `var ytaw=['104 116 …']` (mã ký tự cách dấu cách → URL
+    `s2.hentaifc.com/token/<token>/{i}.jpg`, JPEG ~1100px), đối chiếu `var num_page`. Số chương c{N} →
+    N+1 (c0 = Chapter 1); nhãn khác "Chapter N" → tên chương. URL có token (nghi có hạn, đo thực thấy
+    ổn định ≥1h) → HTML trang đọc chỉ dùng lại trong `READER_TTL`=300s (one-shot: list_chapters tải 1
+    lần, chapter_images dùng lại). 7/7 gallery đo 01/10 đều 1 chương c0. **Đo thực (01/10)**: tải
+    nh218300 (23 JPEG, mảng), nh624421 (42 WebP, dict lệch), fc89351 (5 JPEG) → 73/73 ảnh `ok`, chạy lại
+    `.done` bỏ qua, `--dest-name` bị chặn exit 1.
+    **HentaiVNXProvider (`name="hentaivnx"`, `hentaivnx.com`, 01/10/2026)** — 18+ tiếng Việt, giao diện họ
+    NetTruyen, CF không challenge GET → HTTP trần, referer=None (đã thử). Trang bộ `/truyen-hentai/{slug}-
+    {idBộ}` có ĐỦ list chương; link chương `/truyen-hentai/{slug}/chapter-N/{idChương}` — slug chương = slug
+    bộ BỎ `-{idBộ}` → lọc theo đó; link chương dán vào → breadcrumb trang chương ra idBộ. Trang bộ cache
+    ~4h (`max-age=14400`) → chương mới có thể trễ. Ảnh: `var cdn1..cdn4='[json]'`; **chọn cdn1**
+    (`sv{3,4,5}.2tcdn.cfd`, site tự lưu, 1..N, không token, = ảnh hiển thị mặc định; 18/18 mẫu có) — cdn3/4
+    (`all.2tcdn.cfd`) có lúc lẫn ảnh LẠC bộ khác (`00.jpg`, lệch ±1), cdn2 = proxy duckduckgo (bộ cũ) hoặc
+    dải liền 729×21250 token ~1 ngày (bộ mới; cdn1 = cùng dải cắt lát 729×5000, trang 20 so byte y hệt
+    nguồn gốc). Dự phòng thứ tự cdn1→3→4→2; URL duckduckgo `/iu/?u=` → lấy URL gốc (core suy đuôi file
+    từ path, `/iu/` ra tên rác); hậu tố `-----NN` (JS ghép ngang) → cắt + cảnh báo (0 ca trong 18 mẫu).
+    Số chương = số site (`chapter-N`, lẻ `N-5`/`N.5`; one-shot cũ `chapter-0`) → không hậu tố, `into:` được.
+    Bật **`png_to_webp`** (móc core, xem dưới). **Đo thực (01/10)**: Trò Chơi Mạo Hiểm ch.148 22 lát PNG
+    (~75MB ước từ 3 lát 2.95–3.95MB; CDN chunked không có Content-Length) → 22 `.webp` 8.1MB `ok`, 29s;
+    xoá 2 trang + `.done` → chỉ tải bù 2; ch.1-2 WebP 384px giữ nguyên; one-shot JPEG 36 trang giữ `.jpg`.
+    **Móc `png_to_webp` (core, 01/10/2026)**: provider khai `png_to_webp = True` → `run()` đổi đích trang
+    URL `.png` thành `NNN.webp`, `download_image(..., to_webp=True)` sau KHI ảnh qua tầng 1+2 gọi
+    `png_to_webp(data)`: chỉ khi bytes thật là PNG, cạnh ≤ `WEBP_MAX_DIM`=16383 (giới hạn WebP), trong
+    `_gate.strict()` + breadcrumb `_decoding`; RGBA chỉ giữ alpha khi có điểm không đục; WebP
+    `WEBP_TRANSCODE_Q`=90 method 4 (như moetruyen) rồi kiểm lại giải mã. Hụt bất kỳ điều kiện → ghi
+    NGUYÊN bytes gốc (lệch đuôi `.webp` chứa PNG/JPEG — chấp nhận như tiền lệ ZetTruyen). VÌ SAO mã hoá
+    lúc tải chứ không chạy `convert_webp.py` sau: core/`check_library` nhận trang theo TÊN FILE chính xác
+    (`NNN.png`) → đổi đuôi sau khi tải = bị coi là thiếu trang, `--recheck` tải lại. Đo q90 trên lát 729×
+    5000: 3.7MB→0.55MB (~15%), lệch TB ~1.4/255 (cao hơn moetruyen 0.54 vì PNG nguồn vốn nhiễu nén),
+    0.6–1.3s/lát (chạy trong pool). Provider không bật → đường cũ y nguyên (hồi quy hentaifc).
+    **LXMangaProvider (`name="lxmanga"`, `lxmanga.org`, 01/10/2026)** — 18+ tiếng Việt, WordPress theme
+    riêng. ⚠️ **NHÀ MẠNG CHẶN SNI** (PC Viettel: DNS đúng IP Cloudflare nhưng bắt tay TLS bị cắt khi SNI =
+    lxmanga.org; cùng IP SNI khác thì qua) → requests/curl KHÔNG BAO GIỜ tới. Chromium Playwright qua nhờ
+    **ECH** (`/cdn-cgi/trace` → `sni=encrypted`, http/3) + tự qua CF managed challenge ~3s không cần tick
+    (cf_clearance giữ trong profile `lx-profile`) → MỌI HTML qua `cf_browser`, KHÔNG thử HTTP (`fetch_mode`
+    nào cũng dùng trình duyệt; `--fetch http` chỉ in nhắc). Pane browser của app Claude (Electron, UA
+    `Claude/…`) bị LẶP challenge sau tick → đừng dùng nó thử site CF. Trang bộ `/{slug}.html`: HTML thô
+    KHÔNG có list chương (JS nạp qua admin-ajax `baka_ajax`) → `goto` + chờ `ul.chapter-list li a` (25s) →
+    `evaluate` đọc href+nhãn, title `h1.comic-title`, og:image (quan sát DOM, không tự gọi AJAX); mới nhất
+    đứng đầu; bộ 263 chương ra đủ. Trang chương: HTML THÔ (`get_html`) có ảnh trong `<section id="viewer">`
+    (`src`, "Server Gốc"); ảnh `cdn{1,2,3}.tymanga.com` KHÔNG bị chặn, không đòi Referer → core tải HTTP đa
+    luồng (12/12 chương mẫu 4 bộ = cdn2); ảnh lỡ nằm trên lxmanga.org → bỏ + cảnh báo; lẫn PNG →
+    `png_to_webp`. Bìa `.avif` trên lxmanga.org (bị chặn) → qua `i0.wp.com/<host><path>?ssl=1` = chính
+    "Server CDN 1-3" của site (JS `chuyenServerImg`), trả JPEG → `cover.avif` chứa JPEG (reader `cover_jpeg`
+    mã hoá lại theo nội dung → hiển thị đúng). **Số chương**: nhãn tự do → số từ nhãn (`Chap|Chương|Phần|
+    Tập|C N`) rồi slug (`chap-N`, `cN`, `chap-N-M`→N.M); đủ số + trùng ≤ n/20 → SỐ THẬT (trùng lẻ tẻ giữ bản
+    mới), không hậu tố, `into:` được; còn lại (thiếu số / trùng nhiều = TUYỂN TẬP, vd "Sex Tu Tiên Tổng
+    Hợp", "[series] …", "Chap X Phần Y") → SỐ VỊ TRÍ (cũ nhất = 1) + nhãn làm tên chương + folder hậu tố
+    `SUFFIX=" [LX]"` (không trộn folder nguồn số thật); 1 chương → số đọc được hoặc 1, không hậu tố. Nhãn
+    do SITE cắt cụt ~23 ký tự (không có bản đầy đủ trong thẻ) — vẫn dùng vì ổn định + còn dấu. Chương
+    nhãn có chữ **Raw** → BỎ QUA (bản dịch sẽ thay vào; tải raw thì `.done` chặn bản dịch); số vị trí vẫn
+    tính cả raw. `allow_browser=False` (check_updates) → ném `Challenged` NGAY → status `browser` →
+    supervisor vẫn xếp job tải mỗi lượt (như comix). Bộ không đọc được list / chương mất `#viewer` → lưu
+    HTML `.reader-meta/lx-debug/`, 3 chương liền → `Blocked`. **Đo thực PC (01/10)**: Slave Wife ch.1 20
+    JPEG 26s; Sex Tu Tiên ch.3 (`Chapter 3 - Dâm Nữ Đạo Chap 1`) 46 ảnh 36s; [series] ch.1 40 ảnh (1 PNG →
+    WebP) 44s; tất cả `ok`; chạy lại `.done` 22s (chỉ mở Chromium đọc list). **CHƯA thử trên server** (mạng/
+    IP/Chromium có thể khác).
   - `cf_browser.py` — **tầng TRÌNH DUYỆT THẬT dùng chung cho site sau Cloudflare** (28/09/2026;
-    dùng bởi qqcomvn [lấy HTML] + moetruyen [chụp trang]). `CFBrowser(profile, host, label,
+    dùng bởi qqcomvn [lấy HTML] + moetruyen [chụp trang] + lxmanga [HTML + DOM list chương, LUÔN dùng
+    vì nhà mạng chặn HTTP]). `CFBrowser(profile, host, label,
     extra_hosts=(), block_types=ảnh/media/font)`: `open()`/`get_html(url)`/`goto(url)`/`close()`.
     30/09: `get_html` + `goto` chung 1 đường `_load(url, want_html)` (goto để trang mở trên `self.page`
     cho provider thao tác DOM, trả True/False-404); `extra_hosts` = host ngoài site được tải (khớp cả
