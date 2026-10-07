@@ -16,3 +16,5 @@ curl_cffi
 #   python -m playwright install chromium
 # Ghim 1.55: ban 1.62 keo "Chrome for Testing 151" dinh loi side-by-side tren Win10.
 playwright==1.55.0
+# pypdf: CHI cho pdf_import.py (nhap truyen PDF -> thu muc anh "Tap NN"). Thuan Python.
+pypdf

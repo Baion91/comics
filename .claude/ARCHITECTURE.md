@@ -469,6 +469,34 @@ cách chạy thật + decode thử ảnh.
   (vòng lặp hỏi thư mục/--fix/--black → chạy).
 - `convert_webp.py` — chuyển PNG→WebP hàng loạt, xuất cây mới `<tên>_webp`,
   không đụng cây gốc. Tách riêng khỏi asura_downloader vì Asura đã webp sẵn.
+- `pdf_import.py` + `Nhap PDF.bat` (07/10/2026) — **nhập truyện PDF**: mỗi PDF đặt THẲNG trong folder
+  truyện → thư mục chương `Tập NN` (`001.jpg…`), PDF gốc → `<truyện>/.pdf-goc/`. *Vì sao tách chứ không
+  cho reader đọc PDF*: reader + check_library + kho kích thước + ghép trang đôi + chữ ký thư viện đều
+  mặc định "chương = thư mục ảnh" (~8–10 chỗ phải sửa, reader phải thêm bộ đọc PDF ngoài stdlib);
+  pdf.js trên iPhone thì nặng (80–94MB/cuốn qua tunnel, mất nhớ vị trí/ghép trang). **Chỉ nhận trang
+  "đúng 1 ảnh JPEG phủ kín trang"** (`page_jpeg`): content stream chỉ gồm q/Q/cm/Do/gs/màu/tham số nét
+  (gặp BT/đường vẽ/ảnh inline → từ chối), đúng 1 lần `Do` một Image XObject `/DCTDecode` đơn, không
+  `/Decode`/`/Mask`/`/ImageMask`, màu DeviceRGB/Gray hoặc ICCBased 1|3 kênh (không sRGB → cảnh báo),
+  `/SMask` chỉ chấp nhận khi đục 100% (Acrobat hay gắn SMask toàn 255), ExtGState không soft mask/alpha/
+  blend, trang không xoay, CTM không xoay/lật, ảnh phủ vùng crop∩media lệch ≤ max(2pt, 0.5%), không kéo
+  méo tỉ lệ, header JPEG khớp cỡ khai + RGB/L. Đạt → chép NGUYÊN stream (= file JPEG, pypdf `get_data()`
+  không giải mã DCT); không đạt → dừng cả file, không ghi gì (chưa có bộ dựng trang — thêm pypdfium2 khi
+  thật sự gặp PDF chữ/vector). Mỗi ảnh qua `check_image_bytes` trước khi ghi. **Tên**: số sau
+  Tập/Vol/Quyển/Chương/Chapter/Chap/Ch/# (`NUM_KEY_RE`), không có thì số đầu tiên; `Tập {:02d}`, lẻ giữ
+  phần thập phân (user chốt "Tập 01"/"Tập 07"); không số / trùng số trong 1 folder / PDF nằm ngay
+  `downloads/` → báo, bỏ qua. **Ghi**: `downloads/.pdf-tmp/<truyện> - Tập NN/` (gốc downloads chấm-đầu =
+  `_scan_library` bỏ qua; KHÔNG đặt tmp trong folder truyện vì `build_series` không lọc thư mục con
+  chấm-đầu → thư mục tạm có ảnh sẽ hiện thành chương/arc) → đủ trang → `os.rename` sang chỗ thật
+  (khác ổ thì `shutil.move`) → cất PDF (trùng tên thêm ` (2)`). `Tập NN` đã có: giống từng byte PDF →
+  chỉ cất PDF (ca ngắt giữa đổi tên và cất); khác → bỏ qua. `.pdf-goc` trong folder truyện: `build_series`
+  thấy nó là thư mục không ảnh, không thư mục con có ảnh → bỏ qua; check_library bỏ chấm-đầu. Exit 0/1
+  (có file lỗi)/2 (không thấy PDF) — `.bat` dùng 2 để khỏi hỏi "Tiến hành?". **Đo thực (07/10)**: Doraemon
+  truyện dài Long 1 (189 trang, PDFsharp) + Vol.07 (206 trang, Acrobat, SMask toàn 255, 1 trang crop
+  1527.81×2399.7, 1 trang ICC sRGB) → 395/395 ảnh giống từng byte stream trong PDF, 2.9s + 4.9s,
+  check_library 0 lỗi, reader 8099: 2 chương, bìa trang 1, 189/206 ảnh tải, tỉ lệ đúng, 0 `nd`, 0 lỗi
+  console. Ca giả (PDF Pillow): CCITT/CMYK(`/Decode`)/trang xoay/chèn `BT` đều bị từ chối đúng trang.
+  ⚠️ Test `.bat` bằng chuyển hướng stdin phải bỏ `chcp 65001` — dưới 65001 `set /p` đọc file chuyển
+  hướng ra RỖNG (gõ phím thật không bị).
 - `reader_server.py` — web reader kiểu Asura (HTML sinh trong Python stdlib; CSS/JS
   từ 21/08 tách ra file tĩnh versioned `/static/*` + có Service Worker `/sw.js`, xem
   mục "Tài nguyên tĩnh + Service Worker"; không dependency ngoài Pillow tùy chọn), port mặc định **8080**, user
@@ -1173,5 +1201,6 @@ python check_library.py [downloads\<Tên>] [--fix] [--recheck] [--workers N] [--
 python asura_downloader.py <URL|slug> ...           # shim cũ, vẫn chạy (mặc định Asura)
 # hoặc double-click "Tai truyen.bat" trong folder rồi dán link
 python convert_webp.py "<folder>" [--quality 90] [--jpg-too]
+python pdf_import.py ["downloads\<Tên>" | "<file>.pdf"] [--dry-run]   # PDF -> "Tập NN" (hoặc Nhap PDF.bat)
 python reader_server.py [--port 8080]   # thường bật bằng shortcut "Toony"
 ```
