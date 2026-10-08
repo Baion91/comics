@@ -10,7 +10,7 @@ Các script trong thư mục này, mỗi cái một việc:
 | `Kiem tra truyen.bat` | Bấm để kiểm tra: chọn thư mục (chạy check_library) |
 | `asura_downloader.py` | (cũ, vẫn chạy) lối tắt chỉ-Asura của comic_downloader |
 | `convert_webp.py` | Chuyển PNG→WebP **và** re-nén WebP nặng (comix.to) về q85 — có chế độ nén tại chỗ |
-| `pdf_import.py` / `Nhap PDF.bat` | **Nhập truyện PDF**: mỗi file PDF → 1 thư mục chương `Tập NN` (ảnh JPEG gốc) để reader đọc |
+| `pdf_import.py` / `Nhap PDF.bat` | **Nhập truyện PDF**: mỗi file PDF (hoặc 1 folder các PDF bị tách của 1 tập → gộp) → 1 thư mục chương `Tập NN` (ảnh JPEG gốc) để reader đọc |
 | `realesrgan-.../lam-net.bat` | **Làm nét ảnh scan** bằng Real-ESRGAN (AI upscale 2x) |
 | `reader_server.py` | Web đọc truyện kiểu Asura, đọc từ PC lẫn điện thoại |
 
@@ -351,28 +351,40 @@ python convert_webp.py "..." --in-place      :: NÉN WebP TẠI CHỖ (sửa th�
 
 Reader chỉ đọc "chương = thư mục ảnh", nên truyện dạng **PDF** phải tách ra 1 lần.
 
-1. Đặt file PDF **thẳng trong folder truyện**: `downloads\Doraemon truyện dài\Long 1 LITE.pdf`
-   (PDF nằm ngay `downloads\` sẽ bị từ chối — reader không có chỗ đặt chương).
+1. Đặt PDF theo 1 trong 2 kiểu (tool tự nhận theo vị trí, không cần chọn chế độ):
+   - **1 file = 1 tập**: PDF **thẳng trong folder truyện** — `downloads\Doraemon truyện dài\Long 1 LITE.pdf`.
+   - **1 tập bị tách nhiều file** → bỏ chung vào **1 folder con của truyện**, tool **gộp** thành 1 tập:
+     `downloads\Doraemon truyện dài\14 - Ba chàng hiệp sĩ mộng mơ\*.pdf` (6 phần) → `Tập 14` (189 ảnh liền).
+
+   PDF nằm ngay `downloads\` hoặc sâu hơn 1 folder con sẽ bị từ chối.
 2. Bấm **`Nhap PDF.bat`** (hoặc kéo-thả file/folder vào nó) → xem bảng kiểm tra → `y` để tách.
 
 ```bat
 python pdf_import.py                                   :: tìm PDF trong cả downloads\
 python pdf_import.py "downloads\Doraemon truyện dài"   :: 1 folder
 python pdf_import.py "...\Long 1 LITE.pdf" --dry-run   :: chỉ kiểm, không ghi gì
+python pdf_import.py "...\14 - Ba chàng hiệp sĩ mộng mơ"  :: 1 tập bị tách (gộp)
 ```
 
 - Kết quả: `Doraemon truyện dài\Tập 01\001.jpg … 189.jpg`. **Số tập** lấy theo chữ
   Tập/Vol/Chương/Chapter/Ch/# trong tên file, không có thì **số đầu tiên** ("Long 1 LITE" → Tập 01,
-  "Long DoremonVoz Vol.07 (lite)" → Tập 07). Tên không có số / 2 file ra cùng số → báo, đổi tên file
+  "Long DoremonVoz Vol.07 (lite)" → Tập 07). Tên không có số / 2 nguồn ra cùng số → báo, đổi tên
   rồi chạy lại.
+- **Tập gộp**: số tập lấy từ **tên folder** ("14 - Ba chàng…" → Tập 14). Thứ tự các phần: bỏ phần tên
+  chung, **số đứng đầu phần còn lại** (trang bắt đầu `-0/-31/-61…`, hoặc `1/2/3`, `phần 2`, `(2)`), file
+  **không có số = phần đầu**; rồi đối chiếu số đó với số trang từng phần → thiếu phần đầu/giữa hoặc đặt
+  tên sai thì **dừng, không đụng gì**. (Thiếu phần **cuối** thì không có gì để phát hiện — xem bảng thứ
+  tự + số trang mà bước kiểm tra in ra.) Folder gộp chỉ được chứa PDF; kéo-thả 1 phần cũng lấy cả folder.
 - **Không mất chất lượng**: chỉ nhận PDF loại "mỗi trang = đúng 1 ảnh JPEG phủ kín trang" (bản scan
   thường gặp) và chép **nguyên bytes JPEG** ra file — không nén lại, dung lượng ≈ PDF, ~3–5 giây/cuốn
-  200 trang. Trang khác loại (có chữ/vector, ảnh nén kiểu khác, xoay, CMYK…) → **dừng file đó, báo
-  trang nào**, không đụng gì.
-- **PDF gốc** được cất vào `<folder truyện>\.pdf-goc\` (reader + check_library bỏ qua). Đọc thử thấy ổn
-  thì **tự tay xoá** để lấy lại dung lượng.
+  200 trang. Trang khác loại (có chữ/vector, ảnh nén kiểu khác, xoay, CMYK, trong suốt thật…) → **dừng
+  cả tập, báo trang nào**, không đụng gì. Lớp trong suốt "vết thừa" (ghép lên nền trắng như trình đọc
+  PDF mà lệch ≤ 16/255 — vd Doraemon truyện ngắn Vol.01 trang 29/101) vẫn nhận, chép JPEG gốc.
+- **PDF gốc** (tập gộp: **cả folder** các phần, 1 lần đổi tên) được cất vào `<folder truyện>\.pdf-goc\`
+  (reader + check_library bỏ qua). Đọc thử thấy ổn thì **tự tay xoá** để lấy lại dung lượng.
 - An toàn: ghi vào `downloads\.pdf-tmp\` rồi mới đổi tên → reader không bao giờ thấy chương dở; thư
-  mục `Tập NN` đã có mà khác nội dung PDF → bỏ qua, không ghi đè. Chạy lại thoải mái.
+  mục `Tập NN` đã có mà khác nội dung PDF → bỏ qua, không ghi đè. Bị ngắt ở bước nào chạy lại cũng tự
+  xong (đã tách mà chưa cất → chỉ cất). Chạy lại thoải mái.
 - Cần thư viện `pypdf` (có trong `requirements.txt`; `cap-nhat.bat` tự cài trên server). Muốn đọc trên
   server thì chép **thư mục đã tách** (không cần chép PDF) vào `downloads` của server.
 

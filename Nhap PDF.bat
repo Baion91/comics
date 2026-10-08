@@ -9,10 +9,13 @@ if not "%target%"=="" goto :preview
 
 :menu
 echo ============================================================
-echo  NHAP TRUYEN PDF  (moi file PDF -^> 1 thu muc "Tap NN" anh JPEG goc)
-echo  Dat file PDF THANG trong folder truyen, vd:
-echo    downloads\Doraemon truyen dai\Long 1 LITE.pdf
-echo  So tap lay tu ten file (Tap/Vol/Chuong/Chapter... hoac so dau tien).
+echo  NHAP TRUYEN PDF  (moi tap -^> 1 thu muc "Tap NN" anh JPEG goc)
+echo  - PDF dat THANG trong folder truyen = 1 file 1 tap, vd:
+echo      downloads\Doraemon truyen dai\Long 1 LITE.pdf
+echo    So tap lay tu ten file (Tap/Vol/Chuong/Chapter... hoac so dau tien).
+echo  - 1 tap bi tach nhieu file PDF: bo chung vao 1 folder con cua truyen, vd:
+echo      downloads\Doraemon truyen dai\14 - Ba chang hiep si mong mo\*.pdf
+echo    -^> GOP thanh 1 tap. So tap lay tu ten folder, phan xep theo so trong ten file.
 echo  PDF goc duoc cat vao ^<folder truyen^>\.pdf-goc\ (doc thu on thi tu xoa).
 echo  Enter de trong = tim PDF trong ca thu vien downloads\
 echo ============================================================

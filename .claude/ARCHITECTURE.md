@@ -521,15 +521,20 @@ cách chạy thật + decode thử ảnh.
   (vòng lặp hỏi thư mục/--fix/--black → chạy).
 - `convert_webp.py` — chuyển PNG→WebP hàng loạt, xuất cây mới `<tên>_webp`,
   không đụng cây gốc. Tách riêng khỏi asura_downloader vì Asura đã webp sẵn.
-- `pdf_import.py` + `Nhap PDF.bat` (07/10/2026) — **nhập truyện PDF**: mỗi PDF đặt THẲNG trong folder
-  truyện → thư mục chương `Tập NN` (`001.jpg…`), PDF gốc → `<truyện>/.pdf-goc/`. *Vì sao tách chứ không
+- `pdf_import.py` + `Nhap PDF.bat` (07/10/2026, gộp + SMask 08/10) — **nhập truyện PDF**: mỗi PDF đặt
+  THẲNG trong folder truyện (hoặc 1 folder con chứa các PDF bị tách của 1 tập → gộp) → thư mục chương
+  `Tập NN` (`001.jpg…`), PDF gốc → `<truyện>/.pdf-goc/`. *Vì sao tách chứ không
   cho reader đọc PDF*: reader + check_library + kho kích thước + ghép trang đôi + chữ ký thư viện đều
   mặc định "chương = thư mục ảnh" (~8–10 chỗ phải sửa, reader phải thêm bộ đọc PDF ngoài stdlib);
   pdf.js trên iPhone thì nặng (80–94MB/cuốn qua tunnel, mất nhớ vị trí/ghép trang). **Chỉ nhận trang
   "đúng 1 ảnh JPEG phủ kín trang"** (`page_jpeg`): content stream chỉ gồm q/Q/cm/Do/gs/màu/tham số nét
   (gặp BT/đường vẽ/ảnh inline → từ chối), đúng 1 lần `Do` một Image XObject `/DCTDecode` đơn, không
   `/Decode`/`/Mask`/`/ImageMask`, màu DeviceRGB/Gray hoặc ICCBased 1|3 kênh (không sRGB → cảnh báo),
-  `/SMask` chỉ chấp nhận khi đục 100% (Acrobat hay gắn SMask toàn 255), ExtGState không soft mask/alpha/
+  `/SMask` (xám 8-bit, không `/Matte`/`/Decode`, không nén DCT/JPX) đục 100% → nhận ngay (Acrobat hay gắn
+  SMask toàn 255); có điểm trong suốt → `_alpha_deviation` ghép JPEG lên nền TRẮNG như trình đọc PDF, lệch
+  = max (255 − kênh tối nhất)·(1 − α) ≤ `ALPHA_TOL`=16/255 → vẫn chép JPEG gốc + cảnh báo, lớn hơn → từ
+  chối (08/10: Doraemon truyện ngắn Vol.01 trang 29 lệch 0 — điểm trong suốt vốn trắng; trang 101 lệch
+  13 — viền elip mảnh quanh số trang; cả 2 là vết thừa lúc chỉnh ảnh), ExtGState không soft mask/alpha/
   blend, trang không xoay, CTM không xoay/lật, ảnh phủ vùng crop∩media lệch ≤ max(2pt, 0.5%), không kéo
   méo tỉ lệ, header JPEG khớp cỡ khai + RGB/L. Đạt → chép NGUYÊN stream (= file JPEG, pypdf `get_data()`
   không giải mã DCT); không đạt → dừng cả file, không ghi gì (chưa có bộ dựng trang — thêm pypdfium2 khi
@@ -549,6 +554,33 @@ cách chạy thật + decode thử ảnh.
   console. Ca giả (PDF Pillow): CCITT/CMYK(`/Decode`)/trang xoay/chèn `BT` đều bị từ chối đúng trang.
   ⚠️ Test `.bat` bằng chuyển hướng stdin phải bỏ `chcp 65001` — dưới 65001 `set /p` đọc file chuyển
   hướng ra RỖNG (gõ phím thật không bị).
+  **Gộp tập bị tách (08/10)** — gặp `Doraemon truyện dài/01 - …/` + `14 - …/`: 1 tập = 6 PDF (Aspose,
+  `…-0/-31/-61/-91/-121/-151`; bộ 14 phần đầu KHÔNG có số `…mo_Doremon 14 -.pdf`, đuôi rác `Doremon 1`
+  → sắp tự nhiên đặt bìa ở trang 159). *Thiết kế*: 1 đường xử lý `Job` (items theo thứ tự, `dest`, `src`
+  được cất); PDF lẻ = Job 1 phần → hành vi cũ giữ nguyên, toàn bộ an toàn (quét trước, ghi tmp, rename 1
+  lần, so byte) dùng chung. **Chọn kiểu theo độ sâu so với `downloads/`** (`plan_jobs`, không có cờ): 2 =
+  lẻ; 3 = cả folder con là 1 tập gộp (số từ TÊN FOLDER); 1 hoặc ≥4 → từ chối; ngoài downloads → lẻ. Đổi
+  hành vi so với 07/10: PDF trong `<truyện>/<arc>/` trước ra `<arc>/Tập NN`, nay là gộp (chưa ai dùng).
+  Folder gộp phải chỉ có PDF (+ Thumbs.db/desktop.ini) — có ảnh/thư mục con → từ chối (chặn hiểu nhầm
+  folder arc/chương); tên folder trùng tên chương sẽ tạo (`Tập 14/`) → từ chối. Chọn 1 phần (kéo-thả 1
+  file) → lấy CẢ folder (nếu không: ra tập 30 trang, lần nhập đủ sau bị "khác nội dung" → kẹt). Trùng
+  đích tính theo `dest` (`_key` NFC+casefold), không theo folder chứa PDF (`Long 14.pdf` + folder `14 - …`
+  cùng ra Tập 14). **Thứ tự** (`order_parts`): bỏ commonprefix của stem (NFC) — nếu prefix cắt giữa 1 dãy
+  số (`…_1` của `…_1_x`/`…_15_x`) thì lùi về trước dãy số; `PART_NUM_RE` lấy số đầu phần còn lại (cho
+  phép `_ - . ( ) [ ] #` và `phần/phan/part/p` đứng trước); ≥2 file không số / trùng số → dừng. **Kiểm**
+  (`check_order`, sau khi biết số trang): số = trang bắt đầu cộng dồn từ 0|1 (phần không số = 0|1),
+  hoặc 1,2,3 liên tiếp bắt đầu 0|1 (có phần không số: 1|2) — số đầu phải 0/1/2 nên thiếu phần ĐẦU bị bắt;
+  thiếu phần CUỐI không có dữ liệu để bắt (bảng thứ tự + số trang luôn in ra). **Cất** cả folder bằng 1
+  `os.rename` → `.pdf-goc/<folder>/` (không `shutil.move` cho thư mục: chép-xoá dở dang khi file bị khoá):
+  bị ngắt chỉ còn 3 trạng thái, chạy lại tự xong; cất từng file thì ngắt giữa chừng → còn nửa số phần →
+  kẹt. Cất lỗi (Explorer/trình đọc PDF đang mở 1 phần → WinError 5) → chương vẫn giữ, báo + exit 1, chạy
+  lại = "đã tách từ trước" → chỉ cất. pypdf đọc nguyên file vào BytesIO rồi đóng → tool không tự giữ khoá.
+  *Test 08/10* (bản sao trong scratchpad, `DOWNLOADS` vá sang đó): bộ 14 → 189 ảnh giống từng byte theo
+  đúng thứ tự, `001.jpg` = bìa; Long 1 → Tập 01 189; truyện ngắn Vol.01 → Tập 01 192 (2 trang SMask nhận);
+  `build_series` thấy Tập 01/07/14; chạy lại → exit 2; ca lỗi: kéo 1 phần, trùng đích, folder có ảnh, folder
+  tên `Tập 14`, PDF quá sâu, thiếu phần giữa/đầu, `Tập 14` khác nội dung, PDF ngay downloads — đều dừng
+  đúng, không đụng gì; ngắt sau tách (folder trả về chỗ cũ) → chỉ cất; trùng tên trong `.pdf-goc` → ` (2)`
+  (cả file lẫn folder); `.pdf-tmp` rác cũ được dọn; file đang mở → báo, mở khoá chạy lại → cất xong.
 - `reader_server.py` — web reader kiểu Asura (HTML sinh trong Python stdlib; CSS/JS
   từ 21/08 tách ra file tĩnh versioned `/static/*` + có Service Worker `/sw.js`, xem
   mục "Tài nguyên tĩnh + Service Worker"; không dependency ngoài Pillow tùy chọn), port mặc định **8080**, user
@@ -1253,6 +1285,6 @@ python check_library.py [downloads\<Tên>] [--fix] [--recheck] [--workers N] [--
 python asura_downloader.py <URL|slug> ...           # shim cũ, vẫn chạy (mặc định Asura)
 # hoặc double-click "Tai truyen.bat" trong folder rồi dán link
 python convert_webp.py "<folder>" [--quality 90] [--jpg-too]
-python pdf_import.py ["downloads\<Tên>" | "<file>.pdf"] [--dry-run]   # PDF -> "Tập NN" (hoặc Nhap PDF.bat)
+python pdf_import.py ["downloads\<Tên>" | "<file>.pdf" | "<truyện>\<folder các phần>"] [--dry-run]   # PDF -> "Tập NN"; folder con = gộp (hoặc Nhap PDF.bat)
 python reader_server.py [--port 8080]   # thường bật bằng shortcut "Toony"
 ```
