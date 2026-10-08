@@ -26,6 +26,16 @@ cách chạy thật + decode thử ảnh.
     Provider không có móc → đường cũ y nguyên (đã hồi quy ZetTruyen + qqcomvn).
     **Móc `png_to_webp` (01/10/2026, cho hentaivnx)**: trang PNG lưu thành `NNN.webp` mã hoá q90 lúc tải
     (`png_to_webp()` + tham số `to_webp` của `download_image`) — chi tiết + lý do ở mục HentaiVNX bên dưới.
+    **Móc `drop_spacers` (08/10/2026, cho hentaivnx)**: provider khai `drop_spacers = True` → `run()`
+    truyền `drop_spacer=True` cho `download_image`; ảnh qua tầng 1+2 mà có cạnh ≤ `SPACER_MAX_SIDE`=4px
+    (`spacer_size()` đọc header) → KHÔNG ghi ảnh, ghi marker `spacer_marker(dest)` = `NNN.ext.spacer`
+    (nội dung `WxH bytes url`) rồi trả True. Marker = trang ĐÃ CÓ ở mọi chỗ: `download_image` trả True
+    ngay (mọi provider, rẻ 1 stat), `_have()` của `run()` (chương đủ → `.done`, resume không tải lại),
+    `check_library.collect` cộng số trang marker vào `present` (đệm GIỮA chương không bị báo khuyết).
+    Reader/`list_images`/cbz/`check_updates._has_images` lờ vì không đúng đuôi ảnh. VÌ SAO marker chứ
+    không bỏ khỏi list URL: kích thước chỉ biết sau khi tải (dò trước = gấp đôi request cho ca hiếm),
+    và tên trang gắn với VỊ TRÍ trong list → bỏ trang = lệch số/khuyết. Ảnh đệm đã lưu trước móc này vẫn
+    nằm nguyên (không tự dọn). Provider không bật → đường cũ y nguyên (đo: cùng URL đệm → ghi file 916B).
     **`get_text(url, retries, encoding=None)` (08/10/2026, cho hentaivnreal)**: `encoding` ép bảng mã khi
     server KHÔNG khai charset (requests khi đó đoán ISO-8859-1 cho mọi `text/*` → tiếng Việt vỡ
     "ChÆ°Æ¡ng"). None = y như cũ (mọi provider khác không đổi).
@@ -52,7 +62,7 @@ cách chạy thật + decode thử ảnh.
     `list_chapters`→`[Chapter(number,title,ref)]`, `chapter_images`→`[url]`,
     `cover_url`. `ref` là "chìa" mờ mỗi site tự sinh/tự hiểu (Asura = URL API
     chương; Raven = URL trang chương). `PROVIDERS`/`by_name`/`REGISTRY` (map domain).
-    Đang có (+ nhentai/hentaifc/hitomi one-shot 18+, xem cuối danh sách): **AsuraProvider** (API JSON), **RavenProvider** (parse HTML + `ts_reader`),
+    Đang có (+ nhentai/hentaifc/hitomi one-shot 18+ và phapbi blog Blogger, xem cuối danh sách): **AsuraProvider** (API JSON), **RavenProvider** (parse HTML + `ts_reader`),
     **DilibProvider** (parse HTML PHP), **MangaDexProvider** (API JSON, bản dịch `en`),
     **TruyenQQProvider** (parse HTML, họ `truyenqqko/to/vn.com` — KHÔNG gồm `truyenqq.com.vn`,
     site khác, xem TruyenQQVNProvider), **ACGNProvider** (parse HTML tĩnh,
@@ -174,6 +184,15 @@ cách chạy thật + decode thử ảnh.
     Bật **`png_to_webp`** (móc core, xem dưới). **Đo thực (01/10)**: Trò Chơi Mạo Hiểm ch.148 22 lát PNG
     (~75MB ước từ 3 lát 2.95–3.95MB; CDN chunked không có Content-Length) → 22 `.webp` 8.1MB `ok`, 29s;
     xoá 2 trang + `.done` → chỉ tải bù 2; ch.1-2 WebP 384px giữ nguyên; one-shot JPEG 36 trang giữ `.jpg`.
+    **Mirror + ảnh đệm (08/10/2026)**: `domains` thêm `hentaivnx1.com` + `hentaivn.college` — CÙNG backend
+    (cùng idBộ/idChương, `cdn1..cdn4` so JSON y hệt, CDN `sv3.2tcdn.cfd`), chỉ nhận link, vẫn tải qua BASE
+    `www.hentaivnx.com` → cùng folder dù dán từ domain nào (watchlist so URL chuỗi → cùng bộ 2 domain = 2
+    mục, vô hại). Domain TRẦN `hentaivn.college` bị nhà mạng chặn (cùng IP CF với www, timeout cả http/
+    https) → đổi BASE sang mirror này phải giữ `www.`. Bật `drop_spacers`: bộ "Vì Nàng Bellumia" có JPEG
+    900×1 916B ở ch.0 trang 9 + ch.2/3 trang 1 (10 chương mới nhất trang chủ sạch). cdn2 nay có thể là
+    `cdn.sayhentai.cx` (không token). **Đo thực PC (08/10)**: tải bằng link college 3 chương 71 trang →
+    3 marker `.spacer` đúng chỗ, `.done` cả 3; xoá `.done` → "đã đủ"; xoá thêm 1 trang → chỉ bù trang đó;
+    link chương domain trần → về đúng bộ; `check_updates.check_one` college/x1 `ok`, link sai `error`.
     **Móc `png_to_webp` (core, 01/10/2026)**: provider khai `png_to_webp = True` → `run()` đổi đích trang
     URL `.png` thành `NNN.webp`, `download_image(..., to_webp=True)` sau KHI ảnh qua tầng 1+2 gọi
     `png_to_webp(data)`: chỉ khi bytes thật là PNG, cạnh ≤ `WEBP_MAX_DIM`=16383 (giới hạn WebP), trong
@@ -260,6 +279,39 @@ cách chạy thật + decode thử ảnh.
     **Đo thực PC (08/10)**: hi4238970 30/30 WebP 2040×2880 (khớp `width/height` galleryinfo từng trang) +
     bìa, ~40MB; chạy lại `.done` bỏ qua; `--dest-name` chặn; link artist/gallery 404 → exit 1 có lý do;
     `check_updates.check_one` → `ok` listed_max 1 / `error`. CHƯA thử trên server.
+    **PhapBiProvider (`name="phapbi"`, `truyentranhphapbi.blogspot.com` + `truyentranhphapbi.com`,
+    08/10/2026)** — blog Blogger 1 người dịch (truyện Pháp-Bỉ + manga màu), 579 bài/43 nhãn. Google phục vụ,
+    không CF, UTF-8 chuẩn → HTTP trần, `referer=None`. `www.truyentranhphapbi.com` (link cũ) 301 về blogspot;
+    domain trần lỗi TLS. **1 bài = 1 tập**; site KHÔNG có "bộ": nhãn lẫn thể loại (`GENRE_LABELS`: Manga,
+    Classic, Magic, Tổng hợp, New, Anh-Pháp, Truyện lẻ, Ly kỳ, Sci-fi) và 1 nhãn chứa nhiều bộ con.
+    GOM BỘ (user chốt 08/10) = bài thuộc các nhãn KHÔNG-thể-loại của bài neo (GỘP feed các nhãn đó — Lucky
+    Luke 41 mang Lucky Luke + Rantanplan) có cùng `_stem` (tên trước "Tập N", bỏ dấu + (Preview)/(truyện
+    màu)/"màu"/full color + `_ALIASES` doraemon≡doremon, bảy/7 viên ngọc rồng≡dragon ball, siayan≡saiyan +
+    BỎ khoảng trắng: "RAN TAN PLAN"). Tiêu đề "TÊN ALBUM (TẬP N)" (Tintin 23, Asterix…) → stem None = bộ
+    chính của nhãn (`_main_stem` = stem có số phổ biến nhất). Mô phỏng offline cả 579 bài: 115 bộ.
+    Feed `/feeds/posts/summary/-/<Nhãn>?alt=json&max-results=150&start-index=` — ⚠️ nhãn phân biệt hoa
+    thường (lấy chuỗi đúng từ `span.post-labels` bài neo); ⚠️ số entry/trang THẤT THƯỜNG (19–66 dù xin
+    150) → lặp `start-index += len(entry)` tới `openSearch$totalResults`, thiếu → cảnh báo; ⚠️ `content`
+    feed chỉ tới jump break → ảnh PHẢI đọc HTML bài. SỐ từ tiêu đề (slug URL cắt/sai): "Tập N"/"Chương N";
+    "Tập 2-3" = 2 (tên chương "Tập 2-3"); "Tập cuối" = max+1; trùng → bài MỚI nhất giữ N, cũ hơn N.1, N.2…
+    (user chốt; 1 ca: Doremon dài Tập 9 Tây Du Ký → 9.1); bài không số lẫn bộ có số → 0.1…; bộ toàn bài không
+    số → số vị trí theo ngày đăng. PREVIEW (~23%, bản đủ tác giả BÁN qua Drive — không tìm đường lấy): VẪN
+    tải phần công khai, tên chương + " (preview)" (user chốt). ⚠️ `check_updates` so theo SỐ → chương preview
+    đã `.done` chặn việc tự lấy bản đủ khi tác giả đăng lại → hướng dẫn user xoá folder "(preview)".
+    Ảnh = khung đọc ĐẦU TIÊN trong `post-body` (`_BloggerPostImages`, HTMLParser có đếm độ sâu): 3 thế hệ
+    template `div.overlay-data` (2017+) / `div#image-container` (~2015–17) / `div.read` (2013–18) + ảnh
+    TRƯỚC `<a name="more">` (bìa = trang 1, không lặp trong khung) chèn đầu; ảnh sau khung ("Một vài thông tin
+    chú thích", wikimedia) BỎ; không thấy khung → mọi ảnh sau "more" + cảnh báo. URL `/sNNN/` hoặc `=sNNN|wNNN`
+    → `s0` = gốc (rộng 1300); `/img/a/…` không có tên file → gắn `#.jpg` cho core đặt đuôi (requests gửi
+    `path_url`, KHÔNG gửi fragment — đã thử 200 image/jpeg). Trang cắt 2 NỬA `_01/_02` → giữ nguyên (user
+    chốt). Folder = tên nhãn nếu `_stem(nhãn)` = stem bộ, không thì `_display(prefix)` của tập số nhỏ nhất
+    (bỏ cụm màu, IN HOA → Title). Link nhận: bài `/YYYY/MM/<slug>.html` (`?m=1`, domain .com), nhãn
+    `/search/label/<Nhãn>` (slug `label/<Nhãn>`). Cache trong instance: `_series`, `_feeds` (theo nhãn),
+    `_pages` (3 HTML gần nhất — bài neo dùng lại khi tải). **Đo thực PC (08/10)**: Doremon 1 → 18 tập
+    (1–17 + 9.1, 9 preview) 4.7s; Tintin 23/link nhãn → `Tintin` 20 tập; DB Mabu 7 → 8 tập (tập cuối = 8);
+    Lucky Luke 41 → `Lucky Luke` 75 tập; 11 HTML mẫu 2013–2026 tách ảnh đúng (preview khớp "Preview X/Y");
+    tải Tintin 17 preview 13/13 JPEG vào `Chapter 17 - … (preview)`; `check_one` → `ok` 20 tập. CHƯA thử
+    trên server.
   - `cf_browser.py` — **tầng TRÌNH DUYỆT THẬT dùng chung cho site sau Cloudflare** (28/09/2026;
     dùng bởi qqcomvn [lấy HTML] + moetruyen [chụp trang] + lxmanga [HTML + DOM list chương, LUÔN dùng
     vì nhà mạng chặn HTTP]). `CFBrowser(profile, host, label,

@@ -131,6 +131,9 @@ def collect(scan_root: Path, cache: dict, use_cache: bool):
         folder = Path(dirpath)
         fidx = len(folders)
         present, quarantined = [], sorted(f for f in filenames if f.endswith(".bad"))
+        # ảnh đệm đã bỏ lúc tải (marker '001.jpg.spacer') = trang CÓ, không phải khuyết
+        present += [n for n in (page_number(f) for f in filenames if f.endswith(".spacer"))
+                    if n is not None]
         total_imgs += len(imgs)
         for name in imgs:
             stem = Path(name).stem

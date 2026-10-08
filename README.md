@@ -27,7 +27,8 @@ Các script trong thư mục này, mỗi cái một việc:
 
 Một tool cho MỌI site, tự nhận site theo link (hiện hỗ trợ **Asura**, **Raven**, **Dilib**,
 **MangaDex**, **TruyenQQ**, **TruyenQQ.com.vn**, **Comix**, **ACGN**, **NetTruyen**, **ZetTruyen**,
-**MoeTruyen**, **nhentai.to**, **HentaiFC**, **HentaiVNX**, **LXManga**, **HentaiVNReal**, **Hitomi**).
+**MoeTruyen**, **nhentai.to**, **HentaiFC**, **HentaiVNX**, **LXManga**, **HentaiVNReal**, **Hitomi**,
+**Truyện Tranh Pháp Bỉ**).
 
 > **HentaiVNReal** (hentaivnreal.com — truyện 18+ tiếng Việt, tên provider `hentaivnreal`): dán link
 > trang truyện `https://hentaivnreal.com/truyen/{slug}` (link 1 chương `…/truyen/{slug}/{chương}` cũng
@@ -61,7 +62,10 @@ Một tool cho MỌI site, tự nhận site theo link (hiện hỗ trợ **Asura
 
 > **HentaiVNX** (hentaivnx.com — truyện 18+ tiếng Việt, tên provider `hentaivnx`): dán link trang truyện
 > `https://www.hentaivnx.com/truyen-hentai/{slug}-{số}` (link 1 chương cũng được, tool tự về trang truyện).
-> Tải thẳng HTTP, không cần mở trình duyệt. Cần biết:
+> Link từ các tên miền phụ **hentaivn.college** và **hentaivnx1.com** cũng nhận (cùng một site, tải chung
+> folder). Tải thẳng HTTP, không cần mở trình duyệt. Cần biết:
+> - Ảnh **đệm 1px** (dải 900×1 site chèn ở đầu/cuối chương một số bộ) được **bỏ, không lưu** — trong folder
+>   chỉ còn file đánh dấu `NNN.jpg.spacer`; reader không hiện, kiểm thư viện không báo khuyết trang.
 > - Ảnh **PNG được tự chuyển sang WebP q90 ngay lúc tải** (file lưu `NNN.webp`): chương PNG ~75MB còn
 >   ~8MB, mắt thường không thấy khác. Ảnh JPEG/WebP giữ nguyên. Ảnh PNG cao quá 16383px (giới hạn WebP)
 >   thì giữ PNG.
@@ -93,6 +97,20 @@ Một tool cho MỌI site, tự nhận site theo link (hiện hỗ trợ **Asura
 > - Ảnh **WebP đủ độ phân giải gốc** (vd 2040×2880, ~1.3MB/trang); tải thẳng HTTP, không mở trình duyệt.
 > - Mỗi bản dịch là 1 link riêng — muốn bản tiếng Việt thì mở đúng cuốn tiếng Việt trên site rồi dán link đó.
 > - **Không nhận** link trang danh sách tác giả/tag/series (`...-all.html`) và cuốn loại `anime` (video).
+
+> **Truyện Tranh Pháp Bỉ** (truyentranhphapbi.blogspot.com — blog dịch Tintin, Lucky Luke, Asterix,
+> Doremon/Dragon Ball màu…, tên provider `phapbi`): dán link **1 tập bất kỳ** của bộ (cả link `?m=1` điện
+> thoại và link cũ `www.truyentranhphapbi.com/...`), tool tải **cả bộ**. Link nhãn `.../search/label/Tintin`
+> cũng được (= bộ chính của nhãn). Tải thẳng HTTP, không mở trình duyệt. Cần biết:
+> - Site không có trang "bộ truyện" — tool tự gom: các bài cùng nhãn **và** cùng tên trước "Tập N"
+>   (vd nhãn Doremon có cả Đại tuyển tập / Truyện dài / Tiếng Anh → 3 bộ riêng; nhãn Dragon Ball mỗi hồi 1
+>   bộ). Folder = tên nhãn nếu trùng (`Tintin`, `Lucky Luke`), không thì tên trước "Tập" (`Dragon Ball hồi Mabu`).
+> - Số chương = "Tập N" trong tiêu đề; "Tập cuối" = số lớn nhất + 1. Hai bài trùng số → bài mới đăng
+>   giữ N, bài cũ thành N.1 (vd Doremon truyện dài `Chapter 9.1 - Tây Du Ký…`).
+> - **Bài preview** (~1/4 số bài; bản đủ tác giả bán riêng): vẫn tải phần công khai, tên chương có đuôi
+>   **`(preview)`**. ⚠️ Khi tác giả đăng lại bản đủ, lượt kiểm tự động **không** tự tải lại (chương đó
+>   đã có) → muốn bản đủ thì **xoá folder `Chapter N - … (preview)`**, lượt kiểm sau sẽ tải lại.
+> - Nhiều bài cắt mỗi trang thành 2 nửa trên/dưới → giữ nguyên (đọc cuộn dọc vẫn liền mạch).
 
 > **Raven Scans đã đổi `ravenscans.org` → `ravenscans.net`** (và đổi cấu trúc URL chương) —
 > dùng link `.net` mới; link `.org` cũ vẫn được nhận.

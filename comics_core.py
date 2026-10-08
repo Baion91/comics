@@ -85,6 +85,12 @@ RETRY_BROKEN = False   # True = thử lại cả những ảnh đã biết hỏn
 WEBP_TRANSCODE_Q = 90
 WEBP_MAX_DIM = 16383
 
+# Móc `drop_spacers` của provider (hentaivnx): ảnh ĐỆM có cạnh <= SPACER_MAX_SIDE px không phải
+# trang truyện (đo 08/10/2026: JPEG 900x1 916B ở trang đầu/cuối chương bộ "Vì Nàng Bellumia")
+# -> KHÔNG ghi ảnh, chỉ ghi marker `NNN.ext.spacer` (reader lờ vì sai đuôi ảnh) để resume +
+# check_library coi trang đó là ĐÃ CÓ (không tải lại, không báo khuyết trang).
+SPACER_MAX_SIDE = 4
+
 # ============================================================================
 # BẮT CRASH TẦNG C (Pillow/libwebp/OpenSSL... segfault / access violation)
 # ----------------------------------------------------------------------------
@@ -515,6 +521,24 @@ def clear_bad(dest: Path):
             pass
 
 
+def spacer_marker(dest: Path) -> Path:
+    """Marker ảnh đệm đã bỏ: 001.jpg -> 001.jpg.spacer (reader bỏ qua vì không đúng đuôi ảnh)."""
+    return dest.with_name(dest.name + ".spacer")
+
+
+def spacer_size(data: bytes):
+    """(w, h) nếu ảnh là dải ĐỆM (cạnh <= SPACER_MAX_SIDE), ngược lại None. Chỉ đọc header —
+    gọi SAU tầng 2 (ảnh đã giải mã trót lọt) nên không cần breadcrumb/_gate."""
+    if Image is None:
+        return None
+    try:
+        with Image.open(io.BytesIO(data)) as im:
+            w, h = im.size
+    except Exception:
+        return None
+    return (w, h) if min(w, h) <= SPACER_MAX_SIDE else None
+
+
 class Blocked(Exception):
     """Server trả 403/503 (challenge) - IP đang bị nghi ngờ, phải dừng ngay."""
 
@@ -681,7 +705,8 @@ def get_text(url: str, retries: int = 3, encoding: str | None = None):
     return r.text
 
 
-def download_image(url: str, dest: Path, client=None, to_webp: bool = False) -> bool:
+def download_image(url: str, dest: Path, client=None, to_webp: bool = False,
+                   drop_spacer: bool = False) -> bool:
     """Tải 1 ảnh, KIỂM TRA rồi mới ghi. Chỉ ghi khi qua tầng 1+2 -> file trên đĩa
     luôn là ảnh dùng được; ảnh hỏng KHÔNG để lại file chuẩn nên resume tự tải lại
     lần sau. Tải bù thành công thì xóa file .bad cách ly kế bên (nếu có).
@@ -692,10 +717,15 @@ def download_image(url: str, dest: Path, client=None, to_webp: bool = False) -> 
     thành requests.RequestException. 403 -> raise Forbidden để caller thử làm mới vé.
 
     `to_webp` (móc `png_to_webp` của provider; `run` đã đổi đích `.png` -> `.webp`): ảnh
-    qua kiểm mà là PNG thì mã hoá WebP rồi mới ghi (xem `png_to_webp`)."""
+    qua kiểm mà là PNG thì mã hoá WebP rồi mới ghi (xem `png_to_webp`).
+
+    `drop_spacer` (móc `drop_spacers` của provider): ảnh qua kiểm mà là dải đệm (xem
+    `SPACER_MAX_SIDE`) thì KHÔNG ghi ảnh, chỉ ghi `spacer_marker(dest)` rồi trả True."""
     cli = client if client is not None else session
     if dest.exists() and dest.stat().st_size > 0:
         return True  # đã tải rồi -> bỏ qua, không tốn request
+    if spacer_marker(dest).exists():
+        return True  # ảnh đệm đã bỏ từ lượt trước -> trang coi như đã có
     if not RETRY_BROKEN and is_known_broken(dest):
         return False  # đã xác định hỏng ở nguồn -> tải lại cũng thế, khỏi tốn request
     reason = ""       # lý do hỏng lần thử gần nhất (để in khi cạn lượt)
@@ -763,6 +793,15 @@ def download_image(url: str, dest: Path, client=None, to_webp: bool = False) -> 
                 time.sleep(1.5 * (attempt + 1))
                 continue
 
+            if drop_spacer:
+                wh = spacer_size(data)
+                if wh:
+                    spacer_marker(dest).write_text(f"{wh[0]}x{wh[1]} {len(data)}B {url}\n",
+                                                   encoding="utf-8")
+                    clear_bad(dest)
+                    print(f"\n    ~ Bỏ ảnh đệm {wh[0]}x{wh[1]} (không phải trang truyện): "
+                          f"{dest.name}", flush=True)
+                    return True
             if to_webp and dest.suffix.lower() == ".webp":
                 data = png_to_webp(data, who=url) or data
             dest.write_bytes(data)
@@ -984,6 +1023,7 @@ def run(provider, args):
 
     slug = provider.series_slug(args.series)
     to_webp = bool(getattr(provider, "png_to_webp", False))   # móc PNG->WebP lúc tải
+    drop_spacer = bool(getattr(provider, "drop_spacers", False))   # móc bỏ ảnh đệm 1px
     dest_name = getattr(args, "dest_name", None)
     merge = bool(dest_name)   # GHÉP vào folder có sẵn (tải bù từ provider khác)
     # merge -> tên folder = --dest-name (giữ nguyên, không title_from_slug -> khỏi 1 request)
@@ -1099,8 +1139,8 @@ def run(provider, args):
                     ext = "webp"
                 pages.append((i, url, folder / f"{i:03d}.{ext}"))
 
-            def _have(d):  # ảnh coi là 'đã có' khi tồn tại & khác rỗng
-                return d.exists() and d.stat().st_size > 0
+            def _have(d):  # ảnh coi là 'đã có' khi tồn tại & khác rỗng, hoặc là ảnh đệm đã bỏ
+                return (d.exists() and d.stat().st_size > 0) or spacer_marker(d).exists()
 
             # chỉ tải phần còn thiếu; chương đủ rồi thì không làm phiền server
             jobs = [(u, d) for _, u, d in pages if not _have(d)]
@@ -1133,7 +1173,8 @@ def run(provider, args):
                           end="", flush=True)
             else:
                 with ThreadPoolExecutor(max_workers=args.workers) as pool:
-                    futures = [pool.submit(download_image, u, d, to_webp=to_webp)
+                    futures = [pool.submit(download_image, u, d, to_webp=to_webp,
+                                           drop_spacer=drop_spacer)
                                for u, d in jobs]
                     try:
                         for f in as_completed(futures):

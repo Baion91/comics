@@ -30,7 +30,9 @@ import random
 import re
 import sys
 import time
-from urllib.parse import parse_qs, unquote, urlparse
+import unicodedata
+from html.parser import HTMLParser
+from urllib.parse import parse_qs, quote, unquote, urlparse
 
 from comics_core import (META_DIR, Blocked, Challenged, Chapter, check_image_bytes, clear_bad,
                          fmt_num, get_json, get_text, uniform_frame)
@@ -1644,6 +1646,11 @@ class HentaiVNXProvider:
     """hentaivnx.com (HentaiVn) — truyện 18+ tiếng Việt, giao diện họ NetTruyen (`title-detail`),
     Cloudflare có mặt nhưng KHÔNG challenge GET thường -> HTTP trần.
 
+    - Mirror (đo 08/10/2026): `www.hentaivn.college` + `www.hentaivnx1.com` = CÙNG backend (cùng
+      idBộ/idChương, cùng `cdn1..cdn4`, chỉ đổi host trong link) -> chỉ nhận domain, vẫn tải qua
+      BASE. ⚠️ Domain TRẦN `hentaivn.college` bị nhà mạng chặn (www thì qua) -> nếu đổi BASE sang
+      mirror này phải giữ `www.`.
+
     - Trang bộ `/truyen-hentai/{slug}-{idBộ}`: ĐỦ danh sách chương trong HTML (đo bộ 147/147), link
       `/truyen-hentai/{slug}/chapter-N/{idChương}` — slug chương = slug bộ BỎ đuôi `-{idBộ}` -> lọc
       theo đó (trang còn khối truyện khác). ⚠️ Trang bộ bị cache ~4h (`max-age=14400`): chương mới
@@ -1654,9 +1661,13 @@ class HentaiVNXProvider:
       18/18 chương mẫu (01/10/2026). Nguồn khác chỉ là dự phòng: cdn3/cdn4 (`all.2tcdn.cfd`) có lúc
       lẫn 1 ảnh LẠC của bộ khác (`00.jpg`, lệch ±1 trang); cdn2 = bọc proxy duckduckgo (bộ cũ) hoặc
       DẢI LIỀN 729×21250 có token hết hạn ~1 ngày (bộ mới; cdn1 cắt dải đó thành lát 729×5000 —
-      cùng điểm ảnh, lát hợp reader/iOS hơn và vừa giới hạn WebP 16383px).
+      cùng điểm ảnh, lát hợp reader/iOS hơn và vừa giới hạn WebP 16383px); 08/10 gặp thêm cdn2 =
+      `cdn.sayhentai.cx` (tên ngẫu nhiên, không token).
     - Ảnh JPEG/WebP/PNG tuỳ bộ (PNG ~3.7MB/lát -> ~80MB/chương) -> `png_to_webp`: core mã hoá lại
       WebP q90 lúc tải (đo: ~13-15% dung lượng). CDN KHÔNG đòi Referer (đã thử có/không).
+    - Có bộ chèn ảnh ĐỆM JPEG 900×1 (916B) ở trang đầu/cuối chương (đo 08/10: "Vì Nàng Bellumia"
+      ch.0 trang 9, ch.2/3 trang 1; 10 chương mới nhất trang chủ thì sạch) -> `drop_spacers`: core
+      không lưu ảnh có cạnh <= `SPACER_MAX_SIDE`, chỉ để marker `NNN.ext.spacer`.
     - JS trang xử lý 2 ca: URL có `-----NN` (ảnh ghép ngang NN%) và URL duckduckgo (no-referrer)
       — chưa gặp ca `-----` trong dữ liệu thật; gặp thì cắt hậu tố + cảnh báo (bố cục ngang mất).
     Bìa `.col-image img` (`/images/comics/{slug}.jpg`, bytes WebP ~233×350). Số chương = số thật
@@ -1665,9 +1676,10 @@ class HentaiVNXProvider:
 
     name = "hentaivnx"
     BASE = "https://www.hentaivnx.com"
-    domains = ["hentaivnx.com"]          # resolver đã cắt "www."
+    domains = ["hentaivnx.com", "hentaivnx1.com", "hentaivn.college"]   # resolver đã cắt "www."
     referer = None
     png_to_webp = True
+    drop_spacers = True
     _CDN_ORDER = ("cdn1", "cdn3", "cdn4", "cdn2")
 
     def __init__(self):
@@ -2392,11 +2404,449 @@ class HitomiProvider:
         return f"https://{sub}tn.{self._cdn()}/webpbigtn/{h[-1]}/{h[-3:-1]}/{h}.webp"
 
 
+def _fold_vi(s: str) -> str:
+    """Bỏ dấu tiếng Việt + chữ thường — so khớp tên bộ không phụ thuộc hoa/thường/dấu."""
+    s = (s or "").replace("đ", "d").replace("Đ", "D")
+    return "".join(ch for ch in unicodedata.normalize("NFD", s)
+                   if unicodedata.category(ch) != "Mn").lower()
+
+
+class _BloggerPostImages(HTMLParser):
+    """Tách ảnh trong `post-body` 1 bài truyentranhphapbi (Blogger):
+    `pre`   = ảnh TRƯỚC `<a name="more">` (bìa = trang 1 của tập),
+    `pages` = ảnh trong khung đọc ĐẦU TIÊN (`div.overlay-data` | `div#image-container` | `div.read`),
+    `after` = mọi ảnh sau "more" (dự phòng khi template lạ, không thấy khung)."""
+
+    _VOID = {"img", "br", "hr", "meta", "link", "input", "source", "wbr", "col", "area"}
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.pre, self.pages, self.after = [], [], []
+        self._stack = []
+        self._box = None          # độ sâu stack lúc mở khung đọc (None = đang ngoài khung)
+        self._box_done = False    # chỉ lấy khung ĐẦU TIÊN
+        self._more = False
+
+    @staticmethod
+    def _is_box(tag, a) -> bool:
+        if tag != "div":
+            return False
+        cls = (a.get("class") or "").split()
+        return "overlay-data" in cls or "read" in cls or a.get("id") == "image-container"
+
+    def handle_starttag(self, tag, attrs):
+        a = dict(attrs)
+        if tag == "a" and a.get("name") == "more":
+            self._more = True
+        if tag == "img":
+            src = a.get("src") or a.get("data-src") or ""
+            if src:
+                if self._box is not None:
+                    self.pages.append(src)
+                elif not self._more:
+                    self.pre.append(src)
+                else:
+                    self.after.append(src)
+            return
+        if tag in self._VOID:
+            return
+        if self._box is None and not self._box_done and self._is_box(tag, a):
+            self._box = len(self._stack)
+        self._stack.append(tag)
+
+    def handle_endtag(self, tag):
+        if tag in self._VOID or tag not in self._stack:   # thẻ đóng lạc -> lờ, đừng làm sập khung
+            return
+        while self._stack and self._stack.pop() != tag:
+            pass
+        if self._box is not None and len(self._stack) <= self._box:
+            self._box, self._box_done = None, True
+
+
+class PhapBiProvider:
+    """truyentranhphapbi.blogspot.com ("Truyện Tranh Pháp Bỉ") — blog Blogger của 1 người dịch
+    (Tintin, Lucky Luke, Asterix, Xì trum, Doremon/Dragon Ball màu…). Google phục vụ, KHÔNG
+    Cloudflare/challenge, charset UTF-8 chuẩn -> HTTP trần. `www.truyentranhphapbi.com` (link cũ
+    trong bài) 301 về blogspot qua CF; domain trần lỗi TLS. Khảo sát 08/10/2026 (579 bài, 43 nhãn).
+
+    - 1 BÀI = 1 TẬP. Site KHÔNG có khái niệm "bộ": nhãn lẫn bộ truyện với thể loại
+      (`GENRE_LABELS`), 1 nhãn chứa nhiều bộ con (Dragon Ball: mỗi hồi đánh lại Tập 1; Doremon:
+      Đại tuyển tập / Truyện dài / Tiếng Anh). User chốt 08/10: BỘ = các bài thuộc nhãn bộ (bỏ
+      nhãn thể loại) CÓ CÙNG phần tên trước "Tập N" (`_stem`: bỏ dấu, bỏ (Preview)/(truyện màu)/
+      "màu"/full color, doraemon≡doremon). Dạng "TÊN ALBUM (TẬP N)" (Tintin 23, Asterix 3/6/8…) =
+      bộ CHÍNH của nhãn (tên bộ phổ biến nhất trong nhãn). Thử trên cả 579 bài: 121 bộ, 1 ca trùng số.
+    - Danh sách: feed JSON `/feeds/posts/summary/-/<Nhãn>?alt=json`, nhãn PHÂN BIỆT hoa thường
+      (`tintin` = 0 bài) -> lấy đúng chuỗi trong `span.post-labels` của bài neo. ⚠️ Số bài mỗi
+      trang feed THẤT THƯỜNG (28–66; có lúc 19/24 dù xin 150) -> lặp `start-index += len(entry)`
+      tới `openSearch$totalResults`. GỘP feed mọi nhãn bộ của bài neo (Lucky Luke 41 mang nhãn
+      Lucky Luke + Rantanplan). ⚠️ `content` feed chỉ tới jump break (chỉ có bìa) -> ảnh đọc HTML.
+    - SỐ = "Tập N" trong TIÊU ĐỀ (slug URL bị cắt/sai: "oremon-truyen-dai…"). "Tập cuối" = số lớn
+      nhất + 1; "Tập 2-3" = 2 (tên chương ghi "Tập 2-3"). Trùng số (Doremon dài Tập 9 ×2): bài MỚI
+      nhất giữ N, bài cũ hơn N.1, N.2… (user chốt). Bài không số lẫn trong bộ có số -> 0.1, 0.2…;
+      bộ toàn bài không số -> số vị trí theo ngày đăng (cũ nhất = 1).
+    - Bài PREVIEW (~23%, "Preview X/Y trang"; bản đủ tác giả BÁN qua Google Drive, không có đường
+      lấy): VẪN tải phần công khai, tên chương thêm " (preview)" (user chốt 08/10). ⚠️ Chương đã
+      `.done` -> khi tác giả mở bản đủ, check_updates KHÔNG tự biết (nó so theo SỐ chương) -> xoá
+      folder "(preview)" rồi để lượt kiểm sau tải lại (tên chương mới không còn "(preview)").
+    - Ảnh: trong khung đọc ĐẦU TIÊN của `post-body` (3 thế hệ template: `div.overlay-data` 2017+,
+      `div#image-container` ~2015–17, `div.read` 2013–18) + bìa trước `<a name="more">` (= trang
+      1, không lặp trong khung) chèn đầu. Ảnh sau khung (mục "Một vài thông tin chú thích", có cả
+      ảnh wikimedia) = minh hoạ -> BỎ. URL `blogger.googleusercontent.com/img/b/…/sNNN/tên.jpg`
+      hoặc `/img/a/…=wNNN` -> đổi `s0` = bản gốc (rộng 1300). `/img/a/` không có tên file -> gắn
+      `#.jpg` để core đặt đuôi (fragment không gửi lên server). Không cần Referer.
+    - Nhiều bài cắt mỗi trang thành 2 NỬA trên/dưới (`p003_01/_02`) -> GIỮ NGUYÊN (reader cuộn dọc
+      liền mạch; user chốt).
+    Link nhận: link bài `/YYYY/MM/<slug>.html` (cả `?m=1`, domain .com cũ) hoặc link nhãn
+    `/search/label/<Nhãn>` (= bộ chính của nhãn). Folder = tên nhãn nếu tên bộ trùng tên nhãn
+    (Tintin, Lucky Luke…), không thì phần tên trước "Tập N" của tập SỐ NHỎ NHẤT (IN HOA -> Title
+    Case) — không phụ thuộc user dán link tập nào.
+    """
+
+    name = "phapbi"
+    BASE = "https://truyentranhphapbi.blogspot.com"
+    domains = ["truyentranhphapbi.blogspot.com", "truyentranhphapbi.com"]   # resolver cắt "www."
+    referer = None                       # đã thử: ảnh Blogger không đòi Referer
+    GENRE_LABELS = {"manga", "classic", "magic", "tổng hợp", "new", "anh-pháp", "truyện lẻ",
+                    "ly kỳ", "sci-fi"}   # nhãn THỂ LOẠI (so chữ thường), không phải tên bộ
+    TRANSIENT_LABELS = {"new"}           # nhãn tạm (bài mới), có thể bị gỡ -> không làm gốc bộ
+    _NOISE = re.compile(r"\(\s*(?:preview|(?:truyện\s*)?(?:tranh\s*)?màu[^)]*|full\s*colou?r[^)]*"
+                        r"|digital[^)]*)\s*\)", re.I)
+    _TAP_END = re.compile(r"\(\s*tập\s*(\d+)\s*\)\s*$", re.I)        # "TÊN ALBUM (TẬP N)"
+    _NUM = re.compile(r"\b(?:tập|chương)\s*(?:(\d+(?:[.,]\d+)?)((?:-\d+)+)?|(cuối))(?!\w)", re.I)
+    _SIZE_SEG = re.compile(r"/[swh]\d+[^/]*/(?=[^/]+$)")    # /s400/, /w1300/ (kiểu /img/b/)
+    _SIZE_EQ = re.compile(r"=[swh]\d+[^/]*$")               # =s1600, =w1300, =s72-c (kiểu /img/a/)
+
+    def __init__(self):
+        self._series = {}     # slug -> {"name", "chapters", "cover"} | None
+        self._feeds = {}      # nhãn -> [post]
+        self._pages = {}      # url bài -> HTML (giữ vài bài gần nhất: bài neo dùng lại khi tải)
+
+    # -- tiện ích -------------------------------------------------------------------------
+
+    def _page(self, url: str) -> str:
+        if url not in self._pages:
+            if len(self._pages) >= 3:
+                self._pages.pop(next(iter(self._pages)))
+            self._pages[url] = get_text(url, encoding="utf-8") or ""
+        return self._pages[url]
+
+    # Cùng 1 bộ, tác giả đặt tên lệch nhau giữa các tập (đã gặp trong 579 bài 08/10)
+    _ALIASES = [(r"\bdoraemon\b", "doremon"), (r"\b(?:bay|7)\s+vien\s+ngoc\s+rong\b", "dragon ball"),
+                (r"\bsiayan\b", "saiyan")]
+
+    @classmethod
+    def _stem(cls, text: str) -> str:
+        """Khoá so bộ: bỏ dấu + cụm màu/preview + alias, BỎ cả khoảng trắng ("RAN TAN PLAN")."""
+        s = _fold_vi(text)
+        for pat, rep in cls._ALIASES:
+            s = re.sub(pat, rep, s)
+        s = re.sub(r"\b(?:preview|truyen\s+tranh\s+mau|truyen\s+mau|full\s+colou?r"
+                   r"|digital\s+colou?red|mau)\b", " ", s)
+        return re.sub(r"[^a-z0-9]+", "", s)
+
+    @staticmethod
+    def _display(text: str) -> str:
+        """Tên bộ để làm folder: bỏ cụm "Truyện màu"/full color, gộp dấu nối thừa, IN HOA -> Title."""
+        t = re.sub(r"\btruyện\s+(?:tranh\s+)?màu\b|\bfull\s+colou?r\b|\bdigital\s+colou?red\b",
+                   " ", text or "", flags=re.I)
+        t = re.sub(r"(?:\s*[-–:]\s*){2,}", " - ", re.sub(r"\s+", " ", t)).strip(" -–:,.")
+        t = re.sub(r"\s*\(?\bmàu\)?$", "", t, flags=re.I).strip(" -–:,.")  # "Truyện dài Màu"
+        if t and t == t.upper() and any(ch.isalpha() for ch in t):
+            t = t.title()
+        return t
+
+    def _parse(self, title: str) -> dict:
+        """Tiêu đề bài -> stem (None = bộ chính của nhãn), prefix (tên bộ hiển thị), num (float |
+        None | "cuoi"), name (tên chương), preview."""
+        t = re.sub(r"\s+", " ", unicodedata.normalize("NFC", html_lib.unescape(title or ""))).strip()
+        preview = bool(re.search(r"preview", t, re.I))
+        c = re.sub(r"\s+", " ", self._NOISE.sub(" ", t)).strip()
+        m = self._TAP_END.search(c)
+        if m:
+            return {"stem": None, "prefix": "", "num": float(m.group(1)),
+                    "name": c[:m.start()].strip(" -–:,."), "preview": preview}
+        m = self._NUM.search(c)
+        if not m:
+            return {"stem": self._stem(c), "prefix": c, "num": None, "name": c, "preview": preview}
+        prefix, rest = c[:m.start()].strip(" -–:,."), c[m.end():].strip(" -–:,.")
+        if m.group(3):
+            num, head = "cuoi", "Tập cuối"
+        else:
+            num = float(m.group(1).replace(",", "."))
+            head = f"Tập {m.group(1)}{m.group(2)}" if m.group(2) else ""
+        name = " - ".join(x for x in (head, rest) if x)
+        return {"stem": self._stem(prefix) or None, "prefix": prefix, "num": num, "name": name,
+                "preview": preview}
+
+    def _orig(self, url: str):
+        """URL ảnh Blogger -> bản GỐC (`s0`); None nếu không phải ảnh Blogger."""
+        url = html_lib.unescape(url or "").strip()
+        if url.startswith("//"):
+            url = "https:" + url
+        host = urlparse(url).hostname or ""
+        if not (host.endswith("googleusercontent.com") or host.endswith("bp.blogspot.com")):
+            return None
+        if self._SIZE_EQ.search(url):
+            url = self._SIZE_EQ.sub("=s0", url)
+        elif self._SIZE_SEG.search(urlparse(url).path):
+            url = self._SIZE_SEG.sub("/s0/", url, count=1)
+        elif "/img/a/" in url:
+            url += "=s0"
+        if not re.search(r"\.(?:jpe?g|png|gif|webp|bmp|avif)$", urlparse(url).path, re.I):
+            url += "#.jpg"     # core đặt đuôi file theo URL; fragment không gửi lên server
+        return url
+
+    @staticmethod
+    def _img_key(url: str) -> str:
+        return re.sub(r"/s0/|=s0|#.*$", "", url)
+
+    def _post(self, e: dict):
+        """1 entry feed -> post dict (kết quả `_parse` + id/url/published/thumb)."""
+        try:
+            pid = re.search(r"post-(\d+)", e["id"]["$t"]).group(1)
+            url = next(lk["href"] for lk in e.get("link") or [] if lk.get("rel") == "alternate")
+            title = e["title"]["$t"]
+        except (KeyError, TypeError, AttributeError, StopIteration):
+            return None
+        p = self._parse(title)
+        p.update(id=pid, url=self.BASE + urlparse(url).path, title=title,
+                 published=(e.get("published") or {}).get("$t") or "",
+                 thumb=(e.get("media$thumbnail") or {}).get("url"))
+        return p
+
+    def _label_posts(self, label: str) -> list:
+        """Mọi bài của 1 nhãn (feed summary, lặp start-index vì trang feed dài ngắn thất thường)."""
+        if label in self._feeds:
+            return self._feeds[label]
+        posts, start, total = [], 1, None
+        while start <= 5000:
+            d = get_json(f"{self.BASE}/feeds/posts/summary/-/{quote(label, safe='')}"
+                         f"?alt=json&max-results=150&start-index={start}")
+            feed = d.get("feed") if isinstance(d, dict) else None
+            if not isinstance(feed, dict):
+                break
+            if total is None:
+                try:
+                    total = int(feed["openSearch$totalResults"]["$t"])
+                except (KeyError, TypeError, ValueError):
+                    total = 0
+            entries = feed.get("entry") or []
+            posts += [p for p in map(self._post, entries) if p]
+            start += len(entries)
+            if not entries or start > total:
+                break
+        if total is None or start <= (total or 0):
+            print(f"  ! {self.name}: feed nhãn '{label}' mới lấy {start - 1}/{total or '?'} bài "
+                  "(lỗi mạng?) — danh sách tập có thể thiếu", file=sys.stderr)
+        self._feeds[label] = posts
+        return posts
+
+    def _anchor(self, slug: str):
+        """Bài neo (link user dán) đọc từ HTML -> (post, [nhãn]); (None, []) nếu tải hỏng."""
+        url = f"{self.BASE}/{slug}.html"
+        html = self._page(url)
+        if not html:
+            return None, []
+        m = re.search(r"<h3[^>]*class=['\"]post-title[^>]*>(.*?)</h3>", html, re.S)
+        title = html_lib.unescape(re.sub(r"<[^>]+>", " ", m.group(1))).strip() if m else ""
+        if not title:
+            m = re.search(r"<meta[^>]+content=['\"]([^'\"]+)['\"][^>]+property=['\"]og:title", html)
+            title = html_lib.unescape(m.group(1)).strip() if m else ""
+        if not title:
+            print(f"  ! {self.name}: không đọc được tiêu đề bài {url} — site đổi template?",
+                  file=sys.stderr)
+            return None, []
+        i = html.find("post-labels")
+        seg = html[i:html.find("</span>", i)] if i >= 0 else ""
+        labels = list(dict.fromkeys(
+            unquote(x).strip() for x in re.findall(r"/search/label/([^?'\"#&]+)", seg)))
+        imgs = self._post_images(html)
+        p = self._parse(title)
+        pid = re.search(r"post-body-(\d+)", html)
+        p.update(id=pid.group(1) if pid else None, url=url, title=title, published="",
+                 thumb=imgs[0][0] if imgs and imgs[0] else None)
+        return p, labels
+
+    def _post_images(self, html: str):
+        """(pre, pages, after) của `post-body`; None nếu không thấy post-body."""
+        m = re.search(r"<div[^>]*class=['\"][^'\"]*\bpost-body\b", html)
+        if not m:
+            return None
+        end = re.search(r"<div[^>]*class=['\"][^'\"]*\bpost-footer\b", html[m.start():])
+        p = _BloggerPostImages()
+        p.feed(html[m.start():m.start() + end.start()] if end else html[m.start():])
+        p.close()
+        return p.pre, p.pages, p.after
+
+    @staticmethod
+    def _main_stem(posts):
+        """(stem phổ biến nhất trong các bài CÓ SỐ của 1 nhãn, số bài) — 'bộ chính' của nhãn."""
+        from collections import Counter
+        c = Counter(p["stem"] for p in posts if p["stem"] and p["num"] is not None)
+        return c.most_common(1)[0] if c else (None, 0)
+
+    def _numbered(self, members: list) -> list:
+        """Đánh số: 'Tập N' -> N; 'Tập cuối' -> max+1; trùng -> bài mới nhất giữ N, bài cũ N.1…;
+        bài không số -> 0.1, 0.2… (bộ toàn bài không số -> số vị trí theo ngày đăng)."""
+        by_date = sorted(members, key=lambda p: (p["published"], p["id"] or ""))
+        real = {p["num"] for p in members if isinstance(p["num"], float)}
+        top = max(real, default=0.0)
+        taken, out = set(), []
+
+        def free(base, ks):
+            return next((v for v in (round(base + k / 10, 3) for k in ks)
+                         if v not in taken and v not in real), None)
+
+        for p in reversed(by_date):              # mới -> cũ: bài mới nhất giữ số gốc khi trùng
+            n = top + 1 if p["num"] == "cuoi" else p["num"]
+            if n is None:
+                continue
+            if n in taken:
+                n2 = free(n, range(1, 10))
+                if n2 is None:
+                    print(f"  ! {self.name}: trùng Tập {fmt_num(n)} quá nhiều — BỎ '{p['title']}'",
+                          file=sys.stderr)
+                    continue
+                print(f"  ~ {self.name}: trùng Tập {fmt_num(n)} — bài cũ hơn '{p['title'].strip()}'"
+                      f" -> {fmt_num(n2)}", file=sys.stderr)
+                n = n2
+            taken.add(n)
+            out.append((n, p))
+        loose = [p for p in by_date if p["num"] is None]
+        if loose and not out:                    # bộ toàn bài không số -> số vị trí
+            out = [(float(i), p) for i, p in enumerate(loose, 1)]
+        else:
+            for p in loose:
+                n = free(0.0, range(1, 10))
+                if n is None:
+                    print(f"  ! {self.name}: hết số trống cho bài không số '{p['title']}' — BỎ",
+                          file=sys.stderr)
+                    continue
+                taken.add(n)
+                out.append((n, p))
+        chapters = []
+        for n, p in sorted(out, key=lambda x: x[0]):
+            title = p["name"] + (" (preview)" if p["preview"] else "")
+            chapters.append(Chapter(n, title.strip(), p["url"]))
+        return chapters
+
+    def _resolve(self, slug: str):
+        if slug not in self._series:
+            self._series[slug] = self._resolve_series(slug)
+        return self._series[slug]
+
+    def _resolve_series(self, slug: str):
+        if slug.startswith("label/"):            # link nhãn -> bộ chính của nhãn
+            label, anchor = slug[len("label/"):], None
+            cands = [label]
+        else:
+            anchor, labels = self._anchor(slug)
+            if anchor is None:
+                return None
+            cands = ([lb for lb in labels if lb.lower() not in self.GENRE_LABELS]
+                     or [lb for lb in labels if lb.lower() not in self.TRANSIENT_LABELS] or labels)
+        feeds = {lb: self._label_posts(lb) for lb in cands}
+        mains = {lb: self._main_stem(ps) for lb, ps in feeds.items()}
+
+        def key(p, lb):   # bài "TÊN ALBUM (TẬP N)" thuộc bộ chính của nhãn
+            return p["stem"] if p["stem"] is not None else (mains[lb][0] or f"label:{lb}")
+
+        if anchor is not None and anchor["stem"] is not None:
+            want = anchor["stem"]
+        else:             # link nhãn / bài neo dạng "(TẬP N)": bộ chính của nhãn đông nhất
+            best = max(cands, key=lambda lb: mains[lb][1]) if cands else None
+            want = (mains[best][0] or f"label:{best}") if best else None
+        members, seen = [], set()
+        for lb, ps in feeds.items():
+            for p in ps:
+                if p["id"] not in seen and want is not None and key(p, lb) == want:
+                    seen.add(p["id"])
+                    members.append(p)
+        if anchor is not None and anchor["id"] not in seen:   # feed trễ/thiếu -> vẫn giữ bài neo
+            members.append(anchor)
+        if not members:
+            return None
+        chapters = self._numbered(members)
+        if not chapters:
+            return None
+
+        # Tên folder: trùng tên nhãn -> tên nhãn; không thì tên trước "Tập N" của tập số nhỏ nhất
+        by_url = {p["url"]: p for p in members}
+        first = by_url.get(chapters[0].ref) or members[0]
+        name = next((lb for lb in cands if want and self._stem(lb) == want), None)
+        if not name and want and want.startswith("label:"):
+            name = want[len("label:"):]
+        if not name:
+            src = next((by_url[c.ref] for c in chapters
+                        if by_url.get(c.ref, {}).get("stem") == want), first)
+            name = self._display(src["prefix"] or src["name"] or src["title"])
+        n_prev = sum(1 for c in chapters if c.title.endswith("(preview)"))
+        others = sum(len(ps) for ps in feeds.values()) - len(members)
+        print(f"  ~ {self.name}: bộ '{name}' = {len(chapters)} tập ({n_prev} bản preview) — nhãn "
+              f"{', '.join(cands) or '(không có)'}"
+              + (f"; bỏ {others} bài khác bộ cùng nhãn" if others > 0 else ""), file=sys.stderr)
+        thumb = first.get("thumb")
+        return {"name": _short_title(name) or slug, "chapters": chapters,
+                "cover": self._orig(thumb) if thumb else None}
+
+    # -- hợp đồng provider -----------------------------------------------------------------
+
+    def series_slug(self, text: str) -> str:
+        t = unquote(re.split(r"[?#]", text.strip())[0])
+        m = re.search(r"/search/label/([^/]+)/?$", t)
+        if m:
+            return "label/" + m.group(1)
+        m = re.search(r"(?:^|/)(\d{4}/\d{2}/[^/]+?)(?:\.html)?/?$", t)
+        return m.group(1) if m else t.strip("/")
+
+    def title_from_slug(self, slug: str) -> str:
+        info = self._resolve(slug)
+        return info["name"] if info else slug.replace("/", " ")
+
+    def list_chapters(self, slug: str):
+        info = self._resolve(slug)
+        return list(info["chapters"]) if info else []
+
+    def chapter_images(self, chapter):
+        html = self._page(chapter.ref)
+        if not html:
+            return []
+        imgs = self._post_images(html)
+        if imgs is None:
+            print(f"  ! {self.name}: không thấy post-body trong {chapter.ref} — site đổi template?",
+                  file=sys.stderr)
+            return []
+        pre, pages, after = imgs
+        if not pages and after:
+            print(f"  ~ {self.name}: không thấy khung đọc quen (overlay-data/image-container/read)"
+                  f" — lấy MỌI ảnh sau 'more' ({len(after)}), có thể lẫn ảnh minh hoạ",
+                  file=sys.stderr)
+            pages = after
+        if not pages:
+            return []
+        urls, keys = [], set()
+        for raw in pre[:1] + pages:              # bìa trước "more" = trang 1 của tập
+            u = self._orig(raw)
+            if u and self._img_key(u) not in keys:
+                keys.add(self._img_key(u))
+                urls.append(u)
+        m = re.search(r"Preview\s*(\d+)\s*/\s*(\d+)", re.sub(r"<[^>]+>", " ", html))
+        if m and not chapter.title.endswith("(preview)"):
+            print(f"  ~ {self.name}: bài là bản PREVIEW {m.group(1)}/{m.group(2)} trang dù tiêu đề"
+                  " không ghi", file=sys.stderr)
+        return urls
+
+    def cover_url(self, slug: str):
+        info = self._resolve(slug)
+        return info["cover"] if info else None
+
+
 # --- Đăng ký: thêm site mới = thêm 1 dòng vào đây -------------------------------
 PROVIDERS = [AsuraProvider(), RavenProvider(), DilibProvider(), MangaDexProvider(),
              TruyenQQProvider(), ACGNProvider(), NetTruyenProvider(), ZetTruyenProvider(),
              TruyenQQVNProvider(), MoeTruyenProvider(), NHentaiToProvider(), HentaiFCProvider(),
-             HentaiVNXProvider(), LXMangaProvider(), HentaiVNRealProvider(), HitomiProvider()]
+             HentaiVNXProvider(), LXMangaProvider(), HentaiVNRealProvider(), HitomiProvider(),
+             PhapBiProvider()]
 
 
 def load_overrides() -> dict:
