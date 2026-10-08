@@ -308,10 +308,28 @@ cách chạy thật + decode thử ảnh.
     (bỏ cụm màu, IN HOA → Title). Link nhận: bài `/YYYY/MM/<slug>.html` (`?m=1`, domain .com), nhãn
     `/search/label/<Nhãn>` (slug `label/<Nhãn>`). Cache trong instance: `_series`, `_feeds` (theo nhãn),
     `_pages` (3 HTML gần nhất — bài neo dùng lại khi tải). **Đo thực PC (08/10)**: Doremon 1 → 18 tập
-    (1–17 + 9.1, 9 preview) 4.7s; Tintin 23/link nhãn → `Tintin` 20 tập; DB Mabu 7 → 8 tập (tập cuối = 8);
+    (1–17 + 9.1, 9 preview) 4.7s; Tintin 23/link nhãn → `Tintin` 20 tập; DB Mabu 7 → 8 tập (tập cuối = 8;
+    TRƯỚC khi có luật hồi bên dưới);
     Lucky Luke 41 → `Lucky Luke` 75 tập; 11 HTML mẫu 2013–2026 tách ảnh đúng (preview khớp "Preview X/Y");
     tải Tintin 17 preview 13/13 JPEG vào `Chapter 17 - … (preview)`; `check_one` → `ok` 20 tập. CHƯA thử
     trên server.
+    **Bộ CHIA HỒI (08/10 tối, user chốt)** — Dragon Ball: nhãn `Dragon Ball` 41 bài = 6 hồi (Tuổi thơ 9,
+    Piccolo 7, Saiyan 4, Frieza 5, Cell/Android 8, Mabu 8), MỖI HỒI đánh lại Tập 1 → luật cũ ra 6 bộ, `into:`
+    cũng không gộp được (trùng số). `_ARC` bắt "<BỘ> - hồi <X>" / "<BỘ> (HỒI X) MÀU" trong phần trước "Tập N" →
+    stem = phần trước "hồi" (alias bảy/7 viên ngọc rồng ≡ dragon ball) → 1 bộ; `_numbered` đánh số TỪNG hồi
+    bằng `_number_pairs` (luật cũ: cuối = max+1, trùng N.1…) rồi cộng offset = tổng số nguyên lớn nhất các hồi
+    trước; thứ tự hồi = ngày đăng tập ĐẦU của hồi (khớp thứ tự truyện + mục lục tác giả). Tên chương "Hồi
+    <X> - Tập N[ - phụ đề]", X = dạng viết thường phổ biến nhất (toàn IN HOA → Title: FRIEZA → Frieza).
+    Số liên tục (không dùng khối 101…: user chốt) → rủi ro lệch nếu tác giả chèn tập vào hồi giữa (bộ đã trọn
+    42 tập gốc). KHÔNG dùng số tập gốc trong tên file ảnh (v01–v42): Frieza 5 bài/8 tập gốc, Mabu 6+7 cùng v41.
+    Mục lục "trọn bộ" trong bài do tác giả soạn tay, đã cũ (Mabu thiếu Tập cuối) → KHÔNG làm nguồn danh sách.
+    Dragon Ball Super = nhãn RIÊNG (24 tập, còn ra) → folder riêng (user chốt). **Kiểm hồi quy** (mô phỏng
+    offline 579 bài + 43 link nhãn, so trước/sau): chỉ 41 link Dragon Ball + link nhãn đổi (cũ 6 folder hồi →
+    `Dragon Ball` 41 tập), mọi bộ khác y nguyên tên folder/số/tên chương; riêng link nhãn THỂ LOẠI `Manga`
+    ("bộ chính" = bộ đông nhất) đổi từ Doremon Đại tuyển tập sang Dragon Ball — link vô nghĩa, không ai dùng.
+    Thực: link Tuổi thơ 1 / Mabu 7 → `Dragon Ball` 41 tập (16 preview); DBS → `Dragon Ball Super` 24; tải
+    Chapter 11 → `Chapter 11 - Hồi Piccolo - Tập 2 (preview)` 45/45. Folder hồi cũ (vd 9 tập Tuổi thơ) KHÔNG
+    được nhận lại (core khớp folder chương theo tên đầy đủ) → xoá rồi tải lại.
   - `cf_browser.py` — **tầng TRÌNH DUYỆT THẬT dùng chung cho site sau Cloudflare** (28/09/2026;
     dùng bởi qqcomvn [lấy HTML] + moetruyen [chụp trang] + lxmanga [HTML + DOM list chương, LUÔN dùng
     vì nhà mạng chặn HTTP]). `CFBrowser(profile, host, label,

@@ -103,8 +103,13 @@ Một tool cho MỌI site, tự nhận site theo link (hiện hỗ trợ **Asura
 > thoại và link cũ `www.truyentranhphapbi.com/...`), tool tải **cả bộ**. Link nhãn `.../search/label/Tintin`
 > cũng được (= bộ chính của nhãn). Tải thẳng HTTP, không mở trình duyệt. Cần biết:
 > - Site không có trang "bộ truyện" — tool tự gom: các bài cùng nhãn **và** cùng tên trước "Tập N"
->   (vd nhãn Doremon có cả Đại tuyển tập / Truyện dài / Tiếng Anh → 3 bộ riêng; nhãn Dragon Ball mỗi hồi 1
->   bộ). Folder = tên nhãn nếu trùng (`Tintin`, `Lucky Luke`), không thì tên trước "Tập" (`Dragon Ball hồi Mabu`).
+>   (vd nhãn Doremon có cả Đại tuyển tập / Truyện dài / Tiếng Anh → 3 bộ riêng). Folder = tên nhãn nếu
+>   trùng (`Tintin`, `Lucky Luke`), không thì tên trước "Tập" (`Doraemon Truyện dài`).
+> - Bộ **chia hồi** (tiêu đề "… hồi X - Tập N", hiện chỉ có Dragon Ball): mọi hồi gộp **1 folder**
+>   (`Dragon Ball`), số chương nối tiếp theo thứ tự hồi — Tuổi thơ 1–9, Piccolo 10–16, Saiyan 17–20, Frieza
+>   21–25, Cell 26–33, Mabu 34–41 — tên chương ghi hồi + tập gốc, vd `Chapter 10 - Hồi Piccolo - Tập 1`.
+>   Dán link tập nào của hồi nào cũng ra cả bộ; chỉ lấy 1 hồi thì thêm dải số, vd `/tai <link> 10-16`.
+>   Dragon Ball Super là nhãn riêng → folder riêng `Dragon Ball Super`.
 > - Số chương = "Tập N" trong tiêu đề; "Tập cuối" = số lớn nhất + 1. Hai bài trùng số → bài mới đăng
 >   giữ N, bài cũ thành N.1 (vd Doremon truyện dài `Chapter 9.1 - Tây Du Ký…`).
 > - **Bài preview** (~1/4 số bài; bản đủ tác giả bán riêng): vẫn tải phần công khai, tên chương có đuôi

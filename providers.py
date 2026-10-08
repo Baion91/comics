@@ -2475,6 +2475,11 @@ class PhapBiProvider:
       nhãn thể loại) CÓ CÙNG phần tên trước "Tập N" (`_stem`: bỏ dấu, bỏ (Preview)/(truyện màu)/
       "màu"/full color, doraemon≡doremon). Dạng "TÊN ALBUM (TẬP N)" (Tintin 23, Asterix 3/6/8…) =
       bộ CHÍNH của nhãn (tên bộ phổ biến nhất trong nhãn). Thử trên cả 579 bài: 121 bộ, 1 ca trùng số.
+    - Bộ CHIA HỒI (`_ARC`: "<BỘ> - hồi <X> - Tập N", mỗi hồi đánh lại Tập 1; 08/10 chỉ Dragon Ball 6
+      hồi/41 bài, chữ "hồi" không có ở bộ nào khác): stem = phần TRƯỚC "hồi" -> mọi hồi 1 bộ; số NỐI
+      TIẾP theo hồi (thứ tự = ngày đăng tập đầu của hồi), tên chương "Hồi Piccolo - Tập 1" (user chốt
+      08/10: số liên tục 1–41, Dragon Ball Super = nhãn riêng để folder riêng). ⚠️ Tác giả chèn thêm
+      tập vào hồi GIỮA -> số các hồi sau lệch (bộ đã trọn nên chấp nhận).
     - Danh sách: feed JSON `/feeds/posts/summary/-/<Nhãn>?alt=json`, nhãn PHÂN BIỆT hoa thường
       (`tintin` = 0 bài) -> lấy đúng chuỗi trong `span.post-labels` của bài neo. ⚠️ Số bài mỗi
       trang feed THẤT THƯỜNG (28–66; có lúc 19/24 dù xin 150) -> lặp `start-index += len(entry)`
@@ -2513,6 +2518,10 @@ class PhapBiProvider:
                         r"|digital[^)]*)\s*\)", re.I)
     _TAP_END = re.compile(r"\(\s*tập\s*(\d+)\s*\)\s*$", re.I)        # "TÊN ALBUM (TẬP N)"
     _NUM = re.compile(r"\b(?:tập|chương)\s*(?:(\d+(?:[.,]\d+)?)((?:-\d+)+)?|(cuối))(?!\w)", re.I)
+    # "<BỘ> - HỒI <X>" / "<BỘ> (HỒI X) MÀU" trước "Tập N" = bộ chia HỒI, mỗi hồi đánh lại Tập 1
+    # (08/10 chỉ Dragon Ball: Tuổi thơ/Piccolo/Saiyan/Frieza/Cell/Mabu) -> gộp 1 bộ, số nối tiếp
+    _ARC = re.compile(r"^(?P<root>.*?)[\s\-–:(]*\bhồi\s+(?P<arc>[^()\-–:]+?)\s*\)?(?:\s+màu)?$",
+                      re.I)
     _SIZE_SEG = re.compile(r"/[swh]\d+[^/]*/(?=[^/]+$)")    # /s400/, /w1300/ (kiểu /img/b/)
     _SIZE_EQ = re.compile(r"=[swh]\d+[^/]*$")               # =s1600, =w1300, =s72-c (kiểu /img/a/)
 
@@ -2570,13 +2579,20 @@ class PhapBiProvider:
             return {"stem": self._stem(c), "prefix": c, "num": None, "name": c, "preview": preview}
         prefix, rest = c[:m.start()].strip(" -–:,."), c[m.end():].strip(" -–:,.")
         if m.group(3):
-            num, head = "cuoi", "Tập cuối"
+            num, head, tap = "cuoi", "Tập cuối", "Tập cuối"
         else:
             num = float(m.group(1).replace(",", "."))
             head = f"Tập {m.group(1)}{m.group(2)}" if m.group(2) else ""
+            tap = f"Tập {m.group(1)}{m.group(2) or ''}"
         name = " - ".join(x for x in (head, rest) if x)
-        return {"stem": self._stem(prefix) or None, "prefix": prefix, "num": num, "name": name,
-                "preview": preview}
+        p = {"stem": self._stem(prefix) or None, "prefix": prefix, "num": num, "name": name,
+             "preview": preview}
+        a = self._ARC.search(prefix)
+        if a and a.group("root").strip(" -–:,.(") and self._stem(a.group("arc")):
+            root = a.group("root").strip(" -–:,.(")
+            p.update(stem=self._stem(root) or None, prefix=root, arc=a.group("arc").strip(),
+                     arc_key=self._stem(a.group("arc")), tap=tap, rest=rest)
+        return p
 
     def _orig(self, url: str):
         """URL ảnh Blogger -> bản GỐC (`s0`); None nếu không phải ảnh Blogger."""
@@ -2686,8 +2702,62 @@ class PhapBiProvider:
         return c.most_common(1)[0] if c else (None, 0)
 
     def _numbered(self, members: list) -> list:
+        """Danh sách Chapter của 1 bộ. Bộ chia HỒI (có bài mang `arc`): mỗi hồi đánh số riêng như
+        bộ thường (`_number_pairs`) rồi NỐI TIẾP theo thứ tự hồi = ngày đăng tập đầu của hồi
+        (Dragon Ball: Tuổi thơ 1–9, Piccolo 10–16 … Mabu 34–41 — user chốt 08/10: số liên tục,
+        tên chương "Hồi Piccolo - Tập 1"). Bộ không chia hồi: y như cũ."""
+        if not any(p.get("arc_key") for p in members):
+            return [Chapter(n, (p["name"] + (" (preview)" if p["preview"] else "")).strip(),
+                            p["url"]) for n, p in self._number_pairs(members)]
+        arcs = {}
+        for p in members:
+            arcs.setdefault(p.get("arc_key") or "", []).append(p)
+        order = sorted(arcs, key=lambda k: min(((p["published"] or "9999"), p["id"] or "")
+                                               for p in arcs[k]))
+        chapters, taken, offset = [], set(), 0
+        for k in order:
+            pairs = self._number_pairs(arcs[k])
+            if not pairs:
+                continue
+            disp = self._arc_display(arcs[k])
+            for n, p in pairs:
+                g = round(offset + n, 3)
+                if g in taken:                   # vd hồi trước có N.1 trùng 0.1 của hồi sau
+                    g2 = next((v for v in (round(g + i / 100, 3) for i in range(1, 100))
+                               if v not in taken), None)
+                    if g2 is None:
+                        continue
+                    print(f"  ~ {self.name}: số {fmt_num(g)} trùng giữa 2 hồi — '{p['title'].strip()}'"
+                          f" -> {fmt_num(g2)}", file=sys.stderr)
+                    g = g2
+                taken.add(g)
+                if p.get("arc_key"):
+                    title = " - ".join(x for x in (f"Hồi {disp}", p["tap"], p["rest"]) if x)
+                else:
+                    title = p["name"]
+                chapters.append(Chapter(g, (title + (" (preview)" if p["preview"] else "")).strip(),
+                                        p["url"]))
+            offset += int(max(n for n, _ in pairs))
+        return sorted(chapters, key=lambda c: c.number)
+
+    def _arc_display(self, posts) -> str:
+        """Tên hồi hiển thị: dạng viết thường/hoa đầu phổ biến nhất (tie -> bài đăng sớm nhất);
+        toàn IN HOA thì Title Case ("FRIEZA" -> "Frieza")."""
+        from collections import Counter
+        forms = [p["arc"] for p in sorted(posts, key=lambda p: p["published"] or "9999")
+                 if p.get("arc")]
+        if not forms:
+            return ""
+        mixed = [f for f in forms if f != f.upper()]
+        if mixed:
+            cnt = Counter(mixed)
+            return max(mixed, key=lambda f: (cnt[f], -mixed.index(f)))
+        return forms[0].title()
+
+    def _number_pairs(self, members: list) -> list:
         """Đánh số: 'Tập N' -> N; 'Tập cuối' -> max+1; trùng -> bài mới nhất giữ N, bài cũ N.1…;
-        bài không số -> 0.1, 0.2… (bộ toàn bài không số -> số vị trí theo ngày đăng)."""
+        bài không số -> 0.1, 0.2… (bộ toàn bài không số -> số vị trí theo ngày đăng).
+        Trả [(số, post)] tăng dần."""
         by_date = sorted(members, key=lambda p: (p["published"], p["id"] or ""))
         real = {p["num"] for p in members if isinstance(p["num"], float)}
         top = max(real, default=0.0)
@@ -2724,11 +2794,7 @@ class PhapBiProvider:
                     continue
                 taken.add(n)
                 out.append((n, p))
-        chapters = []
-        for n, p in sorted(out, key=lambda x: x[0]):
-            title = p["name"] + (" (preview)" if p["preview"] else "")
-            chapters.append(Chapter(n, title.strip(), p["url"]))
-        return chapters
+        return sorted(out, key=lambda x: x[0])
 
     def _resolve(self, slug: str):
         if slug not in self._series:
