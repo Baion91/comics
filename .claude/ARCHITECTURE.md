@@ -531,10 +531,14 @@ cách chạy thật + decode thử ảnh.
   (gặp BT/đường vẽ/ảnh inline → từ chối), đúng 1 lần `Do` một Image XObject `/DCTDecode` đơn, không
   `/Decode`/`/Mask`/`/ImageMask`, màu DeviceRGB/Gray hoặc ICCBased 1|3 kênh (không sRGB → cảnh báo),
   `/SMask` (xám 8-bit, không `/Matte`/`/Decode`, không nén DCT/JPX) đục 100% → nhận ngay (Acrobat hay gắn
-  SMask toàn 255); có điểm trong suốt → `_alpha_deviation` ghép JPEG lên nền TRẮNG như trình đọc PDF, lệch
-  = max (255 − kênh tối nhất)·(1 − α) ≤ `ALPHA_TOL`=16/255 → vẫn chép JPEG gốc + cảnh báo, lớn hơn → từ
-  chối (08/10: Doraemon truyện ngắn Vol.01 trang 29 lệch 0 — điểm trong suốt vốn trắng; trang 101 lệch
-  13 — viền elip mảnh quanh số trang; cả 2 là vết thừa lúc chỉnh ảnh), ExtGState không soft mask/alpha/
+  SMask toàn 255); có điểm trong suốt → `_alpha_bad_px` ghép JPEG lên nền TRẮNG như trình đọc PDF, lệch
+  từng điểm = (255 − kênh tối nhất)·(1 − α), đếm điểm lệch > `ALPHA_TOL`=16/255: ≤ `ALPHA_MAX_PX`=64
+  (1 ô 8×8) → vẫn chép JPEG gốc + cảnh báo; nhiều hơn = trong suốt thật → `_flatten_png` ghép lên nền
+  trắng (giữ L/RGB + ICC) lưu **PNG** riêng trang đó (`page_jpeg` trả `(bytes, (W,H), đuôi)`), in danh
+  sách trang PNG (08/10: Doraemon truyện ngắn Vol.01 trang 29 lệch 0 — điểm trong suốt vốn trắng; trang 101
+  lệch tối đa 13 — viền elip mảnh quanh số trang; Vol.04 trang 11: 14 điểm hơi trong suốt, 2 điểm lệch 57
+  — luật cũ "max lệch ≤ 16" từ chối oan cả tập; đều là vết thừa lúc chỉnh ảnh). PNG chứ không WebP/JPEG:
+  không nén mất dữ liệu, reader đọc header PNG sẵn; `convert_webp.py` chỉ chạy tay. ExtGState không soft mask/alpha/
   blend, trang không xoay, CTM không xoay/lật, ảnh phủ vùng crop∩media lệch ≤ max(2pt, 0.5%), không kéo
   méo tỉ lệ, header JPEG khớp cỡ khai + RGB/L. Đạt → chép NGUYÊN stream (= file JPEG, pypdf `get_data()`
   không giải mã DCT); không đạt → dừng cả file, không ghi gì (chưa có bộ dựng trang — thêm pypdfium2 khi
@@ -547,7 +551,7 @@ cách chạy thật + decode thử ảnh.
   (khác ổ thì `shutil.move`) → cất PDF (trùng tên thêm ` (2)`). `Tập NN` đã có: giống từng byte PDF →
   chỉ cất PDF (ca ngắt giữa đổi tên và cất); khác → bỏ qua. `.pdf-goc` trong folder truyện: `build_series`
   thấy nó là thư mục không ảnh, không thư mục con có ảnh → bỏ qua; check_library bỏ chấm-đầu. Exit 0/1
-  (có file lỗi)/2 (không thấy PDF) — `.bat` dùng 2 để khỏi hỏi "Tiến hành?". **Đo thực (07/10)**: Doraemon
+  (có file lỗi)/2 (không thấy PDF / thiếu pypdf) — `.bat` dùng 2 để khỏi hỏi "Tiến hành?". **Đo thực (07/10)**: Doraemon
   truyện dài Long 1 (189 trang, PDFsharp) + Vol.07 (206 trang, Acrobat, SMask toàn 255, 1 trang crop
   1527.81×2399.7, 1 trang ICC sRGB) → 395/395 ảnh giống từng byte stream trong PDF, 2.9s + 4.9s,
   check_library 0 lỗi, reader 8099: 2 chương, bìa trang 1, 189/206 ảnh tải, tỉ lệ đúng, 0 `nd`, 0 lỗi
@@ -569,7 +573,9 @@ cách chạy thật + decode thử ảnh.
   số (`…_1` của `…_1_x`/`…_15_x`) thì lùi về trước dãy số; `PART_NUM_RE` lấy số đầu phần còn lại (cho
   phép `_ - . ( ) [ ] #` và `phần/phan/part/p` đứng trước); ≥2 file không số / trùng số → dừng. **Kiểm**
   (`check_order`, sau khi biết số trang): số = trang bắt đầu cộng dồn từ 0|1 (phần không số = 0|1),
-  hoặc 1,2,3 liên tiếp bắt đầu 0|1 (có phần không số: 1|2) — số đầu phải 0/1/2 nên thiếu phần ĐẦU bị bắt;
+  hoặc cách đều bước k bắt đầu 0|1 (có phần không số: k|k+1) — 1,2,3 hoặc `-00/-03/-06…` (Doraemon 04,
+  Aspose "Lite-Image-NN"; bước > 1 cần ≥ 3 phần, 2 số `0, 17` bước nào cũng khớp → từ chối) — số đầu cố
+  định nên thiếu phần ĐẦU bị bắt, thiếu giữa phá cấp số cộng;
   thiếu phần CUỐI không có dữ liệu để bắt (bảng thứ tự + số trang luôn in ra). **Cất** cả folder bằng 1
   `os.rename` → `.pdf-goc/<folder>/` (không `shutil.move` cho thư mục: chép-xoá dở dang khi file bị khoá):
   bị ngắt chỉ còn 3 trạng thái, chạy lại tự xong; cất từng file thì ngắt giữa chừng → còn nửa số phần →
@@ -581,6 +587,14 @@ cách chạy thật + decode thử ảnh.
   tên `Tập 14`, PDF quá sâu, thiếu phần giữa/đầu, `Tập 14` khác nội dung, PDF ngay downloads — đều dừng
   đúng, không đụng gì; ngắt sau tách (folder trả về chỗ cũ) → chỉ cất; trùng tên trong `.pdf-goc` → ` (2)`
   (cả file lẫn folder); `.pdf-tmp` rác cũ được dọn; file đang mở → báo, mở khoá chạy lại → cất xong.
+  **Mục "Các tập lỗi" (08/10)** — chạy cả thư viện 17 tập lỗi thì dòng ✗ trôi mất: mọi đường lỗi đi qua
+  `_fail(where, why, hint, nested)` (in như cũ + ghi `_FAILS`), trùng đích ghi từng nguồn, cất lỗi trong
+  `_finish` cũng ghi → in "Các tập lỗi (N)" trước "Tổng", N = số lỗi/bỏ qua. `Job.where` = `<truyện>\<nguồn>`
+  (+`\` nếu gộp). Thiếu pypdf kiểm 1 lần ở `main` (exit 2) thay vì mỗi tập 1 dòng. *Test*: 18 ca
+  `check_order`; dry-run 3 mẫu `downloads/Doraemon lỗi` (04 → 209 trang, Vol.04 → 192 trang JPEG, 20 → 187;
+  chạy chung thì 04 + Vol.04 trùng Tập 04 → 2 dòng trong mục lỗi); PDF giả SMask nửa trái α=0 → `002.png`
+  nửa trái trắng tinh, nửa phải khớp JPEG 0 lệch, trang khác chép nguyên byte; chạy lại = "đã tách từ trước"
+  (PNG ra cùng byte); thiếu phần `00/06/09`, đích khác nội dung → dòng con ✗ + mục lỗi.
 - `reader_server.py` — web reader kiểu Asura (HTML sinh trong Python stdlib; CSS/JS
   từ 21/08 tách ra file tĩnh versioned `/static/*` + có Service Worker `/sw.js`, xem
   mục "Tài nguyên tĩnh + Service Worker"; không dependency ngoài Pillow tùy chọn), port mặc định **8080**, user

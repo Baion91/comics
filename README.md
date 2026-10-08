@@ -371,15 +371,20 @@ python pdf_import.py "...\14 - Ba chàng hiệp sĩ mộng mơ"  :: 1 tập bị
   "Long DoremonVoz Vol.07 (lite)" → Tập 07). Tên không có số / 2 nguồn ra cùng số → báo, đổi tên
   rồi chạy lại.
 - **Tập gộp**: số tập lấy từ **tên folder** ("14 - Ba chàng…" → Tập 14). Thứ tự các phần: bỏ phần tên
-  chung, **số đứng đầu phần còn lại** (trang bắt đầu `-0/-31/-61…`, hoặc `1/2/3`, `phần 2`, `(2)`), file
+  chung, **số đứng đầu phần còn lại** (trang bắt đầu `-0/-31/-61…`, hoặc cách đều `1/2/3`,
+  `-00/-03/-06…`, `phần 2`, `(2)`), file
   **không có số = phần đầu**; rồi đối chiếu số đó với số trang từng phần → thiếu phần đầu/giữa hoặc đặt
   tên sai thì **dừng, không đụng gì**. (Thiếu phần **cuối** thì không có gì để phát hiện — xem bảng thứ
   tự + số trang mà bước kiểm tra in ra.) Folder gộp chỉ được chứa PDF; kéo-thả 1 phần cũng lấy cả folder.
 - **Không mất chất lượng**: chỉ nhận PDF loại "mỗi trang = đúng 1 ảnh JPEG phủ kín trang" (bản scan
   thường gặp) và chép **nguyên bytes JPEG** ra file — không nén lại, dung lượng ≈ PDF, ~3–5 giây/cuốn
-  200 trang. Trang khác loại (có chữ/vector, ảnh nén kiểu khác, xoay, CMYK, trong suốt thật…) → **dừng
-  cả tập, báo trang nào**, không đụng gì. Lớp trong suốt "vết thừa" (ghép lên nền trắng như trình đọc
-  PDF mà lệch ≤ 16/255 — vd Doraemon truyện ngắn Vol.01 trang 29/101) vẫn nhận, chép JPEG gốc.
+  200 trang. Trang khác loại (có chữ/vector, ảnh nén kiểu khác, xoay, CMYK…) → **dừng cả tập, báo
+  trang nào**, không đụng gì. Ảnh kèm **lớp trong suốt**: trình đọc PDF ghép ảnh lên nền trắng — chỉ vài
+  điểm lệch (≤ 64 điểm lệch quá 16/255, vết thừa lúc chỉnh ảnh, vd Doraemon truyện ngắn Vol.01/04) → vẫn
+  chép JPEG gốc; vùng trong suốt thật → trang đó lưu **PNG đã ghép nền trắng** (y như PDF hiển thị,
+  không nén mất dữ liệu; nặng hơn JPEG) + báo số trang.
+- Cuối bảng có mục **"Các tập lỗi"** — mỗi tập lỗi 1 dòng lý do (chạy cả thư viện thì phần in phía
+  trên trôi mất).
 - **PDF gốc** (tập gộp: **cả folder** các phần, 1 lần đổi tên) được cất vào `<folder truyện>\.pdf-goc\`
   (reader + check_library bỏ qua). Đọc thử thấy ổn thì **tự tay xoá** để lấy lại dung lượng.
 - An toàn: ghi vào `downloads\.pdf-tmp\` rồi mới đổi tên → reader không bao giờ thấy chương dở; thư

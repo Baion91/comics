@@ -6,9 +6,11 @@ Reader chỉ hiểu "chương = thư mục ảnh", nên PDF phải tách ra mộ
 "vỏ bọc ảnh": mỗi trang là ĐÚNG 1 ảnh JPEG phủ kín trang (bản scan/ghép ảnh thường gặp).
 Khi đó bytes JPEG trong PDF được chép NGUYÊN TRẠNG ra `001.jpg, 002.jpg...` — không giải
 mã/nén lại, không mất chất lượng, dung lượng ≈ PDF. Trang khác loại (có chữ/vector, ảnh nén
-kiểu khác, nhiều ảnh ghép, xoay, trong suốt thật, CMYK...) -> DỪNG cả tập + báo trang nào,
-không đụng gì (chưa có bộ dựng trang — thêm khi thật sự gặp). Lớp trong suốt "vết thừa"
-(ghép lên nền trắng như trình đọc PDF mà lệch ≤ ALPHA_TOL/255) vẫn nhận, giữ JPEG gốc.
+kiểu khác, nhiều ảnh ghép, xoay, CMYK...) -> DỪNG cả tập + báo trang nào, không đụng gì
+(chưa có bộ dựng trang — thêm khi thật sự gặp). Ảnh kèm lớp trong suốt (SMask): trình đọc
+PDF ghép ảnh lên nền trang trắng — chỉ vài điểm lệch (≤ ALPHA_MAX_PX điểm lệch quá
+ALPHA_TOL/255, vết thừa lúc chỉnh ảnh) -> vẫn chép JPEG gốc; vùng trong suốt thật -> ghép
+lên nền trắng y như PDF hiển thị và lưu RIÊNG trang đó thành PNG (không nén mất dữ liệu).
 
 Bố cục quyết định cách nhập (không cần tuỳ chọn):
   1) PDF THẲNG trong folder truyện = 1 tập/file:
@@ -21,9 +23,9 @@ Bố cục quyết định cách nhập (không cần tuỳ chọn):
            Doremon 14 - ..._Doremon 14 -.pdf, ..._31_Doremon 1.pdf, ..._61_..., ..._151_...
          -> downloads/Doraemon truyện dài/Tập 14/001.jpg ... 189.jpg (ảnh đánh số liền)
      Số tập lấy từ TÊN FOLDER. Thứ tự phần: bỏ phần tên chung, số đứng đầu phần còn lại
-     (trang bắt đầu 0/31/61… hoặc 1/2/3), file KHÔNG có số = phần đầu; rồi đối chiếu số
-     với số trang từng phần — lệch (thiếu phần giữa/đầu, đặt tên sai) -> dừng. Thiếu phần
-     CUỐI thì không có gì để phát hiện: xem bảng thứ tự lúc --dry-run.
+     (trang bắt đầu 0/31/61…, 1/2/3 hoặc cách đều 00/03/06…), file KHÔNG có số = phần đầu;
+     rồi đối chiếu số với số trang từng phần — lệch (thiếu phần giữa/đầu, đặt tên sai) ->
+     dừng. Thiếu phần CUỐI thì không có gì để phát hiện: xem bảng thứ tự lúc --dry-run.
      Folder gộp chỉ được chứa PDF (có ảnh/thư mục con = bố cục khác -> từ chối). Chọn 1
      phần (kéo-thả 1 file) cũng lấy CẢ folder — không bao giờ ra tập thiếu trang.
   PDF ngay downloads/ hoặc sâu hơn 1 folder con -> từ chối. PDF ngoài downloads/ -> kiểu 1.
@@ -45,10 +47,15 @@ Cách dùng:
   python pdf_import.py ... --dry-run                     # chỉ kiểm + in kế hoạch, không ghi
 Hoặc bấm `Nhap PDF.bat` (kéo-thả file/folder vào cũng được).
 
-Exit: 0 = ổn hết, 1 = có tập lỗi/bỏ qua, 2 = không thấy PDF nào. Cần `pypdf` (thuần Python).
+Cuối bảng có mục "Các tập lỗi" (mỗi tập 1 dòng lý do) — lỗi nhiều tập thì phần in phía trên
+trôi mất.
+
+Exit: 0 = ổn hết, 1 = có tập lỗi/bỏ qua, 2 = không thấy PDF nào / thiếu pypdf. Cần `pypdf`
+(thuần Python).
 """
 
 import argparse
+import importlib.util
 import io
 import os
 import re
@@ -69,11 +76,13 @@ for _s in (sys.stdout, sys.stderr):
 DOWNLOADS = Path(__file__).resolve().parent / "downloads"
 ORIG_DIR = ".pdf-goc"       # nơi cất PDF gốc, trong folder truyện
 TMP_DIR = ".pdf-tmp"        # nơi ghi dở, ở gốc downloads/ (reader bỏ qua folder chấm-đầu)
-# Lớp trong suốt (SMask): trình đọc PDF ghép ảnh lên nền trang trắng. Bản ghép lệch JPEG gốc
-# tối đa bao nhiêu (/255) thì coi là vết thừa vô hại, vẫn chép JPEG gốc. Gặp thật (Doraemon
-# truyện ngắn Vol.01): trang 29 lệch 0 (điểm trong suốt vốn đã trắng), trang 101 lệch 13
-# (viền elip mảnh quanh số trang) — mắt không thấy.
+# Lớp trong suốt (SMask): trình đọc PDF ghép ảnh lên nền trang trắng. Điểm lệch JPEG gốc quá
+# ALPHA_TOL (/255) mà không quá ALPHA_MAX_PX điểm (1 ô 8×8) = vết thừa vô hại -> chép JPEG gốc;
+# nhiều hơn = vùng trong suốt thật -> trang đó lưu PNG đã ghép nền trắng. Gặp thật: Doraemon
+# truyện ngắn Vol.01 trang 29 lệch 0 (điểm trong suốt vốn đã trắng), trang 101 lệch tối đa 13
+# (viền elip mảnh quanh số trang); Vol.04 trang 11: 14 điểm hơi trong suốt, 2 điểm lệch 57.
 ALPHA_TOL = 16
+ALPHA_MAX_PX = 64
 # File hệ thống được phép nằm cùng các phần PDF trong folder gộp (đi theo folder vào .pdf-goc).
 SYS_FILES = {"thumbs.db", "desktop.ini", ".ds_store"}
 
@@ -160,8 +169,9 @@ def _check_colorspace(img, warns):
 
 
 def page_jpeg(page, warns):
-    """Bytes JPEG của trang nếu trang = ĐÚNG 1 ảnh JPEG phủ kín vùng hiển thị (crop box);
-    không thì ném NotSimple. Bytes là nguyên stream DCTDecode trong PDF = 1 file JPEG."""
+    """(bytes, (W, H), đuôi) của trang nếu trang = ĐÚNG 1 ảnh JPEG phủ kín vùng hiển thị (crop
+    box); không thì ném NotSimple. Bytes = nguyên stream DCTDecode trong PDF = 1 file JPEG
+    ('.jpg'); riêng ảnh có vùng trong suốt thật -> PNG đã ghép nền trắng ('.png')."""
     if page.rotation % 360:
         raise NotSimple(f"trang xoay {page.rotation}°")
     res = page.get("/Resources")
@@ -245,29 +255,41 @@ def page_jpeg(page, warns):
     if mask is not None:
         if Image is None:
             raise NotSimple("ảnh có vùng trong suốt (cần Pillow để kiểm)")
-        dev = _alpha_deviation(data, *mask, (W, H))
-        if dev > ALPHA_TOL:
-            raise NotSimple(f"ảnh có vùng trong suốt thật (ghép lên nền trắng lệch {dev}/255)")
-        warns.add(f"có trang kèm lớp trong suốt vô hại (ghép lên nền trắng lệch ≤ {ALPHA_TOL}/255)"
-                  " — giữ JPEG gốc")
-    return data, (W, H)
+        sm, raw = mask
+        if (int(sm.get("/Width", 0)), int(sm.get("/Height", 0))) != (W, H) or len(raw) < W * H:
+            raise NotSimple("lớp trong suốt khác cỡ ảnh")
+        alpha = Image.frombytes("L", (W, H), raw[:W * H])
+        if _alpha_bad_px(data, alpha) > ALPHA_MAX_PX:
+            return _flatten_png(data, alpha), (W, H), ".png"
+        warns.add(f"có trang kèm lớp trong suốt vô hại (ghép lên nền trắng: ≤ {ALPHA_MAX_PX} điểm "
+                  f"ảnh lệch quá {ALPHA_TOL}/255) — giữ JPEG gốc")
+    return data, (W, H), ".jpg"
 
 
-def _alpha_deviation(data, sm, raw, size):
-    """Ảnh JPEG kèm lớp trong suốt: trình đọc PDF ghép ảnh lên nền trang TRẮNG. Trả độ lệch
-    lớn nhất (0..255) giữa bản ghép đó và JPEG gốc = max (255 - kênh tối nhất)·(1 - alpha).
-    Nhỏ = các điểm trong suốt vốn đã trắng -> chép JPEG gốc ra là đúng như PDF hiển thị."""
+def _alpha_bad_px(data, alpha):
+    """Ảnh JPEG kèm lớp trong suốt `alpha`: trình đọc PDF ghép ảnh lên nền trang TRẮNG. Đếm số
+    điểm mà bản ghép đó lệch JPEG gốc quá ALPHA_TOL; lệch = (255 - kênh tối nhất)·(1 - alpha),
+    nên điểm trong suốt vốn đã trắng không tính."""
     from PIL import ImageChops
-    W, H = size
-    if (int(sm.get("/Width", 0)), int(sm.get("/Height", 0))) != (W, H) or len(raw) < W * H:
-        raise NotSimple("lớp trong suốt khác cỡ ảnh")
-    alpha = Image.frombytes("L", (W, H), raw[:W * H])
     with Image.open(io.BytesIO(data)) as im:
         chans = ImageChops.invert(im.convert("L" if im.mode == "L" else "RGB")).split()
     dark = chans[0]
     for c in chans[1:]:
         dark = ImageChops.lighter(dark, c)
-    return ImageChops.multiply(dark, ImageChops.invert(alpha)).getextrema()[1]
+    return sum(ImageChops.multiply(dark, ImageChops.invert(alpha)).histogram()[ALPHA_TOL + 1:])
+
+
+def _flatten_png(data, alpha):
+    """Trang có vùng trong suốt thật: ghép JPEG lên nền trắng y như trình đọc PDF hiển thị ->
+    bytes PNG (không nén mất dữ liệu; giữ hồ sơ màu ICC nếu JPEG có)."""
+    with Image.open(io.BytesIO(data)) as im:
+        icc = im.info.get("icc_profile")
+        im = im.convert("L" if im.mode == "L" else "RGB")
+    out = Image.composite(im, Image.new(im.mode, im.size, 255 if im.mode == "L" else
+                                        (255, 255, 255)), alpha)
+    buf = io.BytesIO()
+    out.save(buf, "PNG", **({"icc_profile": icc} if icc else {}))
+    return buf.getvalue()
 
 
 def _natkey(s):
@@ -335,7 +357,8 @@ def order_parts(pdfs):
 def check_order(items, counts):
     """Các phần (đã xếp) có đủ + liền nhau không, đối chiếu số trong tên với số trang:
     - số = trang bắt đầu của phần, cộng dồn số trang, đếm từ 0 hoặc 1 (0/31/61…);
-    - hoặc đánh số liên tiếp từ 0/1 (1, 2, 3…; có phần đầu không số thì từ 1/2).
+    - hoặc đánh số cách đều từ 0/1: liên tiếp 1, 2, 3… hoặc bước k 00, 03, 06… (bước > 1
+      cần ≥ 3 phần mới chắc là cách đều — 2 số '0, 17' thì bước nào cũng khớp).
     Phần đầu không số được tính là 0/1. Thiếu phần đầu/giữa -> False; thiếu phần CUỐI thì
     không có gì để đối chiếu (số trang cả tập không ghi ở đâu)."""
     nums = [n for _, n in items]
@@ -351,8 +374,11 @@ def check_order(items, counts):
         else:
             return True
     seq = [n for n in nums if n is not None]
-    return (seq[0] in ((1, 2) if nums[0] is None else (0, 1))
-            and seq == list(range(seq[0], seq[0] + len(seq))))
+    step = seq[1] - seq[0] if len(seq) > 1 else 1
+    if step < 1 or (step > 1 and len(nums) < 3):
+        return False
+    return (seq[0] in ((step, step + 1) if nums[0] is None else (0, 1))
+            and seq == list(range(seq[0], seq[0] + step * len(seq), step)))
 
 
 class Job:
@@ -364,8 +390,19 @@ class Job:
         self.items, self.name, self.src, self.merged = items, name, src, merged
         self.series = src.parent
         self.dest = self.series / name
-        self.label = (f"{self.series.name}\\{src.name}\\  (gộp {len(items)} file PDF)"
-                      if merged else f"{self.series.name}\\{src.name}")
+        self.where = f"{self.series.name}\\{src.name}" + ("\\" if merged else "")
+        self.label = self.where + (f"  (gộp {len(items)} file PDF)" if merged else "")
+
+
+_FAILS = []     # [(nguồn, lý do)] -> mục "Các tập lỗi" cuối bảng
+
+
+def _fail(where, why, hint=None, nested=False):
+    """In 1 lỗi (`nested` = dòng con dưới tên tập) + ghi vào mục "Các tập lỗi". Trả False."""
+    tail = f" — {hint}" if hint else ""
+    print(f"  ✗ {why}{tail}" if nested else f"✗ {where}: {why}{tail}")
+    _FAILS.append((where, why))
+    return False
 
 
 def plan_jobs(pdfs):
@@ -375,31 +412,32 @@ def plan_jobs(pdfs):
     for pdf in pdfs:
         depth = len(pdf.relative_to(DOWNLOADS).parts) if _under(pdf, DOWNLOADS) else 2
         if depth == 1:
-            print(f"✗ {pdf.name}: đang nằm ngay downloads\\ — tạo folder truyện, "
-                  f"bỏ PDF vào đó rồi chạy lại")
             bad += 1
+            _fail(pdf.name, "đang nằm ngay downloads\\",
+                  "tạo folder truyện, bỏ PDF vào đó rồi chạy lại")
         elif depth == 2:
             name = chapter_name(pdf.stem)
             if name is None:
-                print(f"✗ {pdf.name}: tên file không có số tập — đổi tên (vd 'Tập 3.pdf') "
-                      f"rồi chạy lại")
                 bad += 1
+                _fail(f"{pdf.parent.name}\\{pdf.name}", "tên file không có số tập",
+                      "đổi tên (vd 'Tập 3.pdf') rồi chạy lại")
             else:
                 jobs.append(Job([(pdf, None)], name, pdf, merged=False))
         elif depth == 3:
             folders.setdefault(pdf.parent, []).append(pdf)
         else:
-            print(f"✗ {pdf.relative_to(DOWNLOADS)}: nằm quá sâu — PDF phải nằm thẳng trong "
-                  f"folder truyện, hoặc trong 1 folder con của truyện (= 1 tập bị tách nhiều file)")
             bad += 1
+            _fail(str(pdf.relative_to(DOWNLOADS)), "nằm quá sâu",
+                  "PDF phải nằm thẳng trong folder truyện, hoặc trong 1 folder con của truyện "
+                  "(= 1 tập bị tách nhiều file)")
 
     for folder, picked in folders.items():
         label = f"{folder.parent.name}\\{folder.name}\\"
         try:
             entries = list(os.scandir(folder))
         except OSError as e:
-            print(f"✗ {label}: không đọc được folder ({e})")
             bad += 1
+            _fail(label, f"không đọc được folder ({e.strerror or e})")
             continue
         parts = sorted((Path(e.path) for e in entries
                         if e.is_file() and e.name.lower().endswith(".pdf")), key=_natkey)
@@ -407,26 +445,25 @@ def plan_jobs(pdfs):
                  or not (e.name.lower().endswith(".pdf") or e.name.lower() in SYS_FILES)]
         name = chapter_name(folder.name)
         if other:
-            print(f"✗ {label}: ngoài PDF còn có {', '.join(other[:5])}"
-                  f"{'…' if len(other) > 5 else ''} — folder con chỉ được chứa các file PDF "
-                  f"của 1 tập (sẽ gộp thành 1 chương)")
             bad += 1
+            _fail(label, f"ngoài PDF còn có {', '.join(other[:5])}{'…' if len(other) > 5 else ''}",
+                  "folder con chỉ được chứa các file PDF của 1 tập (sẽ gộp thành 1 chương)")
             continue
         if name is None:
-            print(f"✗ {label}: tên folder không có số tập — đổi tên (vd '14 - <tên tập>') "
-                  f"rồi chạy lại")
             bad += 1
+            _fail(label, "tên folder không có số tập",
+                  "đổi tên (vd '14 - <tên tập>') rồi chạy lại")
             continue
         if _key(folder.name) == _key(name):
-            print(f"✗ {label}: folder chứa PDF trùng tên chương sẽ tạo — đổi tên folder "
-                  f"(vd '{name.split()[-1]} - <tên tập>') rồi chạy lại")
             bad += 1
+            _fail(label, "folder chứa PDF trùng tên chương sẽ tạo",
+                  f"đổi tên folder (vd '{name.split()[-1]} - <tên tập>') rồi chạy lại")
             continue
         try:
             items = order_parts(parts)
         except ValueError as e:
-            print(f"✗ {label}: {e} — không biết thứ tự các phần, đổi tên rồi chạy lại")
             bad += 1
+            _fail(label, str(e), "không biết thứ tự các phần, đổi tên rồi chạy lại")
             continue
         if len(picked) < len(parts):
             print(f"! {label}: mới chọn {len(picked)}/{len(parts)} file — tập gộp luôn lấy "
@@ -443,6 +480,9 @@ def plan_jobs(pdfs):
                   f"'{group[0].series.name}': " + ", ".join(j.src.name for j in group)
                   + " — đổi tên cho khác số rồi chạy lại")
             bad += len(group)
+            for j in group:
+                _FAILS.append((j.where, f"trùng đích '{j.name}' với " + ", ".join(
+                    o.src.name for o in group if o is not j)))
     jobs = [j for j in jobs if len(by_dest[_key(j.dest)]) == 1]
     return sorted(jobs, key=lambda j: _natkey(j.src)), bad
 
@@ -489,7 +529,7 @@ def _same_as_pdf(folder, pages):
         return False
     if len(names) != len(pages):
         return False
-    for name, (data, _) in zip(names, pages):
+    for name, (data, _, _) in zip(names, pages):
         try:
             if (folder / name).read_bytes() != data:
                 return False
@@ -507,6 +547,8 @@ def _finish(job, msg):
     except OSError as e:
         print(f"{msg}; NHƯNG chưa cất được {what} vào {ORIG_DIR}/ ({e.strerror or e}) — "
               f"đóng chương trình đang mở nó rồi chạy lại")
+        _FAILS.append((job.where, f"đã tách nhưng chưa cất được {what} vào {ORIG_DIR}/ "
+                                  f"({e.strerror or e})"))
         return False
     print(f"{msg}; {what} -> {moved.parent.name}/{moved.name}{'/' if job.merged else ''}")
     return True
@@ -515,50 +557,50 @@ def _finish(job, msg):
 def import_job(job, dry_run):
     """Tách 1 tập. Trả True nếu xong (hoặc dry-run kiểm đạt), False nếu lỗi/bỏ qua."""
     t0 = time.time()
-    try:
-        from pypdf import PdfReader
-    except ImportError:
-        print("  ✗ Thiếu thư viện pypdf — cài:  python -m pip install pypdf")
-        return False
-    unit = "Tập" if job.merged else "File"
+    from pypdf import PdfReader     # main() đã kiểm có pypdf
+
+    def fail(why, hint=None):
+        return _fail(job.where, why, hint, nested=True)
+
     warns, pages, counts = set(), [], []
     for pdf, _ in job.items:
         who = f"{pdf.name}: " if job.merged else ""
         try:
             reader = PdfReader(str(pdf))
             if reader.is_encrypted and not reader.decrypt(""):
-                print(f"  ✗ {who}PDF có mật khẩu — bỏ qua")
-                return False
+                return fail(f"{who}PDF có mật khẩu", "bỏ qua")
             n0 = len(pages)
             for i, page in enumerate(reader.pages, 1):
                 try:
                     pages.append(page_jpeg(page, warns))
                 except NotSimple as e:
-                    print(f"  ✗ {who}Trang {i}: {e}. {unit} này chưa tách được (không đụng gì).")
-                    return False
+                    return fail(f"{who}trang {i}: {e}", "chưa tách được (không đụng gì)")
         except Exception as e:
-            print(f"  ✗ {who}Không đọc được PDF: {e.__class__.__name__}: {e}")
-            return False
+            return fail(f"{who}không đọc được PDF ({e.__class__.__name__}: {e})")
         counts.append(len(pages) - n0)
         if not counts[-1]:
-            print(f"  ✗ {who}PDF không có trang nào")
-            return False
+            return fail(f"{who}PDF không có trang nào")
     if job.merged:
         for k, ((pdf, _), n) in enumerate(zip(job.items, counts), 1):
             print(f"    {k}. {pdf.name}  ({n} trang)")
         if not check_order(job.items, counts):
-            print("  ✗ Số trong tên các phần không khớp số trang — phải là trang bắt đầu của "
-                  "phần (0/31/61…) hoặc 1, 2, 3… liên tiếp. Thiếu phần hoặc đặt tên sai? "
-                  "Kiểm lại rồi chạy lại (không đụng gì).")
-            return False
+            return fail("số trong tên các phần không khớp số trang",
+                        "phải là trang bắt đầu của phần (0/31/61…) hoặc đánh số cách đều 1, 2, "
+                        "3… / 00, 03, 06…. Thiếu phần hoặc đặt tên sai? Kiểm lại rồi chạy lại "
+                        "(không đụng gì)")
     for w in sorted(warns):
         print(f"  ! {w}")
-    sizes = {wh for _, wh in pages}
+    png = [i for i, (_, _, ext) in enumerate(pages, 1) if ext == ".png"]
+    if png:
+        print(f"  ! {len(png)} trang có vùng trong suốt thật -> lưu PNG đã ghép nền trắng (y như "
+              f"PDF hiển thị): trang {', '.join(map(str, png))}")
+    sizes = {wh for _, wh, _ in pages}
     size_txt = (f"{next(iter(sizes))[0]}×{next(iter(sizes))[1]}" if len(sizes) == 1
                 else f"{len(sizes)} cỡ khác nhau")
-    total = sum(len(dta) for dta, _ in pages)
+    total = sum(len(dta) for dta, _, _ in pages)
     name, dest = job.name, job.dest
-    info = f"{len(pages)} trang JPEG {size_txt}, {total / 1048576:.1f}MB"
+    kind = f"JPEG + {len(png)} PNG" if png else "JPEG"
+    info = f"{len(pages)} trang {kind} {size_txt}, {total / 1048576:.1f}MB"
     what = "folder PDF gốc" if job.merged else "PDF gốc"
 
     if dest.exists():
@@ -567,10 +609,9 @@ def import_job(job, dry_run):
                 print(f"  = '{name}' đã tách từ trước ({info}) — sẽ chỉ cất {what} vào {ORIG_DIR}/")
                 return True
             return _finish(job, f"  = '{name}' đã tách từ trước")
-        print(f"  ✗ Đã có thư mục '{name}' (nội dung khác nguồn này) — không ghi đè. "
-              f"Đổi tên/xoá thư mục đó hoặc đổi tên {'folder' if job.merged else 'file PDF'} "
-              f"rồi chạy lại.")
-        return False
+        return fail(f"đã có thư mục '{name}' (nội dung khác nguồn này)",
+                    f"không ghi đè. Đổi tên/xoá thư mục đó hoặc đổi tên "
+                    f"{'folder' if job.merged else 'file PDF'} rồi chạy lại")
     if dry_run:
         print(f"  ✓ -> '{name}/' ({info})")
         return True
@@ -583,18 +624,17 @@ def import_job(job, dry_run):
     tmp.mkdir(parents=True)
     width = max(3, len(str(len(pages))))
     try:
-        for i, (data, _) in enumerate(pages, 1):
+        for i, (data, _, ext) in enumerate(pages, 1):
             verdict, detail = check_image_bytes(data, who=f"{job.src.name} trang {i}")
             if verdict != "ok":
-                raise RuntimeError(f"trang {i}: ảnh JPEG lỗi ({verdict}: {detail})")
-            (tmp / f"{i:0{width}d}.jpg").write_bytes(data)
+                raise RuntimeError(f"trang {i}: ảnh lỗi ({verdict}: {detail})")
+            (tmp / f"{i:0{width}d}{ext}").write_bytes(data)
         if len(os.listdir(tmp)) != len(pages):
             raise RuntimeError("số ảnh ghi ra lệch số trang")
         _move(tmp, dest)
     except Exception as e:
         shutil.rmtree(tmp, ignore_errors=True)
-        print(f"  ✗ {e} — đã huỷ, không đụng gì")
-        return False
+        return fail(str(e), "đã huỷ, không đụng gì")
     finally:
         try:
             tmp_root.rmdir()        # chỉ xoá khi rỗng
@@ -615,8 +655,12 @@ def main():
     if not pdfs:
         print("Không thấy file PDF nào.")
         return 2
+    if importlib.util.find_spec("pypdf") is None:
+        print("✗ Thiếu thư viện pypdf — cài:  python -m pip install pypdf")
+        return 2
 
     # Chia tập + chặn lỗi bố cục TRƯỚC khi đụng file nào.
+    _FAILS.clear()
     jobs, bad = plan_jobs(pdfs)
     if any(not _under(j.src, DOWNLOADS) for j in jobs):
         print("! Lưu ý: reader chỉ đọc truyện trong downloads\\ — file ngoài đó tách xong "
@@ -628,6 +672,10 @@ def main():
     total = len(jobs) + bad
     bad = total - ok
     verb = "kiểm đạt" if args.dry_run else "xong"
+    if _FAILS:
+        print(f"\nCác tập lỗi ({len(_FAILS)}):")
+        for where, why in _FAILS:
+            print(f"  - {where}: {why}")
     print(f"\nTổng: {ok}/{total} tập {verb}" + (f", {bad} lỗi/bỏ qua" if bad else ""))
     return 1 if bad else 0
 
