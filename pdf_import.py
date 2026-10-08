@@ -51,7 +51,7 @@ Cuối bảng có mục "Các tập lỗi" (mỗi tập 1 dòng lý do) — lỗ
 trôi mất.
 
 Exit: 0 = ổn hết, 1 = có tập lỗi/bỏ qua, 2 = không thấy PDF nào / thiếu pypdf. Cần `pypdf`
-(thuần Python).
+(thuần Python) + `cryptography` cho PDF mã hoá AES (thiếu thì riêng tập đó báo lỗi kèm lệnh cài).
 """
 
 import argparse
@@ -558,6 +558,7 @@ def import_job(job, dry_run):
     """Tách 1 tập. Trả True nếu xong (hoặc dry-run kiểm đạt), False nếu lỗi/bỏ qua."""
     t0 = time.time()
     from pypdf import PdfReader     # main() đã kiểm có pypdf
+    from pypdf.errors import DependencyError
 
     def fail(why, hint=None):
         return _fail(job.where, why, hint, nested=True)
@@ -575,6 +576,15 @@ def import_job(job, dry_run):
                     pages.append(page_jpeg(page, warns))
                 except NotSimple as e:
                     return fail(f"{who}trang {i}: {e}", "chưa tách được (không đụng gì)")
+        except DependencyError as e:
+            # PDF mã hoá AES (vd Acrobat khoá cấm in/chép, mở không cần mật khẩu): pypdf cần
+            # `cryptography` để giải mã — thiếu thì nó báo lúc kiểm mật khẩu (R6) hoặc lúc đọc
+            # stream (AES-128). Mã hoá RC4 cũ thì pypdf tự giải được, không tới đây.
+            if "AES" not in str(e):
+                return fail(f"{who}không đọc được PDF (thiếu thư viện: {e})")
+            return fail(f"{who}PDF mã hoá AES, thiếu thư viện cryptography để giải mã",
+                        "cài:  python -m pip install cryptography  (hoặc chạy cap-nhat.bat) rồi "
+                        "chạy lại")
         except Exception as e:
             return fail(f"{who}không đọc được PDF ({e.__class__.__name__}: {e})")
         counts.append(len(pages) - n0)
@@ -676,6 +686,9 @@ def main():
         print(f"\nCác tập lỗi ({len(_FAILS)}):")
         for where, why in _FAILS:
             print(f"  - {where}: {why}")
+        if any("thiếu thư viện cryptography" in why for _, why in _FAILS):
+            print("  -> Cài 1 lần cho máy này:  python -m pip install cryptography  (hoặc chạy "
+                  "cap-nhat.bat) rồi chạy lại")
     print(f"\nTổng: {ok}/{total} tập {verb}" + (f", {bad} lỗi/bỏ qua" if bad else ""))
     return 1 if bad else 0
 

@@ -595,6 +595,18 @@ cách chạy thật + decode thử ảnh.
   chạy chung thì 04 + Vol.04 trùng Tập 04 → 2 dòng trong mục lỗi); PDF giả SMask nửa trái α=0 → `002.png`
   nửa trái trắng tinh, nửa phải khớp JPEG 0 lệch, trang khác chép nguyên byte; chạy lại = "đã tách từ trước"
   (PNG ra cùng byte); thiếu phần `00/06/09`, đích khác nội dung → dòng con ✗ + mục lỗi.
+  **PDF mã hoá AES (08/10 tối)** — server báo 6 tập DoremonVoz Vol.29/32–36 "DependencyError:
+  cryptography>=3.1 is required for AES algorithm": Acrobat 20.12 khoá R6/AESV3 256-bit, `/P` cấm in/
+  chép/sửa, mật khẩu mở RỖNG (`decrypt("")` = USER_PASSWORD). pypdf giải RC4 bằng code thuần Python
+  nhưng AES phải có `cryptography` (hoặc pycryptodome); PC có sẵn `cryptography` 48 do `google-auth` kéo
+  về nên chạy được, server thì không → thêm `cryptography` vào `requirements.txt` (`cap-nhat.bat` cài).
+  `import_job` bắt `pypdf.errors.DependencyError` có chữ "AES" (R6 nổ lúc `decrypt`, AES-128 nổ lúc
+  đọc stream — cả 2 nằm trong cùng khối try) → "PDF mã hoá AES, thiếu thư viện cryptography" + lệnh
+  cài; mục "Các tập lỗi" in thêm 1 dòng "cài 1 lần". Không kiểm trước bằng `is_encrypted` vì RC4 không
+  cần thư viện. Ảnh giải mã = đúng JPEG gốc (Vol.29: 191/191 trang giống từng byte `get_data()`).
+  *Test*: chặn import `cryptography`/`Crypto` (meta_path) → provider `local_crypt_fallback`: Vol.29 thật,
+  AES-128, AES-256 (rỗng + có mật khẩu) → thông báo mới; RC4-128 vẫn qua; có thư viện → 4/4 qua, AES-256
+  có mật khẩu → "PDF có mật khẩu".
 - `reader_server.py` — web reader kiểu Asura (HTML sinh trong Python stdlib; CSS/JS
   từ 21/08 tách ra file tĩnh versioned `/static/*` + có Service Worker `/sw.js`, xem
   mục "Tài nguyên tĩnh + Service Worker"; không dependency ngoài Pillow tùy chọn), port mặc định **8080**, user

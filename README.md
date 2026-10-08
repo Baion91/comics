@@ -390,8 +390,11 @@ python pdf_import.py "...\14 - Ba chàng hiệp sĩ mộng mơ"  :: 1 tập bị
 - An toàn: ghi vào `downloads\.pdf-tmp\` rồi mới đổi tên → reader không bao giờ thấy chương dở; thư
   mục `Tập NN` đã có mà khác nội dung PDF → bỏ qua, không ghi đè. Bị ngắt ở bước nào chạy lại cũng tự
   xong (đã tách mà chưa cất → chỉ cất). Chạy lại thoải mái.
-- Cần thư viện `pypdf` (có trong `requirements.txt`; `cap-nhat.bat` tự cài trên server). Muốn đọc trên
-  server thì chép **thư mục đã tách** (không cần chép PDF) vào `downloads` của server.
+- Cần thư viện `pypdf` + `cryptography` (có trong `requirements.txt`; `cap-nhat.bat` tự cài trên
+  server). `cryptography` để mở **PDF mã hoá AES** — vd DoremonVoz Vol.29–36: Acrobat khoá cấm in/chép,
+  mở xem không cần mật khẩu; thiếu thì riêng các tập đó báo lỗi kèm lệnh cài
+  (`python -m pip install cryptography`). PDF đòi mật khẩu mới mở được → báo "có mật khẩu", bỏ qua.
+  Muốn đọc trên server thì chép **thư mục đã tách** (không cần chép PDF) vào `downloads` của server.
 
 ## Làm nét ảnh scan — Real-ESRGAN (`realesrgan-ncnn-vulkan-v0.2.0-windows\lam-net.bat`)
 

@@ -18,3 +18,6 @@ curl_cffi
 playwright==1.55.0
 # pypdf: CHI cho pdf_import.py (nhap truyen PDF -> thu muc anh "Tap NN"). Thuan Python.
 pypdf
+# cryptography: pypdf can de giai ma PDF ma hoa AES (vd DoremonVoz Vol.29-36: Acrobat khoa
+# cam in/chep, mo khong can mat khau). Thieu thi rieng cac tap do bao loi, tap khac van chay.
+cryptography
