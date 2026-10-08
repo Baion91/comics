@@ -668,10 +668,17 @@ def get_json(url: str, retries: int = 3):
         return None
 
 
-def get_text(url: str, retries: int = 3):
-    """Provider dùng để lấy HTML thô (site parse trang)."""
+def get_text(url: str, retries: int = 3, encoding: str | None = None):
+    """Provider dùng để lấy HTML thô (site parse trang).
+
+    `encoding`: ép bảng mã khi server KHÔNG khai charset — requests khi đó đoán ISO-8859-1
+    cho mọi `text/*` -> tiếng Việt vỡ ("Chương" -> "ChÆ°Æ¡ng"; hentaivnreal). None = như cũ."""
     r = _request(url, retries)
-    return r.text if r is not None else None
+    if r is None:
+        return None
+    if encoding:
+        r.encoding = encoding
+    return r.text
 
 
 def download_image(url: str, dest: Path, client=None, to_webp: bool = False) -> bool:

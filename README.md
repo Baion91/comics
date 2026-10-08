@@ -27,7 +27,19 @@ Các script trong thư mục này, mỗi cái một việc:
 
 Một tool cho MỌI site, tự nhận site theo link (hiện hỗ trợ **Asura**, **Raven**, **Dilib**,
 **MangaDex**, **TruyenQQ**, **TruyenQQ.com.vn**, **Comix**, **ACGN**, **NetTruyen**, **ZetTruyen**,
-**MoeTruyen**, **nhentai.to**, **HentaiFC**, **HentaiVNX**, **LXManga**).
+**MoeTruyen**, **nhentai.to**, **HentaiFC**, **HentaiVNX**, **LXManga**, **HentaiVNReal**, **Hitomi**).
+
+> **HentaiVNReal** (hentaivnreal.com — truyện 18+ tiếng Việt, tên provider `hentaivnreal`): dán link
+> trang truyện `https://hentaivnreal.com/truyen/{slug}` (link 1 chương `…/truyen/{slug}/{chương}` cũng
+> được, tool tải cả bộ). Tải thẳng HTTP, không cần mở trình duyệt. Cần biết:
+> - **Số chương lấy theo nhãn trên site** ("Chap 1.2", "Chương 68.5"…), không theo link (link chương
+>   của site hay sai số). Bộ thường → số thật, ghép `into:` được. Hai chương trùng số → giữ bản mới.
+> - Chương **không có số** lẻ tẻ trong bộ có số (vd "Ngoại truyện") → đặt số = chương liền trước + 0.5
+>   (nhiều cái liền nhau: +0.6, +0.7…), folder kèm nhãn, vd `Chapter 20.5 - Ngoại truyện`.
+> - **Bộ tuyển tập** (phần lớn nhãn chương tự do, vd "Truyện của Rayasi": "5p", "no cáp"…) → đánh số
+>   **theo thứ tự trên site** (cũ nhất = 1), folder thêm hậu tố ` [HVR]`, tên chương lấy nhãn site.
+> - Truyện one-shot → 1 folder chỉ có `Chapter 1`, tên folder = tên truyện (không kèm mã).
+> - Trang truyện của site được cache ~30 phút: chương vừa ra có thể trễ một chút — lần kiểm sau sẽ có.
 
 > **LXManga** (lxmanga.org — truyện 18+ tiếng Việt, tên provider `lxmanga`): dán link trang truyện
 > `https://lxmanga.org/{slug}.html` (link 1 chương `https://lxmanga.org/{slug}/{chương}.html` cũng được).
@@ -71,6 +83,16 @@ Một tool cho MỌI site, tự nhận site theo link (hiện hỗ trợ **Asura
 >   (WebP/JPEG), HentaiFC ~1100px JPEG; cả 2 tải thẳng HTTP, không cần mở trình duyệt.
 > - HentaiFC hiếm khi có cuốn nhiều chương; gặp thì tool tự đọc đủ danh sách (chương `c0` → `Chapter 1`,
 >   `c1` → `Chapter 2`…).
+
+> **Hitomi** (hitomi.la — gallery 18+ nhiều ngôn ngữ, tên provider `hitomi`): dán link cuốn, dạng nào
+> cũng được: `https://hitomi.la/doujinshi/{tên}-english-{số}.html`, `.../galleries/{số}.html` hoặc link
+> trang đọc `.../reader/{số}.html#3`. Cần biết:
+> - Giống nhentai.to: mỗi link là 1 cuốn **one-shot** → folder `<tên> [hi{số}]` chứa `Chapter 1`,
+>   **không dùng được `into:`**. Tên dạng `Romaji | English` giữ cả 2 phần, đổi `|` thành `-` (Windows
+>   cấm `|`), vd `Taiken Sasete! Onii-chan - Give Me Experience Onii-chan! [hi4238970]`.
+> - Ảnh **WebP đủ độ phân giải gốc** (vd 2040×2880, ~1.3MB/trang); tải thẳng HTTP, không mở trình duyệt.
+> - Mỗi bản dịch là 1 link riêng — muốn bản tiếng Việt thì mở đúng cuốn tiếng Việt trên site rồi dán link đó.
+> - **Không nhận** link trang danh sách tác giả/tag/series (`...-all.html`) và cuốn loại `anime` (video).
 
 > **Raven Scans đã đổi `ravenscans.org` → `ravenscans.net`** (và đổi cấu trúc URL chương) —
 > dùng link `.net` mới; link `.org` cũ vẫn được nhận.

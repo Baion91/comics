@@ -30,7 +30,7 @@ import random
 import re
 import sys
 import time
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
 from comics_core import (META_DIR, Blocked, Challenged, Chapter, check_image_bytes, clear_bad,
                          fmt_num, get_json, get_text, uniform_frame)
@@ -1997,11 +1997,406 @@ class LXMangaProvider:
         return c
 
 
+def _rr_loader_data(html: str):
+    """`loaderData` của trang React Router v7 SSR, hoặc None.
+
+    Dữ liệu nằm trong `window.__reactRouterContext.streamController.enqueue("<chuỗi JSON>")`,
+    mã hoá TURBO-STREAM: dòng đầu = MẢNG PHẲNG, giá trị gốc ở phần tử 0; object `{"_k": v}`
+    = khoá arr[k] -> giá trị theo chỉ số v; mảng = danh sách chỉ số; số âm = hằng (-5 null,
+    -7 undefined...); mảng có phần tử đầu là CHUỖI = giá trị gắn tag (Date/Promise/plugin
+    `SingleFetchClassInstance` cho ObjectId...) -> None (không cần). Dòng sau (kết quả Promise
+    stream muộn) bỏ qua."""
+    parts = re.findall(r'streamController\.enqueue\(("(?:[^"\\]|\\.)*")\)', html)
+    if not parts:
+        return None
+    try:
+        arr = json.loads("".join(json.loads(p) for p in parts).split("\n", 1)[0])
+    except ValueError:
+        return None
+    if not isinstance(arr, list) or not arr:
+        return None
+    memo = {}
+
+    def val(i):
+        if not isinstance(i, int) or i < 0 or i >= len(arr):
+            return None
+        if i in memo:
+            return memo[i]
+        v = arr[i]
+        if isinstance(v, dict):
+            out = memo[i] = {}
+            for k, vi in v.items():
+                ki = int(k[1:]) if k[:1] == "_" and k[1:].isdigit() else -1
+                if 0 <= ki < len(arr) and isinstance(arr[ki], str):
+                    out[arr[ki]] = val(vi)
+            return out
+        if isinstance(v, list):
+            if v and isinstance(v[0], str):
+                memo[i] = None
+                return None
+            out = memo[i] = []
+            out.extend(val(x) for x in v)
+            return out
+        memo[i] = v
+        return v
+
+    root = val(0)
+    data = root.get("loaderData") if isinstance(root, dict) else None
+    return data if isinstance(data, dict) else None
+
+
+def _rr_route(data, key: str):
+    """Route đầu tiên trong `loaderData` có trường `key` (vd "chapters"/"pages") — dò theo
+    TRƯỜNG chứ không theo id route ("routes/truyen.$slug"...) để site đổi tên file route
+    vẫn chạy."""
+    for rid, v in (data or {}).items():
+        if rid != "root" and isinstance(v, dict) and key in v:
+            return v
+    return None
+
+
+class HentaiVNRealProvider:
+    """hentaivnreal.com ("HentaiVN Chính Chủ") — truyện 18+ tiếng Việt, React Router v7 SSR sau
+    Cloudflare chỉ làm CACHE (không challenge GET) -> HTTP trần, không Chromium.
+
+    - Dữ liệu đọc từ `loaderData` turbo-stream nhúng trong HTML (`_rr_loader_data`):
+      trang bộ `/truyen/{slug}` -> `story.title`, `cover`, `chapters[{slug,title,date}]` (ĐỦ
+      danh sách, mới nhất trước); trang chương `/truyen/{slug}/{chương}` -> `pages` = URL ảnh
+      đúng thứ tự (dự phòng: `<img src data-idx>` trong HTML).
+    - ⚠️ `Content-Type: text/html` KHÔNG khai charset -> requests đoán ISO-8859-1, tiếng Việt vỡ
+      -> luôn `get_text(..., encoding="utf-8")`.
+    - ⚠️ CF cache trang bộ ~30' (`s-maxage=1800` + swr 600), trang chương ~1h -> chương mới có
+      thể trễ tới ~40' so với trang chủ.
+    - Ảnh `cdn.hentaivnreal.com/manga-images/…` JPEG/WebP (chưa gặp PNG, vẫn bật `png_to_webp`
+      phòng hờ), KHÔNG đòi Referer, không token/khoá/xáo. Manhwa là dải dọc tới ~720×13870.
+      `coverVeiled` chỉ là lớp che bìa phía trình duyệt — URL bìa vẫn thật.
+    - SỐ CHƯƠNG theo NHÃN, KHÔNG theo slug — slug sai số (đo 08/10/2026): `chap-12`="Chap 1.2",
+      `chap-106`="Chương 104", `1chuong-685`="Chương 68.5", `103`; slug còn có `đ` (requests tự
+      %-encode). Nhãn có số (`Chap|Chương|Chapter|Phần|Tập|C N`, hoặc nhãn chỉ là số):
+        · trùng ≤ max(1, n/20), thiếu số ≤ max(2, n/10) VÀ là thiểu số -> SỐ THẬT, không hậu tố,
+          `into:` được. Trùng ("Chương 13" ×2 = cùng nội dung khác banner) -> giữ bản MỚI (đứng
+          trước). Chương không số lẻ tẻ (vd "Ngoại truyện") -> số = chương có số LIỀN TRƯỚC (cũ
+          hơn) + 0.5 (nhiều cái liền nhau: +0.6 … +0.9, lấy số trống), nhãn làm tên chương; hết
+          số trống -> bỏ + cảnh báo (user chốt 08/10: KHÔNG để vài chương lạ lật cả bộ sang số
+          vị trí -> đổi folder, tải lại cả bộ).
+        · còn lại = TUYỂN TẬP (vd "Truyện của Rayasi": 20 nhãn tự do "5p", "no cáp"… rồi "Chap
+          21..43") -> SỐ VỊ TRÍ (cũ nhất = 1) + nhãn làm tên chương + folder hậu tố SUFFIX.
+          ⚠️ Site xoá/chèn chương giữa chừng thì số vị trí lệch.
+        · 1 chương ("Oneshot") -> số đọc được hoặc 1, không hậu tố.
+    Folder = `story.title` (cắt `_short_title`), không gắn mã (user chốt 08/10: như hentaivnx).
+    """
+
+    name = "hentaivnreal"
+    BASE = "https://hentaivnreal.com"
+    domains = ["hentaivnreal.com"]       # resolver đã cắt "www." (site 301 www -> trần)
+    referer = None                       # đã thử: CDN không đòi Referer
+    png_to_webp = True
+    SUFFIX = " [HVR]"                    # chỉ bộ đánh số VỊ TRÍ (tuyển tập)
+    _NUM_LABEL = re.compile(
+        r"(?:chap(?:ter)?|ch\.|chương|chuong|phần|phan|tập|tap|\bc)\s*\.?\s*([0-9]+(?:[.,][0-9]+)?)",
+        re.I)
+
+    def __init__(self):
+        self._series = {}       # slug -> {"title", "cover", "chapters": [(slug chương, nhãn)]} | None
+        self._num_cache = {}    # slug -> (chapters, positional)
+
+    def _get(self, url: str) -> str:
+        return get_text(url, encoding="utf-8") or ""
+
+    def _load_series(self, slug: str):
+        if slug in self._series:
+            return self._series[slug]
+        html = self._get(f"{self.BASE}/truyen/{slug}")
+        r = _rr_route(_rr_loader_data(html), "chapters") if html else None
+        info = None
+        if r is not None:
+            story = r.get("story") if isinstance(r.get("story"), dict) else {}
+            seen, chs = set(), []
+            for c in r.get("chapters") or []:
+                cs = (c or {}).get("slug") if isinstance(c, dict) else None
+                if isinstance(cs, str) and cs and cs not in seen:
+                    seen.add(cs)
+                    chs.append((cs, re.sub(r"\s+", " ", str(c.get("title") or "")).strip()))
+            info = {"title": str(story.get("title") or "").strip(),
+                    "cover": r.get("cover") if isinstance(r.get("cover"), str) else None,
+                    "chapters": chs}
+        elif html:
+            print(f"  ! {self.name}: không đọc được dữ liệu trang bộ (loaderData/chapters) — "
+                  "site đổi cấu trúc?", file=sys.stderr)
+        self._series[slug] = info
+        return info
+
+    def _chapter_url(self, slug: str, cs: str) -> str:
+        return f"{self.BASE}/truyen/{slug}/{cs}"
+
+    def _number(self, label: str):
+        m = self._NUM_LABEL.search(label or "")
+        if m:
+            return float(m.group(1).replace(",", "."))
+        m = re.fullmatch(r"([0-9]+(?:[.,][0-9]+)?)", label or "")
+        return float(m.group(1).replace(",", ".")) if m else None
+
+    def _numbered(self, slug: str):
+        """(chapters [Chapter], positional: bool). Nhớ theo slug (title_from_slug lẫn
+        list_chapters đều cần -> cảnh báo không in 2 lần)."""
+        if slug not in self._num_cache:
+            self._num_cache[slug] = self._number_all(slug)
+        return self._num_cache[slug]
+
+    def _number_all(self, slug: str):
+        items = (self._load_series(slug) or {}).get("chapters") or []   # mới nhất trước
+        if not items:
+            return [], False
+        url = lambda cs: self._chapter_url(slug, cs)
+        nums = [self._number(lb) for _, lb in items]
+        if len(items) == 1:
+            return [Chapter(nums[0] if nums[0] is not None else 1.0, "", url(items[0][0]))], False
+        known = [n for n in nums if n is not None]
+        dup = len(known) - len(set(known))
+        missing = len(nums) - len(known)
+        if (dup <= max(1, len(items) // 20) and missing <= max(2, len(items) // 10)
+                and 2 * missing < len(items)):
+            kept, taken = [], set()
+            for (cs, lb), n in zip(items, nums):   # trùng số: giữ bản MỚI nhất (đứng trước)
+                if n is not None:
+                    if n in taken:
+                        print(f"  ~ {self.name}: trùng số chương {fmt_num(n)} — bỏ bản cũ "
+                              f"'{lb}' ({cs})", file=sys.stderr)
+                        continue
+                    taken.add(n)
+                kept.append((cs, lb, n))
+            out, last = [], 0.0
+            for cs, lb, n in reversed(kept):       # cũ -> mới: chương không số = liền trước + 0.5
+                if n is not None:
+                    last = n
+                    out.append(Chapter(n, "", url(cs)))
+                    continue
+                # nhiều chương không số liền nhau -> +0.5, +0.6 … +0.9 (số trống đầu tiên)
+                cand = next((c for c in (round(last + k / 10, 3) for k in range(5, 10))
+                             if c not in taken), None)
+                if cand is None:
+                    print(f"  ! {self.name}: chương không số '{lb}' ({cs}) — hết số trống sau "
+                          f"chương {fmt_num(last)}, BỎ QUA", file=sys.stderr)
+                    continue
+                taken.add(cand)
+                print(f"  ~ {self.name}: chương không số '{lb}' -> {fmt_num(cand)}",
+                      file=sys.stderr)
+                out.append(Chapter(cand, lb, url(cs)))
+            return out, False
+        # tuyển tập: số trùng/thiếu nhiều -> số VỊ TRÍ, cũ nhất = 1, nhãn làm tên chương
+        return [Chapter(float(i), lb, url(cs))
+                for i, (cs, lb) in enumerate(reversed(items), 1)], True
+
+    # -- hợp đồng provider -----------------------------------------------------------------
+
+    def series_slug(self, text: str) -> str:
+        t = re.split(r"[?#]", text.strip())[0]
+        m = re.search(r"/truyen/([^/]+)", t)
+        if m:
+            return unquote(m.group(1))
+        return unquote(t.strip("/").rsplit("/", 1)[-1])
+
+    def title_from_slug(self, slug: str) -> str:
+        info = self._load_series(slug) or {}
+        name = _short_title(info.get("title") or "") or slug.replace("-", " ").title()
+        return name + (self.SUFFIX if self._numbered(slug)[1] else "")
+
+    def list_chapters(self, slug: str):
+        chapters, positional = self._numbered(slug)
+        if positional:
+            print(f"  ~ {self.name}: bộ tuyển tập (số chương trùng/thiếu) — đánh SỐ VỊ TRÍ, "
+                  f"folder hậu tố '{self.SUFFIX.strip()}'", file=sys.stderr)
+        return sorted(chapters, key=lambda c: c.number)
+
+    def chapter_images(self, chapter):
+        html = self._get(chapter.ref)
+        if not html:
+            return []
+        r = _rr_route(_rr_loader_data(html), "pages")
+        pages = r.get("pages") if r else None
+        if isinstance(pages, list) and pages:
+            return [u for u in pages if isinstance(u, str) and u.startswith("http")]
+        found = {}
+        for tag in re.findall(r"<img\b[^>]*\bdata-idx=[^>]*>", html):
+            m_i = re.search(r'\bdata-idx="(\d+)"', tag)
+            m_s = re.search(r'\bsrc="(https?://[^"]+)"', tag)
+            if m_i and m_s:
+                found.setdefault(int(m_i.group(1)), html_lib.unescape(m_s.group(1)))
+        if found:
+            print(f"  ~ {self.name}: không đọc được loaderData.pages — lấy {len(found)} ảnh từ "
+                  "thẻ <img data-idx>", file=sys.stderr)
+        else:
+            print(f"  ! {self.name}: không thấy danh sách ảnh — site đổi cấu trúc?",
+                  file=sys.stderr)
+        return [found[i] for i in sorted(found)]
+
+    def cover_url(self, slug: str):
+        c = ((self._load_series(slug) or {}).get("cover") or "").strip()
+        return c if c.startswith("http") else None
+
+
+class HitomiProvider:
+    """hitomi.la — kho gallery 18+ đa ngôn ngữ (doujinshi/manga/CG...), nginx trần, KHÔNG
+    Cloudflare, nhà mạng không chặn (đo 08/10/2026) -> HTTP trần. Mỗi link = 1 cuốn ONE-SHOT như
+    nhentai -> 1 Chapter số 1.
+
+    Trang hitomi.la chỉ là VỎ SPA; dữ liệu nằm ở host phụ `ltn.<CDN>`. Vỏ nạp
+    `<script src="//ltn.<CDN>/gg.js">` -> đọc host từ đó (1 request/tiến trình), hằng `CDN` chỉ
+    dự phòng (site đã đổi CDN 1 lần: *.hitomi.la -> gold-usergeneratedcontent.net).
+    - Info: `{LTN}/galleries/{id}.js` = `var galleryinfo = {json}`: title ("Romaji | English"),
+      japanese_title, type (`anime` = video -> bỏ), files[{name, hash, width, height, hasavif}]
+      đúng thứ tự trang. Gallery không có -> 404.
+    - Ảnh (dựng y `common.js` của site): g = int(hash[-1] + hash[-3:-1], 16) ->
+      `https://w{1+m(g)}.<CDN>/{b}{g}/{hash}.webp`; m(g) + b đọc từ `{LTN}/gg.js`
+      (`case N: ... o = K; break;`, mặc định `var o = K`, `b: '<unix ts>/'`). WebP = đủ độ phân
+      giải gốc (site không còn phục vụ jpg/png gốc). AVIF nhẹ hơn ~50% nhưng chọn WebP cho đồng
+      bộ thư viện + iOS (user chốt 08/10/2026).
+    - ⚠️ THIẾU Referer `https://hitomi.la/` -> ảnh 404; sai subdomain / sai b cũng 404.
+    - ⚠️ b = mốc sinh gg.js, site sinh lại MỖI GIỜ (:00 GMT), bảng m đổi theo. Đo 08/10: URL b CŨ
+      vẫn sống sau khi xoay (≥5' sau, ≥65' kể từ lúc cấp) NHƯNG server kiểm subdomain theo bảng
+      CỦA b ĐÓ (b cũ + bảng mới -> 12/30 trang 404) => KHÔNG BAO GIỜ trộn b của bản gg.js này với
+      bảng của bản khác: mỗi lần dựng URL dùng trọn 1 bản (`_gg()` trả cả cặp); cache `GG_TTL` giây.
+    - Bìa: thumbnail trang đầu `https://{chr(97+m(g))}tn.<CDN>/webpbigtn/{h[-1]}/{h[-3:-1]}/
+      {hash}.webp` (640px).
+    Link nhận: `/{loại}/{tên}-{ngôn ngữ}-{id}.html`, `/galleries/{id}.html`, `/reader/{id}.html#n`.
+    Trang danh sách artist/tag/series (`...-all.html`) không phải 1 cuốn -> báo lỗi, không tải.
+    Folder = tên đầy đủ (` | ` -> ` - ` vì Windows cấm `|`; user chốt giữ cả 2 phần) + " [hi{id}]";
+    `positional_numbers` như nhentai.
+    """
+
+    name = "hitomi"
+    BASE = "https://hitomi.la"
+    CDN = "gold-usergeneratedcontent.net"   # dự phòng khi vỏ trang không lộ host ltn.
+    domains = ["hitomi.la"]
+    referer = "https://hitomi.la/"
+    positional_numbers = True
+    SUFFIX = " [hi<mã gallery>]"
+    GG_TTL = 120
+    _HASH = re.compile(r"[0-9a-f]{64}")
+
+    def __init__(self):
+        self._ltn_host = None
+        self._info_cache = {}
+        self._gg_cache = None    # (thời điểm tải, {'m', 'd', 'b'})
+
+    def _ltn(self) -> str:
+        if self._ltn_host is None:
+            html = get_text(f"{self.BASE}/") or ""
+            m = re.search(r"//(ltn\.[\w.-]+)/gg\.js", html)
+            if not m and html:
+                print(f"  ~ {self.name}: vỏ trang không lộ host ltn. — dùng hằng ltn.{self.CDN}",
+                      file=sys.stderr)
+            self._ltn_host = m.group(1) if m else f"ltn.{self.CDN}"
+        return self._ltn_host
+
+    def _cdn(self) -> str:
+        return self._ltn().removeprefix("ltn.")
+
+    def _info(self, gid: str):
+        if gid in self._info_cache:
+            return self._info_cache[gid]
+        info = None
+        if gid.isdigit():
+            js = get_text(f"https://{self._ltn()}/galleries/{gid}.js") or ""
+            i = js.find("{")
+            try:
+                info = json.JSONDecoder().raw_decode(js, i)[0] if i >= 0 else None
+            except ValueError:
+                info = None
+            if not isinstance(info, dict):
+                if js:
+                    print(f"  ! {self.name}: galleries/{gid}.js không đọc được JSON — site đổi "
+                          "định dạng?", file=sys.stderr)
+                info = None
+        self._info_cache[gid] = info
+        return info
+
+    def _gg(self):
+        """{'m': {g: số}, 'd': mặc định, 'b': 'ts/'} từ gg.js, hoặc None (tải hỏng/đổi định dạng)."""
+        hit = self._gg_cache
+        if hit and time.time() - hit[0] < self.GG_TTL:
+            return hit[1]
+        js = get_text(f"https://{self._ltn()}/gg.js") or ""
+        table, keys = {}, []
+        for k, v in re.findall(r"case\s+(\d+):(?:\s*o\s*=\s*(\d+))?", js):
+            keys.append(int(k))
+            if v:
+                for key in keys:
+                    table[key] = int(v)
+                keys = []
+        for k, v in re.findall(r"if\s*\(\s*g\s*===?\s*(\d+)\s*\)[\s{]*o\s*=\s*(\d+)", js):
+            table[int(k)] = int(v)
+        d = re.search(r"(?:var\s+o|default:\s*o)\s*=\s*(\d+)", js)
+        b = re.search(r"\bb:\s*['\"]([^'\"]*)['\"]", js)
+        # s(h) phải đúng kiểu cũ (2 ký tự áp chót + ký tự cuối, hệ 16 -> 10) thì g mới khớp
+        same_s = "(..)(.)$" in js and "m[2]+m[1]" in js
+        if not (table and d and b and same_s):
+            if js:
+                print(f"  ! {self.name}: gg.js đổi định dạng (bảng={len(table)}, mặc định="
+                      f"{bool(d)}, b={bool(b)}, s={same_s}) — cần sửa provider", file=sys.stderr)
+            return None
+        gg = {"m": table, "d": int(d.group(1)), "b": b.group(1)}
+        self._gg_cache = (time.time(), gg)
+        return gg
+
+    def series_slug(self, text: str) -> str:
+        text = text.strip()
+        if text.isdigit():
+            return text
+        m = re.search(r"(?:^|[/-])(\d+)\.html$", urlparse(text).path)
+        if m:
+            return m.group(1)
+        print(f"  ! {self.name}: link không trỏ tới 1 cuốn (trang danh sách artist/tag/series?) "
+              "— mở cuốn cần tải rồi dán link của cuốn đó", file=sys.stderr)
+        return text.strip("/")
+
+    def title_from_slug(self, slug: str) -> str:
+        info = self._info(slug) or {}
+        name = (info.get("title") or info.get("japanese_title") or "").strip()
+        name = re.sub(r"\s*\|\s*", " - ", name)
+        return f"{_short_title(name) or 'hitomi'} [hi{slug}]"
+
+    def list_chapters(self, slug: str):
+        info = self._info(slug)
+        if not info:
+            return []
+        if info.get("type") == "anime" or not info.get("files"):
+            print(f"  ! {self.name}: gallery {slug} là video (anime) / không có ảnh — bỏ qua",
+                  file=sys.stderr)
+            return []
+        return [Chapter(1, "", slug)]
+
+    def chapter_images(self, chapter):
+        info, gg = self._info(chapter.ref), self._gg()
+        if not (info and gg):
+            return []
+        cdn, out = self._cdn(), []
+        for f in info.get("files") or []:
+            h = (f or {}).get("hash") or ""
+            if not self._HASH.fullmatch(h):
+                print(f"  ! {self.name}: trang {len(out) + 1} hash lạ {h!r} — bỏ cả cuốn "
+                      "(tránh lệch số trang)", file=sys.stderr)
+                return []
+            g = int(h[-1] + h[-3:-1], 16)
+            out.append(f"https://w{1 + gg['m'].get(g, gg['d'])}.{cdn}/{gg['b']}{g}/{h}.webp")
+        return out
+
+    def cover_url(self, slug: str):
+        info, gg = self._info(slug), self._gg()
+        files = (info or {}).get("files") or []
+        h = ((files[0] or {}).get("hash") or "") if files else ""
+        if not (gg and self._HASH.fullmatch(h)):
+            return None
+        g = int(h[-1] + h[-3:-1], 16)
+        sub = chr(97 + gg["m"].get(g, gg["d"]))
+        return f"https://{sub}tn.{self._cdn()}/webpbigtn/{h[-1]}/{h[-3:-1]}/{h}.webp"
+
+
 # --- Đăng ký: thêm site mới = thêm 1 dòng vào đây -------------------------------
 PROVIDERS = [AsuraProvider(), RavenProvider(), DilibProvider(), MangaDexProvider(),
              TruyenQQProvider(), ACGNProvider(), NetTruyenProvider(), ZetTruyenProvider(),
              TruyenQQVNProvider(), MoeTruyenProvider(), NHentaiToProvider(), HentaiFCProvider(),
-             HentaiVNXProvider(), LXMangaProvider()]
+             HentaiVNXProvider(), LXMangaProvider(), HentaiVNRealProvider(), HitomiProvider()]
 
 
 def load_overrides() -> dict:

@@ -26,6 +26,9 @@ cách chạy thật + decode thử ảnh.
     Provider không có móc → đường cũ y nguyên (đã hồi quy ZetTruyen + qqcomvn).
     **Móc `png_to_webp` (01/10/2026, cho hentaivnx)**: trang PNG lưu thành `NNN.webp` mã hoá q90 lúc tải
     (`png_to_webp()` + tham số `to_webp` của `download_image`) — chi tiết + lý do ở mục HentaiVNX bên dưới.
+    **`get_text(url, retries, encoding=None)` (08/10/2026, cho hentaivnreal)**: `encoding` ép bảng mã khi
+    server KHÔNG khai charset (requests khi đó đoán ISO-8859-1 cho mọi `text/*` → tiếng Việt vỡ
+    "ChÆ°Æ¡ng"). None = y như cũ (mọi provider khác không đổi).
     **`Challenged(Blocked)` (28/09/2026)**: `_request` thấy header `cf-mitigated: challenge`
     (Cloudflare đòi xác minh — thường kèm 429/403) → ném NGAY, **không kéo cầu dao 429**.
     Trước đó 429-challenge bị coi là rate-limit: ngủ 90s→5'→15' rồi `gate.abort` → trong
@@ -49,7 +52,7 @@ cách chạy thật + decode thử ảnh.
     `list_chapters`→`[Chapter(number,title,ref)]`, `chapter_images`→`[url]`,
     `cover_url`. `ref` là "chìa" mờ mỗi site tự sinh/tự hiểu (Asura = URL API
     chương; Raven = URL trang chương). `PROVIDERS`/`by_name`/`REGISTRY` (map domain).
-    Đang có (+ nhentai/hentaifc one-shot 18+, xem cuối danh sách): **AsuraProvider** (API JSON), **RavenProvider** (parse HTML + `ts_reader`),
+    Đang có (+ nhentai/hentaifc/hitomi one-shot 18+, xem cuối danh sách): **AsuraProvider** (API JSON), **RavenProvider** (parse HTML + `ts_reader`),
     **DilibProvider** (parse HTML PHP), **MangaDexProvider** (API JSON, bản dịch `en`),
     **TruyenQQProvider** (parse HTML, họ `truyenqqko/to/vn.com` — KHÔNG gồm `truyenqq.com.vn`,
     site khác, xem TruyenQQVNProvider), **ACGNProvider** (parse HTML tĩnh,
@@ -208,6 +211,55 @@ cách chạy thật + decode thử ảnh.
     JPEG 26s; Sex Tu Tiên ch.3 (`Chapter 3 - Dâm Nữ Đạo Chap 1`) 46 ảnh 36s; [series] ch.1 40 ảnh (1 PNG →
     WebP) 44s; tất cả `ok`; chạy lại `.done` 22s (chỉ mở Chromium đọc list). **CHƯA thử trên server** (mạng/
     IP/Chromium có thể khác).
+    **HentaiVNRealProvider (`name="hentaivnreal"`, `hentaivnreal.com`, 08/10/2026)** — 18+ tiếng Việt
+    ("HentaiVN Chính Chủ"), React Router v7 SSR; Cloudflare chỉ CACHE (trang bộ `s-maxage=1800`+swr 600,
+    trang chương 3600 → chương mới trễ ≤~40'), không challenge GET → HTTP trần, referer=None (CDN đã thử
+    có/không/lạ), `png_to_webp` bật phòng hờ (chưa gặp PNG; JPEG/WebP, manhwa dải dọc tới ~720×13870).
+    Dữ liệu = `loaderData` TURBO-STREAM nhúng trong HTML (`streamController.enqueue("<chuỗi JSON>")`) →
+    hàm module `_rr_loader_data` (giải mảng phẳng: object `{"_k":v}` = chỉ số khoá/giá trị, số âm = hằng
+    -5 null/-7 undefined, mảng có phần tử đầu là CHUỖI = giá trị gắn tag như `SingleFetchClassInstance`
+    (ObjectId) → None) + `_rr_route(data, trường)` chọn route theo TRƯỜNG ("chapters"/"pages", bỏ
+    "root") chứ không theo id route. Trang bộ `/truyen/{slug}` → `story.title`, `cover`,
+    `chapters[{slug,title,date}]` (ĐỦ, mới nhất trước); trang chương → `pages` (dự phòng `<img src
+    data-idx>`). ⚠️ `Content-Type: text/html` KHÔNG charset → `get_text(..., encoding="utf-8")`.
+    **Số chương THEO NHÃN, KHÔNG theo slug** (slug sai: `chap-12`="Chap 1.2", `chap-106`="Chương 104",
+    `1chuong-685`="68.5", `103`; slug có `đ` → requests tự %-encode): regex nhãn như lxmanga + nhãn chỉ là
+    số. Trùng ≤ max(1,n/20) + thiếu số ≤ max(2,n/10) và là thiểu số → SỐ THẬT, không hậu tố, `into:` được;
+    trùng giữ bản mới (Sextoy "Chương 13" ×2 = cùng nội dung khác banner); chương không số lẻ tẻ = chương
+    có số liền trước (cũ hơn) + 0.5 (liền nhau +0.6…+0.9, số trống đầu tiên; hết → bỏ + cảnh báo), nhãn làm
+    tên chương (user chốt 08/10: vài chương lạ KHÔNG được lật cả bộ sang số vị trí → đổi folder → tải lại
+    cả bộ — KHÁC lxmanga). Còn lại = TUYỂN TẬP ("Truyện của Rayasi" 20/43 nhãn tự do) → SỐ VỊ TRÍ + nhãn +
+    hậu tố `SUFFIX=" [HVR]"`; 1 chương → số đọc được hoặc 1. Folder = `_short_title(story.title)`, KHÔNG
+    gắn mã kể cả one-shot (user chốt 08/10, như hentaivnx). **Đo thực PC (08/10)**: oneshot 26 JPEG 19s;
+    Sextoy ch.13 (bản mới `chuong-13-2`)/68.5/104 (slug `chap-106`) 48 ảnh; Anh em nhà nghèo ch.1.2;
+    Rayasi ch.16 (`Chapter 16 - đời hư áo đưa em vào cơn phê`, slug có `đ`) — tất cả `ok`; chạy lại `.done`
+    bỏ qua; `check_updates.check_one` ra `ok`/listed_max đúng, link 404 → `error`. CHƯA thử trên server.
+    **HitomiProvider (`name="hitomi"`, `hitomi.la`, 08/10/2026)** — gallery 18+ đa ngôn ngữ, ONE-SHOT như
+    nhentai (1 Chapter số 1, `positional_numbers`, folder `_short_title(title) + " [hi{id}]"`; title dạng
+    "Romaji | English" GIỮ cả 2 phần, `\s*|\s*` → ` - ` — user chốt 08/10). nginx trần, không CF, nhà mạng
+    không chặn → HTTP trần. Trang hitomi.la = VỎ SPA; dữ liệu ở `ltn.<CDN>` — host đọc từ `<script
+    src="//ltn.X/gg.js">` của vỏ trang chủ (1 request/tiến trình; hằng `CDN="gold-usergeneratedcontent.net"`
+    chỉ dự phòng, site đã đổi CDN 1 lần từ *.hitomi.la). Info `{LTN}/galleries/{id}.js` = `var galleryinfo =
+    {json}` (raw_decode): `title`/`japanese_title`, `type` (`anime` = video → list rỗng + báo), `files[{hash,
+    width,height,hasavif}]` đúng thứ tự trang (KHÔNG còn trường `haswebp`; reader site luôn dùng webp làm src).
+    URL ảnh dựng y `common.js`: g = int(h[-1]+h[-3:-1],16) → `https://w{1+m(g)}.<CDN>/{b}{g}/{h}.webp`;
+    `m`/mặc định/`b` parse từ `{LTN}/gg.js` (`case N:`… `o = K; break;`, `var o = K`, `b: '<ts>/'`; kiểm luôn
+    `s(h)` còn dạng `(..)(.)$` + `m[2]+m[1]` — đổi định dạng → báo to, trả rỗng, KHÔNG đoán). ⚠️ THIẾU
+    Referer `https://hitomi.la/` → 404 (sai subdomain/sai b cũng 404) → `referer` khai trên provider.
+    ⚠️ `b` = mốc sinh gg.js, site sinh lại mỗi giờ (:00 GMT; `max-age=3600`; JS site tải lại mỗi 30') →
+    gg.js cache `GG_TTL`=120s (đủ dùng chung cover_url + chapter_images của 1 cuốn). **Đo lúc xoay
+    04:00 GMT 08/10**: URL b cũ vẫn 200 ngay sau và 5' sau (≥65' kể từ lúc cấp) → cuốn đang tải dở qua mốc
+    :00 KHÔNG hỏng; NHƯNG server kiểm subdomain theo bảng CỦA b đó (b cũ + bảng mới: 18/30 trang 200, 12/30
+    404 — đúng 12 trang tải được bằng subdomain đảo) → mỗi URL phải dựng từ TRỌN 1 bản gg.js (`_gg()` trả
+    cả cặp m/b), không bao giờ trộn.
+    WebP = đủ độ phân giải gốc (site không còn phục vụ jpg/png gốc); AVIF nhẹ ~50% nhưng chọn WebP (đồng bộ
+    thư viện/iOS — user chốt). Bìa = thumbnail trang đầu `https://{chr(97+m(g))}tn.<CDN>/webpbigtn/{h[-1]}/
+    {h[-3:-1]}/{h}.webp` (640px). Link nhận `/{loại}/{tên}-{lang}-{id}.html`, `/galleries/{id}.html`,
+    `/reader/{id}.html#n`, số trần; trang `-all.html` (artist/tag/series) → báo "không phải 1 cuốn", không
+    gọi mạng. Bản dịch khác của cùng tác phẩm (`languages[]`) KHÔNG xử lý — mỗi bản 1 link (user chốt).
+    **Đo thực PC (08/10)**: hi4238970 30/30 WebP 2040×2880 (khớp `width/height` galleryinfo từng trang) +
+    bìa, ~40MB; chạy lại `.done` bỏ qua; `--dest-name` chặn; link artist/gallery 404 → exit 1 có lý do;
+    `check_updates.check_one` → `ok` listed_max 1 / `error`. CHƯA thử trên server.
   - `cf_browser.py` — **tầng TRÌNH DUYỆT THẬT dùng chung cho site sau Cloudflare** (28/09/2026;
     dùng bởi qqcomvn [lấy HTML] + moetruyen [chụp trang] + lxmanga [HTML + DOM list chương, LUÔN dùng
     vì nhà mạng chặn HTTP]). `CFBrowser(profile, host, label,
