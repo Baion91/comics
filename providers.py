@@ -2404,6 +2404,143 @@ class HitomiProvider:
         return f"https://{sub}tn.{self._cdn()}/webpbigtn/{h[-1]}/{h[-3:-1]}/{h}.webp"
 
 
+class Hentai2ReadProvider:
+    """hentai2read.com — truyện/doujinshi 18+ tiếng Anh, WordPress sau Cloudflare KHÔNG challenge
+    GET thường (đo 08/10/2026: 12 trang chương liên tiếp không 429) -> HTTP trần. Trang HTML
+    không cache (~2s/request). `www.`/`http` 301 về `https://hentai2read.com`.
+
+    - Trang bộ `/{slug}/`: tên = `<!-- Title --> h3.block-title a` (bỏ `<small>[Original|
+      Doujinshi]</small>`, có entity `&amp;`). ĐỦ danh sách chương trong `ul.nav-chapters` (đo bộ
+      34/34): link `/{slug}/{số}/`, nhãn "N - tên". Slug chương = SỐ THẬT, có lẻ (`3.5`, `7.5`),
+      khớp số đầu nhãn trên 15 bộ mẫu -> không hậu tố, ghép `into:` được. Không lấy nhãn làm tên
+      chương (hay kèm "[END]"/"[Oneshot]", đổi nhãn -> đổi folder chương).
+    - Trang chương `/{slug}/{số}/` (cả `/{slug}/{số}/{trang}/`) có `var gData = {...}` (object JS
+      nháy đơn, KHÔNG phải JSON) -> `'images' : [...]` là mảng JSON đường dẫn
+      `/{id}/{thư mục}/ccdn0001.jpg`, ghép IMG_BASE (lấy từ `getImageUrl` trong
+      `arf-app-*.js` của theme — host không có trong HTML). Thư mục (`1u`, `2x`, `3.5c`) và id
+      trong đường dẫn KHÁC mangaID -> không đoán được, phải đọc gData.
+    - ⚠️ `gData.nextURL` của bộ "Ongoing" trỏ tới chương N+1 CHƯA có -> trang 200 "Coming soon"
+      không có gData. -> danh sách chương CHỈ lấy từ trang bộ.
+    - Ảnh JPEG ~1000×1400 (14/14 chương mẫu 2014–2026; vẫn bật `png_to_webp` phòng hờ), KHÔNG
+      đòi Referer, CF cache. ⚠️ URL ảnh sai -> HTTP 404 kèm JPEG giữ chỗ 400×400 hợp lệ (core xét
+      status nên không lưu nhầm).
+    - ⚠️ Bìa site `img1.hentaicdn.com/hentai/cover/_S{id}.jpg` = trang 1 bị BÓP MÉO vào khung
+      vuông 400×400, không có bản lớn -> bìa = trang 1 của chương nhỏ nhất (thêm 1 request trang
+      chương, dùng chung cache nếu chương đó cũng tải); không đọc được thì mới lùi về bìa site.
+    - `/download/?file=` chỉ ra trang quảng cáo, không phải zip.
+    Folder = tên h3 (cắt `_short_title`), không gắn mã (user chốt 08/10: như hentaivnx).
+    """
+
+    name = "hentai2read"
+    BASE = "https://hentai2read.com"
+    IMG_BASE = "https://static.hentaicdn.com/hentai"
+    domains = ["hentai2read.com"]        # resolver đã cắt "www." (site 301 www -> trần)
+    referer = None                       # đã thử: CDN không đòi Referer
+    png_to_webp = True
+    _NUM = re.compile(r"\d+(?:\.\d+)?")
+
+    def __init__(self):
+        self._series = {}   # slug -> {"title", "cover", "chapters": [Chapter]} | None
+        self._pages = {}    # URL trang chương -> [URL ảnh]
+
+    def _load(self, slug: str):
+        if slug in self._series:
+            return self._series[slug]
+        html = get_text(f"{self.BASE}/{slug}/") or ""
+        if not html:
+            self._series[slug] = None
+            return None
+        m = re.search(r"<!--\s*Title\s*-->\s*<h3[^>]*>.*?<a\b[^>]*>(.*?)(?:<small|</a>)", html, re.S)
+        title = re.sub(r"\s+", " ", html_lib.unescape(re.sub(r"<[^>]+>", "", m.group(1)))).strip() \
+            if m else ""
+        m = re.search(r'<img\b[^>]*class="img-responsive border-black-op"[^>]*\bsrc="([^"]+)"', html)
+        cover = m.group(1) if m else None
+
+        chapters, seen = [], set()
+        a = html.find('<ul class="nav-chapters"')
+        seg = html[a:html.find("</ul>", a)] if a >= 0 else ""
+        href = re.compile(r'<a\b[^>]*\bhref="(?:https?://[^/"]+)?/%s/([^/"]+)/"[^>]*>(.*?)</a>'
+                          % re.escape(slug), re.S)
+        for cs, inner in href.findall(seg):
+            label = re.sub(r"\s+", " ", html_lib.unescape(
+                re.sub(r"<[^>]+>", "", re.split(r"<div\b", inner)[0]))).strip()
+            if self._NUM.fullmatch(cs):
+                n = float(cs)
+            else:
+                m = re.match(r"(\d+(?:\.\d+)?)\s*-", label)
+                if not m:
+                    print(f"  ! {self.name}: chương không đọc được số '{label}' ({cs}) — BỎ QUA",
+                          file=sys.stderr)
+                    continue
+                n = float(m.group(1))
+            if n in seen:
+                print(f"  ~ {self.name}: trùng số chương {fmt_num(n)} — bỏ '{label}' ({cs})",
+                      file=sys.stderr)
+                continue
+            seen.add(n)
+            chapters.append(Chapter(n, "", f"{self.BASE}/{slug}/{cs}/"))
+        if not chapters:
+            print(f"  ! {self.name}: không thấy danh sách chương (ul.nav-chapters) trên trang bộ "
+                  f"'{slug}' — site đổi giao diện?", file=sys.stderr)
+        info = {"title": title, "cover": cover, "chapters": sorted(chapters, key=lambda c: c.number)}
+        self._series[slug] = info
+        return info
+
+    def _images(self, url: str):
+        if url in self._pages:
+            return self._pages[url]
+        html = get_text(url) or ""
+        if not html:
+            return []            # lỗi mạng: không nhớ, lần gọi sau thử lại
+        imgs = []
+        i = html.find("var gData")
+        m = re.compile(r"""['"]images['"]\s*:\s*(\[.*?\])""", re.S).search(html, i) if i >= 0 else None
+        try:
+            raw = json.loads(m.group(1)) if m else []
+        except ValueError:
+            raw = []
+        for p in raw:
+            if isinstance(p, str) and p:
+                imgs.append(p if p.startswith("http") else
+                            "https:" + p if p.startswith("//") else
+                            self.IMG_BASE + ("" if p.startswith("/") else "/") + p)
+        if not imgs:
+            m = re.search(r"<title>(.*?)</title>", html, re.S)
+            why = ("trang 'Coming soon' — chương chưa có" if m and "Coming soon" in m.group(1)
+                   else "không thấy gData.images — site đổi giao diện?")
+            print(f"  ! {self.name}: {why} ({url})", file=sys.stderr)
+        self._pages[url] = imgs
+        return imgs
+
+    # -- hợp đồng provider -----------------------------------------------------------------
+
+    def series_slug(self, text: str) -> str:
+        t = re.split(r"[?#]", text.strip())[0]
+        if "://" in t:
+            t = urlparse(t).path
+        parts = [p for p in t.split("/") if p]
+        return unquote(parts[0]) if parts else ""
+
+    def title_from_slug(self, slug: str) -> str:
+        info = self._load(slug) or {}
+        return _short_title(info.get("title") or "") or slug.replace("_", " ").title()
+
+    def list_chapters(self, slug: str):
+        return list((self._load(slug) or {}).get("chapters") or [])
+
+    def chapter_images(self, chapter):
+        return list(self._images(chapter.ref))
+
+    def cover_url(self, slug: str):
+        info = self._load(slug) or {}
+        chapters = info.get("chapters") or []
+        if chapters:
+            imgs = self._images(chapters[0].ref)
+            if imgs:
+                return imgs[0]
+        return info.get("cover")
+
+
 def _fold_vi(s: str) -> str:
     """Bỏ dấu tiếng Việt + chữ thường — so khớp tên bộ không phụ thuộc hoa/thường/dấu."""
     s = (s or "").replace("đ", "d").replace("Đ", "D")
@@ -2414,7 +2551,8 @@ def _fold_vi(s: str) -> str:
 class _BloggerPostImages(HTMLParser):
     """Tách ảnh trong `post-body` 1 bài truyentranhphapbi (Blogger):
     `pre`   = ảnh TRƯỚC `<a name="more">` (bìa = trang 1 của tập),
-    `pages` = ảnh trong khung đọc ĐẦU TIÊN (`div.overlay-data` | `div#image-container` | `div.read`),
+    `pages` = ảnh trong khung đọc ĐẦU TIÊN (`div.overlay-data` | `div#image-container` |
+              `div.image-container` | `div.read`),
     `after` = mọi ảnh sau "more" (dự phòng khi template lạ, không thấy khung)."""
 
     _VOID = {"img", "br", "hr", "meta", "link", "input", "source", "wbr", "col", "area"}
@@ -2432,7 +2570,8 @@ class _BloggerPostImages(HTMLParser):
         if tag != "div":
             return False
         cls = (a.get("class") or "").split()
-        return "overlay-data" in cls or "read" in cls or a.get("id") == "image-container"
+        return ("overlay-data" in cls or "read" in cls or "image-container" in cls
+                or a.get("id") == "image-container")
 
     def handle_starttag(self, tag, attrs):
         a = dict(attrs)
@@ -2475,6 +2614,8 @@ class PhapBiProvider:
       nhãn thể loại) CÓ CÙNG phần tên trước "Tập N" (`_stem`: bỏ dấu, bỏ (Preview)/(truyện màu)/
       "màu"/full color, doraemon≡doremon). Dạng "TÊN ALBUM (TẬP N)" (Tintin 23, Asterix 3/6/8…) =
       bộ CHÍNH của nhãn (tên bộ phổ biến nhất trong nhãn). Thử trên cả 579 bài: 121 bộ, 1 ca trùng số.
+      Bài tiêu đề lệch hẳn (Asterix "…ASTÉRIX VÀ OBÉLIX TẬP 1-5" = chỉ Tập 1; "Astérix và Điểu Sư -
+      Tập 39") -> `_TITLE_FIXES` sửa tay tiêu đề theo đường dẫn bài (user chốt 09/10).
     - Bộ CHIA HỒI (`_ARC`: "<BỘ> - hồi <X> - Tập N", mỗi hồi đánh lại Tập 1; 08/10 chỉ Dragon Ball 6
       hồi/41 bài, chữ "hồi" không có ở bộ nào khác): stem = phần TRƯỚC "hồi" -> mọi hồi 1 bộ; số NỐI
       TIẾP theo hồi (thứ tự = ngày đăng tập đầu của hồi), tên chương "Hồi Piccolo - Tập 1" (user chốt
@@ -2494,7 +2635,8 @@ class PhapBiProvider:
       `.done` -> khi tác giả mở bản đủ, check_updates KHÔNG tự biết (nó so theo SỐ chương) -> xoá
       folder "(preview)" rồi để lượt kiểm sau tải lại (tên chương mới không còn "(preview)").
     - Ảnh: trong khung đọc ĐẦU TIÊN của `post-body` (3 thế hệ template: `div.overlay-data` 2017+,
-      `div#image-container` ~2015–17, `div.read` 2013–18) + bìa trước `<a name="more">` (= trang
+      `div#image-container` ~2015–17 — có bài ghi `class="image-container"` trong `div.mb-wrap`
+      (Asterix 1, Oumpah-Pah) —, `div.read` 2013–18) + bìa trước `<a name="more">` (= trang
       1, không lặp trong khung) chèn đầu. Ảnh sau khung (mục "Một vài thông tin chú thích", có cả
       ảnh wikimedia) = minh hoạ -> BỎ. URL `blogger.googleusercontent.com/img/b/…/sNNN/tên.jpg`
       hoặc `/img/a/…=wNNN` -> đổi `s0` = bản gốc (rộng 1300). `/img/a/` không có tên file -> gắn
@@ -2542,6 +2684,19 @@ class PhapBiProvider:
     # Cùng 1 bộ, tác giả đặt tên lệch nhau giữa các tập (đã gặp trong 579 bài 08/10)
     _ALIASES = [(r"\bdoraemon\b", "doremon"), (r"\b(?:bay|7)\s+vien\s+ngoc\s+rong\b", "dragon ball"),
                 (r"\bsiayan\b", "saiyan")]
+
+    # Bài tác giả đặt tiêu đề lệch hẳn -> tiêu đề SỬA TAY (đường dẫn bài, bỏ ".html"), đi qua
+    # `_parse` như tiêu đề thật. Thêm dòng khi gặp bài lạc bộ mà alias không cứu được.
+    _TITLE_FIXES = {
+        # "TRUYỆN TRANH ASTÉRIX VÀ OBÉLIX TẬP 1-5": thân bài chỉ có Tập 1 (scan Kim Đồng) + mục
+        # lục, tập 2–5 là bài riêng -> tên cũ làm bài lạc thành bộ riêng
+        "2014/05/asterix-5-tap-au-nxb-kim-dong": "Astérix tập 1 - Astérix người Gaulois",
+        "2022/03/asterix-va-ieu-su-tap-39-preview": "Astérix tập 39 - Astérix và Điểu Sư (Preview)",
+    }
+
+    @classmethod
+    def _fixed_title(cls, url: str, title: str) -> str:
+        return cls._TITLE_FIXES.get(re.sub(r"^/+|\.html$", "", urlparse(url).path), title)
 
     @classmethod
     def _stem(cls, text: str) -> str:
@@ -2624,7 +2779,7 @@ class PhapBiProvider:
             title = e["title"]["$t"]
         except (KeyError, TypeError, AttributeError, StopIteration):
             return None
-        p = self._parse(title)
+        p = self._parse(self._fixed_title(url, title))
         p.update(id=pid, url=self.BASE + urlparse(url).path, title=title,
                  published=(e.get("published") or {}).get("$t") or "",
                  thumb=(e.get("media$thumbnail") or {}).get("url"))
@@ -2677,7 +2832,7 @@ class PhapBiProvider:
         labels = list(dict.fromkeys(
             unquote(x).strip() for x in re.findall(r"/search/label/([^?'\"#&]+)", seg)))
         imgs = self._post_images(html)
-        p = self._parse(title)
+        p = self._parse(self._fixed_title(url, title))
         pid = re.search(r"post-body-(\d+)", html)
         p.update(id=pid.group(1) if pid else None, url=url, title=title, published="",
                  thumb=imgs[0][0] if imgs and imgs[0] else None)
@@ -2885,6 +3040,7 @@ class PhapBiProvider:
         pre, pages, after = imgs
         if not pages and after:
             print(f"  ~ {self.name}: không thấy khung đọc quen (overlay-data/image-container/read)"
+                  f" trong {chapter.ref}"
                   f" — lấy MỌI ảnh sau 'more' ({len(after)}), có thể lẫn ảnh minh hoạ",
                   file=sys.stderr)
             pages = after
@@ -2912,7 +3068,7 @@ PROVIDERS = [AsuraProvider(), RavenProvider(), DilibProvider(), MangaDexProvider
              TruyenQQProvider(), ACGNProvider(), NetTruyenProvider(), ZetTruyenProvider(),
              TruyenQQVNProvider(), MoeTruyenProvider(), NHentaiToProvider(), HentaiFCProvider(),
              HentaiVNXProvider(), LXMangaProvider(), HentaiVNRealProvider(), HitomiProvider(),
-             PhapBiProvider()]
+             PhapBiProvider(), Hentai2ReadProvider()]
 
 
 def load_overrides() -> dict:

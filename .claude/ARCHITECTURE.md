@@ -62,7 +62,7 @@ cách chạy thật + decode thử ảnh.
     `list_chapters`→`[Chapter(number,title,ref)]`, `chapter_images`→`[url]`,
     `cover_url`. `ref` là "chìa" mờ mỗi site tự sinh/tự hiểu (Asura = URL API
     chương; Raven = URL trang chương). `PROVIDERS`/`by_name`/`REGISTRY` (map domain).
-    Đang có (+ nhentai/hentaifc/hitomi one-shot 18+ và phapbi blog Blogger, xem cuối danh sách): **AsuraProvider** (API JSON), **RavenProvider** (parse HTML + `ts_reader`),
+    Đang có (+ nhentai/hentaifc/hitomi one-shot 18+, phapbi blog Blogger và hentai2read, xem cuối danh sách): **AsuraProvider** (API JSON), **RavenProvider** (parse HTML + `ts_reader`),
     **DilibProvider** (parse HTML PHP), **MangaDexProvider** (API JSON, bản dịch `en`),
     **TruyenQQProvider** (parse HTML, họ `truyenqqko/to/vn.com` — KHÔNG gồm `truyenqq.com.vn`,
     site khác, xem TruyenQQVNProvider), **ACGNProvider** (parse HTML tĩnh,
@@ -299,7 +299,8 @@ cách chạy thật + decode thử ảnh.
     tải phần công khai, tên chương + " (preview)" (user chốt). ⚠️ `check_updates` so theo SỐ → chương preview
     đã `.done` chặn việc tự lấy bản đủ khi tác giả đăng lại → hướng dẫn user xoá folder "(preview)".
     Ảnh = khung đọc ĐẦU TIÊN trong `post-body` (`_BloggerPostImages`, HTMLParser có đếm độ sâu): 3 thế hệ
-    template `div.overlay-data` (2017+) / `div#image-container` (~2015–17) / `div.read` (2013–18) + ảnh
+    template `div.overlay-data` (2017+) / `div#image-container` (~2015–17; có bài ghi `class=` trong
+    `div.mb-wrap` — nhận cả 2 từ 09/10) / `div.read` (2013–18) + ảnh
     TRƯỚC `<a name="more">` (bìa = trang 1, không lặp trong khung) chèn đầu; ảnh sau khung ("Một vài thông tin
     chú thích", wikimedia) BỎ; không thấy khung → mọi ảnh sau "more" + cảnh báo. URL `/sNNN/` hoặc `=sNNN|wNNN`
     → `s0` = gốc (rộng 1300); `/img/a/…` không có tên file → gắn `#.jpg` cho core đặt đuôi (requests gửi
@@ -330,6 +331,44 @@ cách chạy thật + decode thử ảnh.
     Thực: link Tuổi thơ 1 / Mabu 7 → `Dragon Ball` 41 tập (16 preview); DBS → `Dragon Ball Super` 24; tải
     Chapter 11 → `Chapter 11 - Hồi Piccolo - Tập 2 (preview)` 45/45. Folder hồi cũ (vd 9 tập Tuổi thơ) KHÔNG
     được nhận lại (core khớp folder chương theo tên đầy đủ) → xoá rồi tải lại.
+    **Sửa tay tiêu đề + khung `class="image-container"` (09/10, user chốt)** — link nhãn Asterix chỉ ra 21/25
+    bài: 2 bài đúng ra thuộc bộ bị tách vì tên trước "Tập" lệch — "TRUYỆN TRANH ASTÉRIX VÀ OBÉLIX TẬP 1-5"
+    (thân bài CHỈ có Tập 1 bản scan Kim Đồng 44 trang + mục lục; tập 2–5 là bài riêng) và "Astérix và Điểu Sư
+    - Tập 39 (Preview)". 2 bài còn lại loại là ĐÚNG (Ngoại truyện = giới thiệu 3 cuốn tiếng Anh + link tải;
+    Oumpah-Pah = bộ khác). Giải pháp `_TITLE_FIXES` {đường dẫn bài không ".html" → tiêu đề sửa} áp vào cả
+    `_post` (feed) lẫn `_anchor` (HTML) TRƯỚC `_parse` → đi luật thường (Chapter 1 "Astérix người Gaulois",
+    39 "Astérix và Điểu Sư (preview)"). Cân nhắc rồi BỎ luật tự động "bài lẻ có stem bắt đầu bằng stem bộ
+    chính + số còn trống → gộp" (579 bài chỉ khớp đúng 2 bài này) vì tên chương 1 vẫn "Tập 1-5" và bài lẻ có
+    thêm bài cùng tên sẽ tách ra lại. Bài Tập 1-5 dùng khung `div.image-container` (class, trong `div.mb-wrap
+    mb-style-3`) mà parser chỉ nhận id → rơi dự phòng; nay `_is_box` nhận cả class. Bài có 2 khung
+    `image-container` (khung 2 = "thông tin chú thích") → vẫn chỉ lấy khung ĐẦU. **Kiểm**: mô phỏng 579 bài
+    → chỉ 24 link Asterix đổi (21 → 23 tập, 21 tập cũ y nguyên số/tên; bìa link nhãn đổi sang bìa Tập 1 —
+    core không tải lại khi đã có `cover.*`); 28 HTML mẫu 2013–2026 so parser cũ/mới: 24 giống, 4 khác đều tốt
+    hơn/bằng (Asterix 1 + Oumpah-Pah từ dự phòng → khung; Tintin 3 ảnh y hệt; Louca 1 bỏ được 5 ảnh minh hoạ
+    nhân vật trước đây lẫn cuối chương). Bài không có khung nào (Xì trum 2013, Spirou 2016: ảnh nằm thẳng
+    `div.separator`) vẫn đi dự phòng, ảnh đúng. Thực: link nhãn → `Asterix` 23 tập, tải Chapter 1 45/45 (bìa
+    + 44 trang) + Chapter 39 12/12; link bài 1-5 / Điểu Sư → cùng bộ 23 tập.
+    **Hentai2ReadProvider (`name="hentai2read"`, `hentai2read.com`, 08/10/2026)** — truyện/doujinshi 18+
+    tiếng Anh, WordPress sau CF KHÔNG challenge (12 trang chương liên tiếp không 429) → HTTP trần,
+    `referer=None` (đã thử), `png_to_webp` phòng hờ (14/14 chương mẫu 2014–2026 đều JPEG ~1000×1400). Trang
+    HTML không cache, ~2s/request. `www.`/`http` 301 về trần. Trang bộ `/{slug}/`: tên = `<!-- Title -->
+    h3.block-title a` trước `<small>[Original|Doujinshi]</small>` (unescape `&amp;`); ĐỦ list chương trong
+    `ul.nav-chapters` (34/34), link `/{slug}/{số}/` — slug chương = SỐ THẬT, có lẻ `3.5` (khớp số đầu nhãn
+    "N - tên" trên 15 bộ mẫu; slug không phải số → lấy số đầu nhãn, không có → bỏ + báo) → không hậu tố,
+    `into:` được. Tên chương = "" (nhãn hay kèm [END]/[Oneshot], đổi nhãn → đổi folder chương). Trang chương:
+    `var gData = {...}` (object JS nháy đơn) → `'images' : [JSON]` đường dẫn `/{id}/{thư mục}/ccdn0001.jpg`
+    ghép `IMG_BASE="https://static.hentaicdn.com/hentai"` (host lấy từ `getImageUrl` trong `arf-app-*.js`,
+    KHÔNG có trong HTML — CDN đổi thì sửa hằng này). Thư mục (`1u`/`2x`/`3.5c`) + id ≠ mangaID → không đoán.
+    ⚠️ `gData.nextURL` của bộ Ongoing trỏ chương N+1 chưa có → trang 200 "Coming soon" không gData → list
+    CHỈ từ trang bộ; gặp trang đó thì chapter_images [] + báo. ⚠️ URL ảnh sai → 404 KÈM JPEG giữ chỗ 400×400
+    (core xét status). ⚠️ Bìa site `img1.hentaicdn.com/hentai/cover/_S{id}.jpg` = trang 1 BÓP MÉO vuông
+    400×400, không có bản lớn → `cover_url` = ảnh 1 của chương nhỏ nhất (thêm 1 request mỗi lượt tải, cache
+    `_pages` dùng chung với chapter_images), lỗi mới lùi về bìa site (user chốt 08/10). Folder =
+    `_short_title(tên h3)`, không gắn mã (user chốt). Link nhận `/{slug}/`, `/{slug}/{số}/`, `/{slug}/{số}/
+    {trang}/`, slug trần. `/download/?file=` = trang quảng cáo, không zip. **Đo thực PC (08/10)**: 5 dạng
+    link → đúng slug/tên/list (Tales of a Harem 9 ch 1…3.5…9; Agobitch 34; oneshot 232 trang); tải Tales
+    ch.3 + 3.5 → 62/62 JPEG + cover 1000×1391; `check_one` → `ok` listed_max 9 (Sono Bisque) / 404 →
+    `error`. CHƯA thử trên server.
   - `cf_browser.py` — **tầng TRÌNH DUYỆT THẬT dùng chung cho site sau Cloudflare** (28/09/2026;
     dùng bởi qqcomvn [lấy HTML] + moetruyen [chụp trang] + lxmanga [HTML + DOM list chương, LUÔN dùng
     vì nhà mạng chặn HTTP]). `CFBrowser(profile, host, label,

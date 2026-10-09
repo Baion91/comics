@@ -98,6 +98,16 @@ Một tool cho MỌI site, tự nhận site theo link (hiện hỗ trợ **Asura
 > - Mỗi bản dịch là 1 link riêng — muốn bản tiếng Việt thì mở đúng cuốn tiếng Việt trên site rồi dán link đó.
 > - **Không nhận** link trang danh sách tác giả/tag/series (`...-all.html`) và cuốn loại `anime` (video).
 
+> **Hentai2Read** (hentai2read.com — truyện/doujinshi 18+ tiếng Anh, tên provider `hentai2read`): dán
+> link trang truyện `https://hentai2read.com/{tên}/` (link 1 chương `/{tên}/3/` hay 1 trang đọc
+> `/{tên}/3/5/` cũng được, tool tự về cả bộ). Tải thẳng HTTP, không mở trình duyệt. Cần biết:
+> - Số chương = số trên site (có chương lẻ `3.5`), ghép `into:` được như site thường. Folder = tên tiếng
+>   Anh của bộ, không gắn mã; tên chương chỉ `Chapter N`.
+> - Ảnh JPEG ~1000×1400. **Bìa = trang 1 của chương đầu** (bìa của site bị bóp méo thành ô vuông 400×400).
+> - Trang site chậm (~2 giây/trang) — bộ nhiều chương mất vài giây đọc danh sách trước khi tải.
+> - Bộ đang ra, site có nút "chương sau" dẫn tới trang "Coming soon" giả — tool không đi theo, chỉ lấy
+>   các chương có trong danh sách của trang truyện.
+
 > **Truyện Tranh Pháp Bỉ** (truyentranhphapbi.blogspot.com — blog dịch Tintin, Lucky Luke, Asterix,
 > Doremon/Dragon Ball màu…, tên provider `phapbi`): dán link **1 tập bất kỳ** của bộ (cả link `?m=1` điện
 > thoại và link cũ `www.truyentranhphapbi.com/...`), tool tải **cả bộ**. Link nhãn `.../search/label/Tintin`
@@ -112,6 +122,10 @@ Một tool cho MỌI site, tự nhận site theo link (hiện hỗ trợ **Asura
 >   Dragon Ball Super là nhãn riêng → folder riêng `Dragon Ball Super`.
 > - Số chương = "Tập N" trong tiêu đề; "Tập cuối" = số lớn nhất + 1. Hai bài trùng số → bài mới đăng
 >   giữ N, bài cũ thành N.1 (vd Doremon truyện dài `Chapter 9.1 - Tây Du Ký…`).
+> - Vài bài tác giả đặt tên lệch hẳn đã được **sửa tay** để về đúng bộ: Asterix "Truyện tranh Astérix và
+>   Obélix tập 1-5" (thực chất chỉ chứa Tập 1) → `Chapter 1 - Astérix người Gaulois`; "Astérix và Điểu Sư -
+>   Tập 39" → `Chapter 39`. Link nhãn Asterix ra 23 tập. Gặp bài lạc bộ kiểu khác thì báo để thêm vào danh
+>   sách sửa tay.
 > - **Bài preview** (~1/4 số bài; bản đủ tác giả bán riêng): vẫn tải phần công khai, tên chương có đuôi
 >   **`(preview)`**. ⚠️ Khi tác giả đăng lại bản đủ, lượt kiểm tự động **không** tự tải lại (chương đó
 >   đã có) → muốn bản đủ thì **xoá folder `Chapter N - … (preview)`**, lượt kiểm sau sẽ tải lại.
