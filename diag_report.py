@@ -8,7 +8,8 @@ Nguồn dữ liệu (đều nằm trên máy SERVER):
                    đồng thời; thêm dòng nền: k='libscan' (quét lại thư viện), k='dims'
                    (lưu kho kích thước), selfping 5' kèm RAM reader + số liệu kho.
   - client.jsonl : trình duyệt gửi POST /api/diag — Navigation Timing (SW khởi động,
-                   byte đầu, trang hiện), bấm -> trang mới, đứng luồng chính, sự kiện SW.
+                   byte đầu, trang hiện), bấm -> trang mới, đứng luồng chính, sự kiện SW,
+                   ev='img' = bộ nạp ảnh chương (treo/cụt/lỗi/tải lại tay, từ 11/10).
 Xem báo cáo:
   - python diag_report.py [số giờ]         (in ra màn hình, mặc định 48h gần nhất)
   - bot Telegram /diag                      (tóm tắt + link báo cáo đầy đủ)
@@ -365,6 +366,31 @@ def build_report(meta_dir, hours=48.0, brief=False):
                    if isinstance(r.get("sw"), dict) and (r.get("sw") or {}).get("ver")})
     if vers:
         add(f"  phiên bản SW đã thấy: {', '.join(vers)}")
+
+    # [11] bộ nạp ảnh chương (11/10): mỗi bản ghi = số đếm CỘNG THÊM của 1 trang đọc
+    # từ lần gửi trước (gửi khi ẩn/rời trang, chỉ khi có gì mới)
+    im = [r for r in cl if r.get("ev") == "img"]
+    add("")
+    add("[11] BỘ NẠP ẢNH CHƯƠNG (fetch + canh treo, từ 11/10)")
+    if im:
+        t = {k: sum(r.get(k) or 0 for r in im)
+             for k in ("n", "st", "ns", "tr", "bad", "er", "pe", "mt", "md", "rs", "pre", "wm")}
+        add(f"  {len(im)} bản ghi | ảnh hiện {t['n']} | treo được cứu {t['st']}"
+            f" (cả loạt cùng treo {t['ns']}) | cụt byte {t['tr']} | giải mã hỏng {t['bad']}"
+            f" | lỗi mạng/HTTP {t['er']} | bỏ cuộc (ô chạm để tải lại) {t['pe']}")
+        add(f"  chạm ô chưa hiện {t['mt']} | chạm đúp tải lại {t['md']} | mở lại app phải tải lại"
+            f" ảnh dở {t['rs']} | nhường suất cho ảnh trên màn {t['pre']}"
+            f" | tải trước chương kế {t['wm']} ảnh")
+        recs = [x for r in im for x in (r.get("rec") or []) if isinstance(x, (int, float))]
+        if recs:
+            add(f"  ảnh từng treo/lỗi — từ lúc bắt đầu tải tới khi hiện đủ: {_stat(recs)} (n={len(recs)})")
+        bad = [r for r in im if sum(r.get(k) or 0 for k in ("st", "ns", "tr", "bad", "er", "pe"))]
+        for r in sorted(bad, key=lambda r: -(r.get("rt") or 0))[:5 if brief else 12]:
+            add(f"  {_hm(r.get('rt'))} {_dev(r):<8} {(r.get('path') or '')[:50]} | treo {r.get('st', 0)}"
+                f"+{r.get('ns', 0)} cụt {r.get('tr', 0)} lỗi {r.get('er', 0)} bỏ cuộc {r.get('pe', 0)}"
+                f" | còn chưa hiện {r.get('left')}/{r.get('tot')}")
+    else:
+        add("  (chưa có)")
     return "\n".join(L)
 
 

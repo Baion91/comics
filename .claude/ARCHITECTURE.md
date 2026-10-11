@@ -724,9 +724,9 @@ cách chạy thật + decode thử ảnh.
   như `realesrgan-*`/`cover`/`cover_webp` có sub-folder chứa ảnh bị nhận nhầm thành
   truyện — đã bỏ quét gốc 11/08). Tính năng chính: quét tự động
   2 tầng folder (arc/chương) lẫn phẳng, sort số chương tự nhiên (0.1, 14.2...),
-  ghép trang đôi thủ công (nút ⧉ → POST `/api/spread`), bộ nạp ảnh tuần tự JS
-  kèm retry (tự thử lại 3 lần backoff 1s-3s-8s → ô "chạm để tải lại" → hồi cả
-  cụm khi chạm/`online`/`visibilitychange`), bìa sidecar `cover.*`, **thanh công
+  ghép trang đôi thủ công (nút ⧉ → POST `/api/spread`), bộ nạp ảnh JS (từ 11/10
+  tải bằng `fetch` + canh treo từng gói byte, chỉ gắn ảnh khi đủ byte — xem "Bộ nạp ảnh chương 11/10";
+  bản cũ: `<img src>` tuần tự + retry 1s-3s-8s → ô "chạm để tải lại"), bìa sidecar `cover.*`, **thanh công
   cụ KHÔNG tự bật khi vào chương** (kiểu Asura: `#topbar`/`#botbar` render sẵn class
   `hide`, `hid=true`; thay vào đó hiện pill `#tapcue` "Tap to show controls" nhấp nháy
   nhẹ ở đáy — `pointer-events:none` để chạm xuyên qua cho handler vùng đọc bật bars +
@@ -1249,7 +1249,8 @@ cách chạy thật + decode thử ảnh.
   [card lọt viewport] → lần bấm đầu cũng cache-hit. **⑦ Prefetch trang CHƯƠNG kế/trước** (trị khựng 1-2s khi
   bấm Next / chọn chương): READER_JS lúc rảnh (`requestIdleCallback`) postMessage `{type:'prefetch',urls:[D.next,D.prev]}` (**từ 01/10 chỉ `D.next`**)
   cho cùng hàng đợi SW → Next/Prev sau đó lấy HTML từ cache gần như tức thì; việc render trước còn đo luôn
-  kích thước ảnh chương đó vào kho phía server (`chapter_dims`, xem "Sửa 07/10"). Chỉ nạp HTML, KHÔNG kéo ảnh.
+  kích thước ảnh chương đó vào kho phía server (`chapter_dims`, xem "Sửa 07/10"). SW chỉ nạp HTML; ẢNH chương kế
+  do bộ nạp ảnh tự kéo 6 ảnh đầu vào HTTP cache khi chương đang đọc đã về đủ (từ 11/10, xem "Bộ nạp ảnh chương 11/10").
   **⑧ Ảnh chương versioned `?v=mtime`** (22/08, trị **méo ảnh trong reader dù file trên ĐĨA ĐÚNG**): SW cache
   `/img` cache-first + khoá theo URL, nhưng `img_url()` xưa KHÔNG gắn version (khác `/cover`). Khi 1 chương bị
   THAY bằng bản khác kích thước (vd upgrade comix: Asura 720×4000 → Official TappyToon 720×1334), URL
@@ -1279,8 +1280,8 @@ cách chạy thật + decode thử ảnh.
   `GET /api/pages/<sid>/<rel>` (`no-store`, chỉ `stat`) trả `{version, pages:[{n,url,w,h}]}` (`version`
   = sha1 tên+mtime, `url` y hệt `img_url()`); `html_reader` nhúng `D.pv` + gắn `data-f` cho mọi `<img>`;
   `reader.js` `syncPages()` chạy ở `pageshow` (load + bfcache) và `visibilitychange`, lệch version thì
-  vá TẠI CHỖ: ảnh chờ nạp → đổi `im._url` (bộ nạp tuần tự đọc `_url` lúc load, đã xoá `data-src`), ảnh
-  đã/đang tải/lỗi → gán `src` mới, cập nhật `aspect-ratio` (đơn + spread). Cùng khuôn `syncCounts`/
+  vá TẠI CHỖ: đổi `im._url` rồi (từ 11/10) `IMGL.swap(im)` — bộ nạp huỷ lượt đang tải/xếp lại hàng đầu, ảnh
+  đã hiện thì tải bản mới qua bộ nạp (bản cũ: ảnh đã/đang tải/lỗi → gán `src` mới), cập nhật `aspect-ratio` (đơn + spread). Cùng khuôn `syncCounts`/
   `syncReading`. Kiểm ở dev 8099: touch mtime 1 file → `pageshow` → `D.pv` + `src` đổi đúng, ảnh khác
   không đụng. Rác `?v=` cũ trong `IMG_CACHE` vẫn để browser evict (chưa dọn).
   **⑨ Navigation LUÔN trả 1 Response — không bao giờ null** (24/08, trị **"FetchEvent.respondWith received
@@ -1351,6 +1352,43 @@ cách chạy thật + decode thử ảnh.
   **Gotcha đã dính**: SW chuẩn hoá URL prefetch thành TUYỆT ĐỐI (`new URL(raw, origin)`) — trang đọc gửi `D.next`
   tương đối; bản 28/09 gọi `new URL(url)` không base → ném lỗi sau khi tải xong → prefetch chương kế KHÔNG được
   lưu (Next luôn ra mạng 30/09–01/10) và key lệch key điều hướng (chống trùng hụt).
+- **Bộ nạp ảnh chương 11/10 — `fetch` + canh treo, chỉ gắn ảnh khi ĐỦ byte** (`READER_JS`, biến `IMGL`). *Bệnh*:
+  user hay gặp ảnh hiện NỬA TRÊN rồi đứng mãi (nhất là mở chương từ danh sách — 29/37 lần mở), phải về Home vào lại.
+  Bộ đo 10–11/10: retry đi theo bộ 3 (3 suất đang tải bị cắt cùng lúc), có ca ảnh treo mà không retry nào, mở app lại
+  thì nạp dừng 117/221; ~30% request ảnh là tải lại do iOS dọn HTTP cache. Gốc: `<img src>` khi kết nối chết êm
+  (app vào nền, đổi mạng, luồng tunnel đứt) KHÔNG bắn `load` lẫn `error` → ảnh giữ suất tải mãi; Safari vẽ dần
+  phần đã về. Không có lần nào từng prefetch ẢNH chương kế (⑦ chỉ HTML; kho ảnh SW đã bỏ 01/10).
+  *Thiết kế*: `html_reader` gắn `data-src` cho MỌI ảnh (bỏ `src` sẵn 3 ảnh đầu); ảnh chờ mang class `ldg` (nền
+  spinner SVG + chữ "Loading - tap to reload", bỏ hiệu ứng pulse). Bộ nạp 3 suất (`MAX=3`), chọn ảnh từ (vị trí
+  đọc − 1 màn) trở xuống: `fetch(url,{signal})` + đọc `ReadableStream` từng gói → `Blob` → `URL.createObjectURL`
+  → `img.src`, `revokeObjectURL` khi `load`. (1) Không bao giờ hiện nửa ảnh. (2) Chó canh 0.5s: chưa có phản hồi
+  `FIRST`=5s / ngưng giữa chừng `GAP`=2.5s = treo → `AbortController.abort()` + xếp lại đầu hàng; ảnh treo lại thì
+  hạn ×2, ×4 (mạng yếu vẫn xong); nhịp canh trễ >700ms (máy đứng/ngủ dậy) hoặc trang ẩn → không tính vào treo;
+  cả loạt cùng treo (`many`) = nghẽn chung → `netSt` nới hạn chung, không trừ lượt ảnh; treo >`MAXSTALL`=6 → ô
+  "chạm để tải lại" (`perr`). Lỗi HTTP/mạng thật → thử lại 1s-3s-8s như cũ. (3) Đếm byte so `Content-Length`
+  (có content-encoding thì lấy cỡ từ ETag `"mtime_ns-size"`): thiếu/thừa = bản cụt → tải lại `cache:'reload'`
+  ngay; cụt y hệt 2 lần thì nhận (phòng server đổi file). Giải mã hỏng (`onerror` của blob) → cũng reload. (4)
+  Vào lại app sau >3s ẩn / `pageshow` bfcache / `online` → `restartAll()` (chặn 800ms vì pageshow+visibility
+  bắn liền): huỷ mọi lượt đang dở + tải lại, hồi cả ô `perr`. (5) Tay: chạm ô `ldg`/`perr` = tải ngay ô đó (lấn
+  suất ảnh xa nhất); chạm ĐÚP ảnh đã hiện (touch tự bắt <400ms, <12px, `preventDefault` chống zoom, `setBars(!hid)`
+  trả lại thanh công cụ lần chạm 1 đã bật; PC `dblclick`) = tải lại riêng ảnh đó bỏ qua cache. Handler bật/tắt
+  thanh công cụ bỏ qua `img.ldg`/`img.perr`. (6) Cuộn tới ô chưa có mà 3 suất đều bận ảnh xa >1 màn → `bump()`
+  huỷ ảnh xa nhất nhường suất. (7) Chương về đủ + trang đang hiện → sau 1s `GET /api/pages/<D.next>` rồi tải LẦN
+  LƯỢT 6 ảnh đầu (`X-Toony-Kind: warm`, abort 20s) vào HTTP cache → mở chương kế bộ nạp `fetch` cùng URL = trúng
+  cache (đã kiểm: transferSize 0). (8) Bộ đo: `window.TOONY_DIAG(o)` (DIAG_JS) — ev `img` gửi khi ẩn/`pagehide`:
+  n hiện / st treo / ns treo cả loạt / tr cụt / bad giải mã hỏng / er lỗi mạng / pe bỏ cuộc / mt chạm ô / md chạm
+  đúp / rs mở lại phải tải lại / pre nhường suất / wm ảnh warm / rec[] ms từ lúc bắt đầu tới khi hiện của ảnh
+  từng có sự cố / tot / left; `diag_report.py` mục [11]. HTML cũ (trước 11/10, còn trong PAGE_CACHE) có `src` 3
+  ảnh đầu → ảnh xong thì giữ, đang dở thì gỡ `src` cho bộ nạp tải. Trình duyệt thiếu fetch/AbortController/Blob
+  → gán `src` thẳng như xưa. `syncPages()` đổi URL → `IMGL.swap(im)`. JS nằm trong chuỗi Python KHÔNG raw → không
+  dùng `\` (ETag tách bằng split/join, không regex).
+  *Test 11/10* (proxy chèn lỗi trước reader dev, chương 24 ảnh ~470KB): 001/003 treo giữa chừng → tải lại sau ~4s;
+  007 không phản hồi → tải lại sau ~6.4s (nhịp canh trễ do giải mã loạt ảnh, đúng thiết kế); 005 cụt (không
+  Content-Length, đóng êm) → tải lại `no-cache` ngay; 009 nhỏ giọt 15s KHÔNG bị huỷ; 24/24 hiện, không ảnh nửa;
+  Chrome hoàn tất mục cache dở bằng Range (1 fetch = 2 dòng log proxy, không phải chạy trùng); warm 6 ảnh chương 2
+  → mở chương 2 sáu ảnh đầu transferSize 0; chạm đúp → request `no-cache`; diag `{n:24,st:3,tr:1,wm:6}` ra [11].
+  *Rủi ro chưa kiểm*: iPhone thật (bộ nhớ blob chương dài, nhấn giữ lưu ảnh blob, cử chỉ chạm đúp vs zoom).
+  `SW_VERSION` đổi (JS đổi) → PAGE_CACHE xoá 1 lần sau `/update`.
 - **Hồ sơ đọc = 1 JSON CHUNG server-side, không login/cookie/device-id** (05/08): trước đây
   vị trí đọc/chương-đã-đọc để localStorage → **chết theo origin**; user chia sẻ bằng
   cloudflared quick tunnel (`Chia se link doc thu.bat`) đổi URL ngẫu nhiên mỗi lần bật →

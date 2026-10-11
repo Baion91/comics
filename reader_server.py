@@ -1368,8 +1368,9 @@ img{border:0}
 /* Ảnh hỏng hẳn (hết lượt tự retry): cả ô là nút "chạm để tải lại" */
 #strip img.perr{cursor:pointer;min-height:230px;background:#15161b url('data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" width="220" height="120" viewBox="0 0 220 120"><g fill="none" stroke="%239a9aa5" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" transform="translate(93,16) scale(1.4)"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></g><text x="110" y="102" text-anchor="middle" font-family="system-ui,sans-serif" font-size="14" fill="%239a9aa5">Image failed — tap to retry</text></svg>') center no-repeat}
 #strip .spread img.perr{min-height:0}
-@keyframes ldg{50%{background-color:#1e1f27}}
-#strip img.ldg{animation:ldg 1.1s ease-in-out infinite}
+/* Ảnh CHƯA hiện (chờ lượt / đang tải): vòng xoay + "chạm để tải lại". Bộ nạp (11/10)
+   chỉ gắn ảnh khi đã ĐỦ byte -> không bao giờ còn cảnh nửa ảnh đứng hình. */
+#strip img.ldg{cursor:pointer;background:#15161b url('data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" width="180" height="64" viewBox="0 0 180 64"><g transform="translate(90,18)"><circle r="13" fill="none" stroke="%232c2d37" stroke-width="3"/><path d="M0-13a13 13 0 0 1 13 13" fill="none" stroke="%239a9aa5" stroke-width="3" stroke-linecap="round"><animateTransform attributeName="transform" type="rotate" from="0" to="360" dur="0.9s" repeatCount="indefinite"/></path></g><text x="90" y="56" text-anchor="middle" font-family="system-ui,sans-serif" font-size="12" fill="%239a9aa5">Loading - tap to reload</text></svg>') center 28px no-repeat}
 .iconbtn.on{background:#7c3aed;border-color:#7c3aed}
 .spread{position:relative;display:flex;width:min(96vw,200%);
   margin-left:50%;transform:translateX(-50%)}
@@ -1717,6 +1718,7 @@ DIAG_JS = """
     try{ if(navigator.sendBeacon&&navigator.sendBeacon('/api/diag',new Blob([s],{type:'text/plain'}))) return; }catch(e){}
     try{ fetch('/api/diag',{method:'POST',keepalive:true,body:s}); }catch(e){}
   }
+  window.TOONY_DIAG=function(o){ if(o&&typeof o==='object') send(o); };   // trang khác gửi kèm (vd bộ nạp ảnh)
   window.TOONY_MARK_TAP=function(href){
     try{ sessionStorage.setItem('toony_tap',JSON.stringify({t:Date.now(),h:String(href).split('#')[0]})); }catch(e){}
   };
@@ -2170,12 +2172,11 @@ def html_reader(s, rel, user=None):
 
     imgs = []
     for ui, unit in enumerate(units):
-        # 3 đơn vị đầu tải ngay; còn lại để data-src cho bộ nạp tuần tự (JS)
-        # nạp dần theo thứ tự đọc -> mở trang là cả chương tự về như Asura,
-        # nhưng trang sát vị trí đọc luôn được ưu tiên về trước. Ảnh lỗi do
-        # JS tự retry (xem READER_JS), kể cả 3 ảnh đầu.
-        def src_attr(url, ui=ui):
-            return f' src="{url}"' if ui < 3 else f' data-src="{url}"'
+        # MỌI ảnh để data-src cho bộ nạp JS (READER_JS): nạp dần cả chương, ưu tiên
+        # trang sát vị trí đọc, chỉ gắn ảnh khi đã đủ byte, canh treo + tự tải lại.
+        # Trước 11/10 3 ảnh đầu gắn src thẳng -> nằm ngoài bộ nạp, treo là đứng mãi.
+        def src_attr(url):
+            return f' data-src="{url}"'
         if unit[0] == "img":
             fname = unit[1]
             wh = known.get(fname)
@@ -3057,9 +3058,9 @@ READER_JS = """
     if(!hid && Date.now()-barT>600) setBars(true);
     savePos(); markRead();
   },{passive:true});
-  // chạm/click vùng đọc để bật tắt thanh công cụ (trừ ô "chạm để tải lại")
+  // chạm/click vùng đọc để bật tắt thanh công cụ (trừ ô ảnh chưa hiện / "chạm để tải lại")
   document.addEventListener('click',function(e){
-    if(e.target.closest('a,button,select,option,header,footer,img.perr')) return;
+    if(e.target.closest('a,button,select,option,header,footer,img.perr,img.ldg')) return;
     setBars(!hid);
   });
   // phím tắt PC
@@ -3130,93 +3131,320 @@ READER_JS = """
     strip.addEventListener('load',function(e){ if(e.target.tagName==='IMG') fix(e.target); },true);
     [].forEach.call(strip.querySelectorAll('img.nd'),function(im){ if(im.complete) fix(im); });
   })();
-  // --- bộ nạp tuần tự: tải dần cả chương, ưu tiên ảnh từ vị trí đọc trở xuống.
-  // Ảnh lỗi tự thử lại 3 lần (1s-3s-8s); hết lượt thì thành ô "chạm để tải
-  // lại". Chạm 1 ô, có mạng lại, hay mở lại màn hình -> cả cụm ảnh lỗi hồi.
+  // --- bộ nạp ảnh (11/10): tự tải bằng fetch, canh TỪNG GÓI BYTE ----------------------
+  // Bệnh cũ (diag 10–11/10): <img src> tải dở thì iPhone vẽ nửa trên rồi ĐỨNG MÃI — kết
+  // nối chết êm (app vào nền, đổi mạng, luồng tunnel đứt) không bắn load lẫn error ->
+  // ảnh giữ luôn 1/3 suất tải, không gì thử lại, phải về Home vào lại. Nay:
+  //  1. ảnh chỉ gắn lên khi ĐỦ byte (blob) -> không bao giờ hiện nửa ảnh;
+  //  2. canh tiến độ: chưa có phản hồi sau 5s / ngưng giữa chừng 2.5s = TREO -> huỷ
+  //     (AbortController) + tải lại ngay; treo tiếp thì hạn x2, x4 (mạng yếu vẫn xong).
+  //     Cả loạt cùng treo = nghẽn chung -> nới hạn chung, không trừ lượt của ảnh;
+  //  3. đếm byte so kích thước file thật (Content-Length, thiếu thì ETag "mtime-size"):
+  //     thiếu = bản cụt -> tải lại bỏ qua cache (cache:'reload'); cụt y hệt 2 lần thì nhận;
+  //  4. mở lại app (ẩn >3s) / bfcache / có mạng lại: coi kết nối cũ đã chết -> huỷ +
+  //     tải lại ngay mọi ảnh đang dở, hồi cả ô "chạm để tải lại";
+  //  5. tay: chạm ô chưa hiện = tải ngay ô đó; chạm đúp ảnh đã hiện = tải lại riêng ảnh
+  //     đó, bỏ qua cache (phòng iPhone vẽ lỗi mà code không biết);
+  //  6. cuộn tới ô chưa có mà 3 suất đều bận ảnh ở xa (>1 màn) -> nhường suất;
+  //  7. cả chương xong -> tải trước 6 ảnh đầu chương KẾ vào cache HTTP (bấm Next là có);
+  //  8. bộ đo: ev 'img' (treo/cụt/lỗi/tay/thời gian lành) gửi khi ẩn/rời trang.
+  var IMGL=null;
   (function(){
-    var MAX=3, DELAYS=[1000,3000,8000];
-    var pend=[], active=0;
-    var all=[].slice.call(document.querySelectorAll('#strip img'));
-    all.forEach(function(im){
-      im._tries=0;
-      if(im.dataset.src){          // ảnh để dành cho bộ nạp
-        im._url=im.dataset.src;
-        im.removeAttribute('data-src');
-        pend.push(im);
-      }else if(im.getAttribute('src')){ // 3 ảnh đầu: trình duyệt đã tự tải
+    var strip=document.getElementById('strip'); if(!strip) return;
+    var MAX=3, DELAYS=[1000,3000,8000], GAP=2500, FIRST=5000, MAXSTALL=6, WARM=6;
+    var all=[].slice.call(strip.querySelectorAll('img'));
+    var pend=[], act=[], netSt=0;
+    var S={n:0,st:0,ns:0,tr:0,bad:0,er:0,pe:0,mt:0,md:0,rs:0,pre:0,wm:0}, sent={}, rec=[];
+    all.forEach(function(im,i){
+      im._i=i; im._tries=0; im._stalls=0;
+      if(im.dataset.src){ im._url=im.dataset.src; im.removeAttribute('data-src'); }
+      else if(im.getAttribute('src')){          // HTML cũ (trước 11/10) gắn src sẵn 3 ảnh đầu
         im._url=im.src;
-        if(im.complete&&!im.naturalWidth){fail(im);}
-        else if(!im.complete){
-          im.onerror=function(){fail(im);};
-          im.onload=function(){im.onload=im.onerror=null;};
-        }
-      }
+        if(im.complete&&im.naturalWidth) return;  // đã về đủ
+        im.removeAttribute('src');              // đang dở -> bỏ, để bộ nạp tải lại
+      } else return;
+      im.classList.add('ldg'); pend.push(im);
     });
-    function fail(im){
-      im.onload=im.onerror=null;
-      im.removeAttribute('src'); // bỏ src để không hiện icon ảnh vỡ của trình duyệt
-      im.classList.remove('ldg');
-      im._tries++;
-      if(im._tries<=DELAYS.length){
-        setTimeout(function(){pend.push(im);next();},DELAYS[im._tries-1]);
-      }else{
-        im.classList.add('perr');
-      }
+    if(!(window.fetch&&window.AbortController&&window.Blob&&window.URL&&URL.createObjectURL)){
+      pend.forEach(function(im){ im.classList.remove('ldg'); im.src=im._url; });   // trình duyệt quá cũ
+      return;
     }
-    function load(im){
-      active++;
-      im.classList.add('ldg');
-      im.onload=function(){
-        active--;im._tries=0;
-        im.classList.remove('ldg','perr');
-        im.onload=im.onerror=null;
-        next();
-      };
-      im.onerror=function(){active--;fail(im);next();};
-      im.src=im._url;
+    function shown(im){ return !!im.getAttribute('src'); }
+    function queue(im,front){
+      var k=pend.indexOf(im); if(k>=0) pend.splice(k,1);
+      if(!shown(im)) im.classList.add('ldg');
+      if(front){ pend.unshift(im); return; }
+      for(var i=0;i<pend.length;i++){ if(pend[i]._i>im._i){ pend.splice(i,0,im); return; } }
+      pend.push(im);
     }
+    // ảnh đầu tiên từ (vị trí đọc - 1 màn) trở xuống; không có thì ảnh đầu hàng
     function pick(){
-      if(!pend.length) return null;
-      var limit=scrollY-innerHeight, idx=0;
+      var limit=scrollY-innerHeight;
       for(var i=0;i<pend.length;i++){
-        if(pend[i].getBoundingClientRect().top+scrollY>=limit){idx=i;break;}
+        if(pend[i].getBoundingClientRect().top+scrollY>=limit) return pend.splice(i,1)[0];
       }
-      return pend.splice(idx,1)[0];
+      return pend.shift();
+    }
+    function end(j){
+      j.dead=true;
+      var k=act.indexOf(j); if(k>=0) act.splice(k,1);
+      if(j.im._job===j) j.im._job=null;
+    }
+    function kill(j){ end(j); try{ j.ctl.abort(); }catch(e){} }
+    function expSize(r){
+      if(!r.headers.get('content-encoding')){
+        var cl=parseInt(r.headers.get('content-length'),10); if(cl>0) return cl;
+      }
+      var e=(r.headers.get('etag')||'').split('"').join('');   // server: "mtime_ns-size"
+      var n=parseInt(e.split('-').pop(),10);
+      return n>0?n:0;
+    }
+    function start(im){
+      var k=Math.pow(2,Math.min(Math.max(im._stalls,netSt),2));
+      var j={im:im,ctl:new AbortController(),last:Date.now(),hb:false,dead:false,
+             gap:GAP*k,fb:FIRST*k,exp:0};
+      if(!im._t1) im._t1=Date.now();
+      im._job=j; act.push(j);
+      var rl=im._reload; im._reload=false;
+      fetch(im._url,{signal:j.ctl.signal,credentials:'same-origin',cache:rl?'reload':'default'})
+      .then(function(r){
+        if(j.dead) return null;
+        if(!r.ok) throw new Error('HTTP '+r.status);
+        j.hb=true; j.last=Date.now(); netSt=0;
+        j.exp=expSize(r);
+        var type=r.headers.get('content-type')||'';
+        if(!r.body||!r.body.getReader){ j.gap=30000; return r.blob(); }   // không đọc dòng được
+        var rd=r.body.getReader(), parts=[];
+        function pump(){
+          return rd.read().then(function(x){
+            if(j.dead){ try{ rd.cancel(); }catch(e){} return null; }
+            if(x.done) return new Blob(parts,{type:type});
+            parts.push(x.value); j.last=Date.now(); netSt=0;
+            return pump();
+          });
+        }
+        return pump();
+      })
+      .then(function(b){ if(b&&!j.dead) put(j,b); })
+      .catch(function(){ if(j.dead) return; end(j); S.er++; retry(im,false); next(); });
+    }
+    function put(j,b){
+      var im=j.im;
+      if(j.exp&&b.size!==j.exp&&im._bad!==b.size){   // thiếu/thừa byte = bản cụt
+        im._bad=b.size; end(j); S.tr++; im._reload=true; retry(im,true); next(); return;
+      }
+      var url=URL.createObjectURL(b);
+      j.last=Date.now(); j.hb=true; j.gap=Math.max(j.gap,10000);   // đang giải mã: chưa phải treo
+      im.onload=function(){ im.onload=im.onerror=null; URL.revokeObjectURL(url); ok(j); };
+      im.onerror=function(){ im.onload=im.onerror=null; URL.revokeObjectURL(url);
+        if(j.dead) return; end(j); S.bad++; im._reload=true; retry(im,true); next(); };
+      im.src=url;
+    }
+    function ok(j){
+      var im=j.im; end(j);
+      if(im._job) kill(im._job);               // bị huỷ lúc đang giải mã mà vẫn về đủ -> thôi lượt mới
+      var k=pend.indexOf(im); if(k>=0) pend.splice(k,1);
+      im.classList.remove('ldg','perr');
+      if((im._stalls||im._tries||im._bad!=null)&&rec.length<30) rec.push(Date.now()-im._t1);
+      im._tries=0; im._stalls=0; im._bad=null; im._t1=0; S.n++;
+      next();
+    }
+    function giveUp(im){
+      im.classList.remove('ldg');
+      if(shown(im)) return;                    // còn bản cũ đang hiện -> giữ nguyên
+      im.classList.add('perr'); S.pe++;
+    }
+    // lỗi thật (HTTP/mạng): thử lại sau 1s-3s-8s; bản cụt/giải mã hỏng: thử lại ngay
+    function retry(im,now){
+      im._tries++;
+      if(im._tries>DELAYS.length){ giveUp(im); return; }
+      if(now){ queue(im,true); return; }
+      if(!shown(im)) im.classList.add('ldg');
+      setTimeout(function(){
+        if(im._job||pend.indexOf(im)>=0||im.classList.contains('perr')) return;
+        queue(im,true); next();
+      },DELAYS[im._tries-1]);
+    }
+    function stall(j,many){
+      var im=j.im; kill(j);
+      if(many) S.ns++; else { S.st++; im._stalls++; }
+      if(im._stalls>MAXSTALL){ giveUp(im); return; }
+      queue(im,true);
+    }
+    // chó canh 0.5s/nhịp. Nhịp trễ hẳn (máy đứng / vừa ngủ dậy) hoặc trang đang ẩn ->
+    // không tính khoảng đó vào thời gian treo.
+    var wd=0, tick=0;
+    function watch(){
+      if(wd) return;
+      tick=Date.now();
+      wd=setInterval(function(){
+        var now=Date.now(), lag=now-tick-500; tick=now;
+        if(!act.length){ if(!pend.length){ clearInterval(wd); wd=0; } return; }
+        if(document.visibilityState==='hidden'||lag>700){
+          act.forEach(function(j){ j.last=now; }); return;
+        }
+        var dead=act.filter(function(j){ return now-j.last>(j.hb?j.gap:j.fb); });
+        if(!dead.length) return;
+        var many=act.length>1&&dead.length===act.length;
+        if(many) netSt=Math.min(netSt+1,2);
+        dead.forEach(function(j){ stall(j,many); });
+        next();
+      },500);
     }
     function next(){
-      while(active<MAX&&pend.length){
-        var im=pick(); if(!im) return;
-        load(im);
-      }
+      while(act.length<MAX&&pend.length) start(pick());
+      if(act.length||pend.length) watch();
+      else warm();
     }
-    // tín hiệu "mạng có lẽ đã hồi": reset và xếp lại mọi ảnh đã bỏ cuộc;
-    // ảnh được chạm (prio) tải ngay, không xếp hàng
-    function revive(prio){
+    // nhường 1 suất cho ảnh đang cần trên màn hình: huỷ ảnh đang tải XA nhất (>1 màn)
+    function bump(keep){
+      var far=null, fd=innerHeight;
+      act.forEach(function(j){
+        if(j.im===keep) return;
+        var r=j.im.getBoundingClientRect();
+        var d=r.top>innerHeight?r.top-innerHeight:(r.bottom<0?-r.bottom:0);
+        if(d>fd){ fd=d; far=j; }
+      });
+      if(!far) return false;
+      var im=far.im; kill(far); queue(im,false); S.pre++;
+      return true;
+    }
+    function now(im){
+      if(im._job) kill(im._job);
+      queue(im,true);
+      if(act.length>=MAX) bump(im);
+      next();
+    }
+    function revivePerr(except){
       var any=false;
       all.forEach(function(im){
-        if(im!==prio&&im.classList.contains('perr')){
-          im._tries=0;im.classList.remove('perr');
-          pend.push(im);any=true;
-        }
+        if(im===except||!im.classList.contains('perr')) return;
+        im.classList.remove('perr'); im._tries=0; im._stalls=0; queue(im,false); any=true;
       });
-      if(prio){prio._tries=0;prio.classList.remove('perr');load(prio);}
-      if(any)next();
+      return any;
     }
+    var rsT=0;
+    function restartAll(){
+      if(Date.now()-rsT<800) return;           // pageshow + visibilitychange bắn liền nhau
+      rsT=Date.now(); netSt=0;
+      if(act.length) S.rs++;
+      act.slice().forEach(function(j){ var im=j.im; kill(j); queue(im,true); });
+      revivePerr(null);
+      next();
+    }
+    // chạm ô chưa hiện / ô lỗi -> tải ngay ô đó (ô lỗi: hồi luôn cả cụm)
     document.addEventListener('click',function(e){
-      var im=e.target.closest('img.perr');
-      if(im)revive(im);
+      var im=e.target.closest&&e.target.closest('#strip img.perr, #strip img.ldg');
+      if(!im) return;
+      if(im.classList.contains('perr')){
+        revivePerr(im);
+        im.classList.remove('perr'); im._tries=0; im._stalls=0;
+      }
+      S.mt++; now(im);
     });
-    addEventListener('online',function(){revive(null);});
+    // chạm đúp ảnh đã hiện -> tải lại riêng ảnh đó (bỏ qua cache). Tự bắt bằng touch
+    // (chạm 2 lần <400ms, không xê dịch); chặn lần chạm 2 để iOS khỏi phóng to, và trả
+    // thanh công cụ về như cũ (lần chạm 1 đã bật/tắt nó). PC: dblclick.
+    function again(im){
+      if(!shown(im)||im._job||pend.indexOf(im)>=0||im.classList.contains('perr')) return;
+      S.md++; im._reload=true; im._tries=0; im._t1=0;
+      queue(im,true);
+      if(act.length>=MAX) bump(im);
+      next();
+    }
+    var tS=null, tL=null;
+    strip.addEventListener('touchstart',function(e){
+      var t=e.touches[0];
+      tS=(e.touches.length===1&&t)?{x:t.clientX,y:t.clientY,t:Date.now()}:null;
+    },{passive:true});
+    strip.addEventListener('touchend',function(e){
+      var c=e.changedTouches&&e.changedTouches[0], t=Date.now(), s=tS; tS=null;
+      if(!s||!c||t-s.t>350||Math.abs(c.clientX-s.x)>12||Math.abs(c.clientY-s.y)>12){ tL=null; return; }
+      var im=e.target.closest&&e.target.closest('#strip img');
+      if(im&&tL&&tL.im===im&&t-tL.t<400&&Math.abs(c.clientX-tL.x)<40&&Math.abs(c.clientY-tL.y)<40){
+        tL=null;
+        if(shown(im)&&!im._job){ e.preventDefault(); setBars(!hid); again(im); }
+        return;
+      }
+      tL=im?{im:im,t:t,x:c.clientX,y:c.clientY}:null;
+    });
+    strip.addEventListener('dblclick',function(e){
+      var im=e.target.closest&&e.target.closest('#strip img'); if(im) again(im);
+    });
+    // cuộn tới ô chưa có mà 3 suất đều bận ảnh ở xa -> nhường (gộp 250ms/lần)
+    var pq=0;
+    addEventListener('scroll',function(){
+      if(pq) return;
+      pq=setTimeout(function(){
+        pq=0;
+        if(act.length<MAX||!pend.length) return;
+        for(var i=0;i<pend.length;i++){
+          var r=pend[i].getBoundingClientRect();
+          if(r.bottom>0&&r.top<innerHeight){
+            var im=pend[i]; if(bump(im)){ queue(im,true); next(); }
+            return;
+          }
+        }
+      },250);
+    },{passive:true});
+    var hidAt=0;
     document.addEventListener('visibilitychange',function(){
-      if(document.visibilityState==='visible')revive(null);
+      if(document.visibilityState==='hidden'){ hidAt=Date.now(); report(); return; }
+      var away=hidAt?Date.now()-hidAt:0; hidAt=0;
+      if(away>3000) restartAll();
+      else { revivePerr(null); next(); }
     });
+    addEventListener('pageshow',function(e){ if(e.persisted) restartAll(); });
+    addEventListener('online',function(){ rsT=0; restartAll(); });
+    addEventListener('pagehide',report);
+    // chương đã về đủ -> tải trước vài ảnh đầu chương KẾ vào cache HTTP (lần lượt từng
+    // ảnh, chỉ khi trang đang hiện). Mở chương kế: bộ nạp fetch cùng URL -> trúng cache.
+    var warmed=false;
+    function warm(){
+      if(warmed||!D.next||D.next.indexOf('/read/')!==0||strip.querySelector('img.ldg')) return;
+      if(document.visibilityState!=='visible') return;
+      warmed=true;
+      setTimeout(function(){
+        fetch('/api/pages/'+D.next.slice(6),{credentials:'same-origin'})
+        .then(function(r){ return r.ok?r.json():null; })
+        .then(function(res){
+          if(!res||!Array.isArray(res.pages)) return;
+          var urls=res.pages.slice(0,WARM).map(function(p){ return p.url; }).filter(Boolean);
+          (function one(i){
+            if(i>=urls.length||document.visibilityState!=='visible') return;
+            var c=new AbortController(), t=setTimeout(function(){ c.abort(); },20000);
+            fetch(urls[i],{credentials:'same-origin',signal:c.signal,headers:{'X-Toony-Kind':'warm'}})
+              .then(function(r){ return r.ok?r.arrayBuffer():null; })
+              .then(function(b){ clearTimeout(t); if(b) S.wm++; one(i+1); })
+              .catch(function(){ clearTimeout(t); });
+          })(0);
+        }).catch(function(){});
+      },1000);
+    }
+    function report(){
+      var o={ev:'img'}, any=false;
+      for(var k in S){ var d=S[k]-(sent[k]||0); if(d){ o[k]=d; any=true; } sent[k]=S[k]; }
+      if(rec.length){ o.rec=rec.splice(0,30); any=true; }
+      if(!any||!window.TOONY_DIAG) return;
+      o.tot=all.length; o.left=strip.querySelectorAll('img.ldg').length;
+      window.TOONY_DIAG(o);
+    }
+    // syncPages(): URL ảnh đổi (file trên đĩa đổi) -> tải bản mới qua bộ nạp
+    IMGL={swap:function(im){
+      if(im._job){ kill(im._job); queue(im,true); }
+      else if(pend.indexOf(im)<0){
+        im.classList.remove('perr'); im._tries=0; im._stalls=0; queue(im,true);
+      }
+      next();
+    }};
     next();
   })();
   // --- Đồng bộ danh sách ảnh từ nguồn SỐNG (/api/pages, no-store). HTML này có thể
   // là bản SW cache / bfcache CŨ trỏ ?v= cũ (02/09: repair thay ảnh tráo ô nhưng
   // reader vẫn hiện ảnh cũ dù mở lại nhiều lần). So version với D.pv; lệch thì vá
-  // TẠI CHỖ: ảnh chờ nạp -> đổi im._url (bộ nạp đọc lúc load); ảnh đã/đang tải ->
-  // gán src mới (tải lại ngay); cập nhật aspect-ratio (đơn + spread). Không reload.
+  // TẠI CHỖ: ảnh chờ nạp -> đổi im._url (bộ nạp đọc lúc tới lượt); ảnh đã/đang tải
+  // hay từng lỗi -> IMGL.swap (bộ nạp tải bản mới ngay, ảnh cũ giữ tới khi bản mới
+  // về đủ); cập nhật aspect-ratio (đơn + spread). Không reload.
   function syncPages(){
     if(!D.sid||!D.rel) return;
     var api='/api/pages/'+encodeURIComponent(D.sid)+'/'
@@ -3235,10 +3463,7 @@ READER_JS = """
           if(cur===p.url) return;
           im._url=p.url;
           if(p.w&&p.h&&!im.closest('.spread')) im.style.aspectRatio=p.w+'/'+p.h;
-          if(im.getAttribute('src')||im.classList.contains('perr')){
-            im.classList.remove('perr');
-            im.src=p.url;                       // đã/đang tải hoặc từng lỗi -> tải bản mới ngay
-          }
+          if(IMGL) IMGL.swap(im);               // đã/đang tải hoặc từng lỗi -> tải bản mới ngay
         });
         [].slice.call(document.querySelectorAll('#strip .spread')).forEach(function(sp){
           var ims=sp.querySelectorAll('img[data-f]'); if(ims.length!==2) return;
@@ -3257,7 +3482,8 @@ READER_JS = """
   });
   // --- Prefetch trang chương KẾ vào cache SW khi rảnh -> bấm Next gần như tức thì
   // (SW trả HTML từ cache, khỏi round-trip qua tunnel). Việc render trước cũng WARM
-  // luôn cache kích thước ảnh phía server. Chỉ nạp HTML, KHÔNG kéo ảnh chương. Bỏ
+  // luôn cache kích thước ảnh phía server. Chỉ nạp HTML (vài ảnh đầu chương kế do bộ
+  // nạp ảnh tải trước vào cache HTTP khi chương này đã về đủ — xem warm()). Bỏ
   // chương TRƯỚC (01/10): hiếm khi bấm, mà mỗi lượt là 1 render (tập ~300 trang).
   (function(){
     if(!('serviceWorker' in navigator)) return;

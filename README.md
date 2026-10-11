@@ -502,6 +502,12 @@ python reader_server.py --port 8081
   chương đó vào cache Service Worker, đồng thời đo sẵn kích thước ảnh của chương ở phía
   server (kho `.reader-meta/dims-v2.json`, chỉ đọc vài byte đầu mỗi file) nên lần mở
   thật không phải chờ đo.
+- **Ảnh không bao giờ hiện nửa chừng** (từ 11/10): ảnh chỉ hiện khi đã tải **đủ**; trong lúc
+  chờ là ô tối có vòng xoay + chữ "Loading - tap to reload". Mạng chập chờn làm ảnh đứng
+  (vài giây không có byte nào về) thì tự huỷ và tải lại, kể cả khi mở lại app giữa lúc đang
+  tải. Muốn tải ngay một ô đang chờ: **chạm vào ô đó**. Ảnh đã hiện mà trông lỗi: **chạm đúp**
+  vào ảnh để tải lại riêng ảnh đó (PC: nháy đúp). Đọc xong tải hết chương thì 6 ảnh đầu
+  chương kế được tải trước, bấm Next là có ảnh ngay.
 - **Thứ tự chương**: dropdown chọn chương (lúc đang đọc) xếp **mới nhất trên cùng**;
   còn danh sách ở trang truyện mặc định mới-nhất-trên-cùng, bấm **Newest ⇄ Oldest**
   để đảo (xem mục Trang truyện). Prev/Next và First/Latest Chapter luôn đọc xuôi
