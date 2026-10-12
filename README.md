@@ -415,9 +415,12 @@ python pdf_import.py "...\14 - Ba chàng hiệp sĩ mộng mơ"  :: 1 tập bị
   tự + số trang mà bước kiểm tra in ra.) Folder gộp chỉ được chứa PDF; kéo-thả 1 phần cũng lấy cả folder.
 - **Không mất chất lượng**: chỉ nhận PDF loại "mỗi trang = đúng 1 ảnh JPEG phủ kín trang" (bản scan
   thường gặp) và chép **nguyên bytes JPEG** ra file — không nén lại, dung lượng ≈ PDF, ~3–5 giây/cuốn
-  200 trang. Trang khác loại (có chữ/vector, ảnh nén kiểu khác, xoay, CMYK…) → **dừng cả tập, báo
-  trang nào**, không đụng gì. Ảnh kèm **lớp trong suốt**: trình đọc PDF ghép ảnh lên nền trắng — chỉ vài
-  điểm lệch (≤ 64 điểm lệch quá 16/255, vết thừa lúc chỉnh ảnh, vd Doraemon truyện ngắn Vol.01/04) → vẫn
+  200 trang. Cũng nhận PDF **ảnh vừa khổ giấy có lề trắng** (công cụ ghép ảnh → PDF thu ảnh vừa khổ
+  Letter/A4 rồi căn giữa, vd `Doraemon_Long_Stories_v19.PDF`): ảnh nằm trọn trong trang, chạm 2 mép
+  đối diện → **bỏ lề**, vẫn chép JPEG gốc + báo 1 dòng "có trang lề trắng quanh ảnh". Trang khác loại
+  (có chữ/vector, ảnh nén kiểu khác, xoay, CMYK, ảnh tràn ra ngoài trang, ảnh nhỏ lọt giữa trang…) →
+  **dừng cả tập, báo trang nào**, không đụng gì. Ảnh kèm **lớp trong suốt**: trình đọc PDF ghép ảnh
+  lên nền trắng — chỉ vài điểm lệch (≤ 64 điểm lệch quá 16/255, vết thừa lúc chỉnh ảnh, vd Doraemon truyện ngắn Vol.01/04) → vẫn
   chép JPEG gốc; vùng trong suốt thật → trang đó lưu **PNG đã ghép nền trắng** (y như PDF hiển thị,
   không nén mất dữ liệu; nặng hơn JPEG) + báo số trang.
 - Cuối bảng có mục **"Các tập lỗi"** — mỗi tập lỗi 1 dòng lý do (chạy cả thư viện thì phần in phía

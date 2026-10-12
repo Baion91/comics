@@ -630,13 +630,13 @@ cách chạy thật + decode thử ảnh.
   (vòng lặp hỏi thư mục/--fix/--black → chạy).
 - `convert_webp.py` — chuyển PNG→WebP hàng loạt, xuất cây mới `<tên>_webp`,
   không đụng cây gốc. Tách riêng khỏi asura_downloader vì Asura đã webp sẵn.
-- `pdf_import.py` + `Nhap PDF.bat` (07/10/2026, gộp + SMask 08/10) — **nhập truyện PDF**: mỗi PDF đặt
+- `pdf_import.py` + `Nhap PDF.bat` (07/10/2026, gộp + SMask 08/10, vừa khổ có lề 12/10) — **nhập truyện PDF**: mỗi PDF đặt
   THẲNG trong folder truyện (hoặc 1 folder con chứa các PDF bị tách của 1 tập → gộp) → thư mục chương
   `Tập NN` (`001.jpg…`), PDF gốc → `<truyện>/.pdf-goc/`. *Vì sao tách chứ không
   cho reader đọc PDF*: reader + check_library + kho kích thước + ghép trang đôi + chữ ký thư viện đều
   mặc định "chương = thư mục ảnh" (~8–10 chỗ phải sửa, reader phải thêm bộ đọc PDF ngoài stdlib);
   pdf.js trên iPhone thì nặng (80–94MB/cuốn qua tunnel, mất nhớ vị trí/ghép trang). **Chỉ nhận trang
-  "đúng 1 ảnh JPEG phủ kín trang"** (`page_jpeg`): content stream chỉ gồm q/Q/cm/Do/gs/màu/tham số nét
+  "đúng 1 ảnh JPEG phủ kín trang"** (hoặc vừa khổ có lề trắng — dưới) (`page_jpeg`): content stream chỉ gồm q/Q/cm/Do/gs/màu/tham số nét
   (gặp BT/đường vẽ/ảnh inline → từ chối), đúng 1 lần `Do` một Image XObject `/DCTDecode` đơn, không
   `/Decode`/`/Mask`/`/ImageMask`, màu DeviceRGB/Gray hoặc ICCBased 1|3 kênh (không sRGB → cảnh báo),
   `/SMask` (xám 8-bit, không `/Matte`/`/Decode`, không nén DCT/JPX) đục 100% → nhận ngay (Acrobat hay gắn
@@ -648,7 +648,13 @@ cách chạy thật + decode thử ảnh.
   lệch tối đa 13 — viền elip mảnh quanh số trang; Vol.04 trang 11: 14 điểm hơi trong suốt, 2 điểm lệch 57
   — luật cũ "max lệch ≤ 16" từ chối oan cả tập; đều là vết thừa lúc chỉnh ảnh). PNG chứ không WebP/JPEG:
   không nén mất dữ liệu, reader đọc header PNG sẵn; `convert_webp.py` chỉ chạy tay. ExtGState không soft mask/alpha/
-  blend, trang không xoay, CTM không xoay/lật, ảnh phủ vùng crop∩media lệch ≤ max(2pt, 0.5%), không kéo
+  blend, trang không xoay, CTM không xoay/lật, ảnh phủ vùng crop∩media lệch ≤ max(2pt, 0.5%) **hoặc
+  "vừa khổ có lề trắng"** (12/10: nằm trọn trong vùng đó [tràn quá sai số → "PDF cắt bớt ảnh", từ chối]
+  + chạm đủ 1 cặp mép đối diện [`fit_w`/`fit_h`; không chạm cặp nào = ảnh nhỏ lọt giữa trang, có thể là
+  trang dàn ý đồ → từ chối]; KHÔNG đòi căn giữa; lề chắc chắn trống vì content stream chỉ được 1 `Do`
+  → bỏ lề, chép JPEG gốc + 1 dòng cảnh báo qua `warns`. Gặp thật: `Doraemon_Long_Stories_v19.PDF` —
+  công cụ ghép ảnh→PDF thu 183 ảnh vừa khổ Letter 612×792 căn giữa [178 vừa dọc, 5 vừa ngang: bìa
+  500×500 + 4 trang đôi 1500 ngang], luật cũ "phải phủ kín" từ chối cả tập ở trang 1), không kéo
   méo tỉ lệ, header JPEG khớp cỡ khai + RGB/L. Đạt → chép NGUYÊN stream (= file JPEG, pypdf `get_data()`
   không giải mã DCT); không đạt → dừng cả file, không ghi gì (chưa có bộ dựng trang — thêm pypdfium2 khi
   thật sự gặp PDF chữ/vector). Mỗi ảnh qua `check_image_bytes` trước khi ghi. **Tên**: số sau
@@ -665,6 +671,10 @@ cách chạy thật + decode thử ảnh.
   1527.81×2399.7, 1 trang ICC sRGB) → 395/395 ảnh giống từng byte stream trong PDF, 2.9s + 4.9s,
   check_library 0 lỗi, reader 8099: 2 chương, bìa trang 1, 189/206 ảnh tải, tỉ lệ đúng, 0 `nd`, 0 lỗi
   console. Ca giả (PDF Pillow): CCITT/CMYK(`/Decode`)/trang xoay/chèn `BT` đều bị từ chối đúng trang.
+  **Đo 12/10 (vừa khổ)**: Doraemon_Long v19 → dry-run 183/183 đạt, tách thật (bản sao scratchpad) 1.2s,
+  183/183 ảnh giống từng byte stream, check_library 0 lỗi; 9 ca giả dựng lại content stream từ chính PDF
+  đó (phủ kín, crop lệch 0.3pt, vừa ngang sát trên, vừa dọc căn giữa, media gốc lệch 100,50 → đạt; tràn
+  dọc, tràn ngang 10pt, nhỏ lọt giữa, vừa khổ mà kéo méo → từ chối đúng lý do).
   ⚠️ Test `.bat` bằng chuyển hướng stdin phải bỏ `chcp 65001` — dưới 65001 `set /p` đọc file chuyển
   hướng ra RỖNG (gõ phím thật không bị).
   **Gộp tập bị tách (08/10)** — gặp `Doraemon truyện dài/01 - …/` + `14 - …/`: 1 tập = 6 PDF (Aspose,

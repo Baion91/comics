@@ -3,14 +3,16 @@
 tách) -> 1 thư mục chương "Tập NN" chứa ảnh.
 
 Reader chỉ hiểu "chương = thư mục ảnh", nên PDF phải tách ra một lần. Chỉ nhận loại PDF
-"vỏ bọc ảnh": mỗi trang là ĐÚNG 1 ảnh JPEG phủ kín trang (bản scan/ghép ảnh thường gặp).
-Khi đó bytes JPEG trong PDF được chép NGUYÊN TRẠNG ra `001.jpg, 002.jpg...` — không giải
-mã/nén lại, không mất chất lượng, dung lượng ≈ PDF. Trang khác loại (có chữ/vector, ảnh nén
-kiểu khác, nhiều ảnh ghép, xoay, CMYK...) -> DỪNG cả tập + báo trang nào, không đụng gì
-(chưa có bộ dựng trang — thêm khi thật sự gặp). Ảnh kèm lớp trong suốt (SMask): trình đọc
-PDF ghép ảnh lên nền trang trắng — chỉ vài điểm lệch (≤ ALPHA_MAX_PX điểm lệch quá
-ALPHA_TOL/255, vết thừa lúc chỉnh ảnh) -> vẫn chép JPEG gốc; vùng trong suốt thật -> ghép
-lên nền trắng y như PDF hiển thị và lưu RIÊNG trang đó thành PNG (không nén mất dữ liệu).
+"vỏ bọc ảnh": mỗi trang là ĐÚNG 1 ảnh JPEG phủ kín trang (bản scan/ghép ảnh thường gặp),
+hoặc thu vừa khổ giấy có lề trắng (nằm trọn trong trang, chạm 2 mép đối diện — bỏ lề, chỉ
+lấy ảnh). Khi đó bytes JPEG trong PDF được chép NGUYÊN TRẠNG ra `001.jpg, 002.jpg...` — không
+giải mã/nén lại, không mất chất lượng, dung lượng ≈ PDF. Trang khác loại (có chữ/vector, ảnh
+nén kiểu khác, nhiều ảnh ghép, xoay, CMYK, ảnh tràn ra ngoài / nhỏ lọt giữa trang...) -> DỪNG
+cả tập + báo trang nào, không đụng gì (chưa có bộ dựng trang — thêm khi thật sự gặp). Ảnh
+kèm lớp trong suốt (SMask): trình đọc PDF ghép ảnh lên nền trang trắng — chỉ vài điểm lệch
+(≤ ALPHA_MAX_PX điểm lệch quá ALPHA_TOL/255, vết thừa lúc chỉnh ảnh) -> vẫn chép JPEG gốc;
+vùng trong suốt thật -> ghép lên nền trắng y như PDF hiển thị và lưu RIÊNG trang đó thành
+PNG (không nén mất dữ liệu).
 
 Bố cục quyết định cách nhập (không cần tuỳ chọn):
   1) PDF THẲNG trong folder truyện = 1 tập/file:
@@ -103,7 +105,7 @@ SIMPLE_OPS = {b"q", b"Q", b"cm", b"Do", b"gs", b"w", b"J", b"j", b"M", b"d", b"r
 
 
 class NotSimple(Exception):
-    """Trang không phải "đúng 1 ảnh JPEG phủ kín trang" — lý do nằm trong message."""
+    """Trang không phải "đúng 1 ảnh JPEG phủ kín / vừa khổ trang" — lý do nằm trong message."""
 
 
 def chapter_name(stem):
@@ -170,8 +172,9 @@ def _check_colorspace(img, warns):
 
 def page_jpeg(page, warns):
     """(bytes, (W, H), đuôi) của trang nếu trang = ĐÚNG 1 ảnh JPEG phủ kín vùng hiển thị (crop
-    box); không thì ném NotSimple. Bytes = nguyên stream DCTDecode trong PDF = 1 file JPEG
-    ('.jpg'); riêng ảnh có vùng trong suốt thật -> PNG đã ghép nền trắng ('.png')."""
+    box) hoặc vừa khổ có lề trắng (lề bị bỏ); không thì ném NotSimple. Bytes = nguyên stream
+    DCTDecode trong PDF = 1 file JPEG ('.jpg'); riêng ảnh có vùng trong suốt thật -> PNG đã
+    ghép nền trắng ('.png')."""
     if page.rotation % 360:
         raise NotSimple(f"trang xoay {page.rotation}°")
     res = page.get("/Resources")
@@ -226,8 +229,13 @@ def page_jpeg(page, warns):
             mask = (sm, raw)    # có điểm trong suốt -> đo độ lệch khi đã có JPEG (dưới)
     W, H = int(img["/Width"]), int(img["/Height"])
 
-    # Hình học: ảnh không xoay/lật/nghiêng, phủ kín vùng hiển thị (lệch ≤ 0.5%, tối thiểu
-    # 2pt — vd crop box 1527.81×2399.7 trên ảnh 1528×2400), không bị kéo méo tỉ lệ.
+    # Hình học: ảnh không xoay/lật/nghiêng, không bị kéo méo tỉ lệ, và phủ kín vùng hiển thị
+    # (lệch ≤ 0.5%, tối thiểu 2pt — vd crop box 1527.81×2399.7 trên ảnh 1528×2400) HOẶC "vừa
+    # khổ giấy": nằm trọn trong trang + chạm đủ 2 mép đối diện, lề trắng (công cụ ghép ảnh
+    # thành PDF thu ảnh vừa khổ Letter/A4 rồi căn giữa — gặp thật: Doraemon_Long_Stories_v19,
+    # 183 trang trên 612×792). Lề chắc chắn trống (vòng lặp trên chỉ cho đúng 1 lệnh vẽ ảnh) =
+    # nền giấy, không phải nội dung -> bỏ, vẫn chép JPEG gốc. Ảnh tràn ra ngoài trang (PDF cắt
+    # bớt) hoặc nhỏ lọt giữa trang (có thể là trang dàn ý đồ) -> vẫn từ chối.
     if abs(b) > 1e-3 * max(abs(a), abs(d)) or abs(c) > 1e-3 * max(abs(a), abs(d)):
         raise NotSimple("ảnh bị xoay/nghiêng")
     if a <= 0 or d <= 0:
@@ -236,10 +244,16 @@ def page_jpeg(page, warns):
     vx0, vy0 = max(float(mb.left), float(cb.left)), max(float(mb.bottom), float(cb.bottom))
     vx1, vy1 = min(float(mb.right), float(cb.right)), min(float(mb.top), float(cb.top))
     tx, ty = max(2.0, 0.005 * (vx1 - vx0)), max(2.0, 0.005 * (vy1 - vy0))
-    if (abs(e - vx0) > tx or abs(e + a - vx1) > tx
-            or abs(f - vy0) > ty or abs(f + d - vy1) > ty):
-        raise NotSimple(f"ảnh không phủ kín trang (ảnh {a:.0f}×{d:.0f} tại {e:.0f},{f:.0f}; "
-                        f"trang {vx1 - vx0:.0f}×{vy1 - vy0:.0f})")
+    geo = f"ảnh {a:.0f}×{d:.0f} tại {e:.0f},{f:.0f}; trang {vx1 - vx0:.0f}×{vy1 - vy0:.0f}"
+    fit_w = abs(e - vx0) <= tx and abs(e + a - vx1) <= tx
+    fit_h = abs(f - vy0) <= ty and abs(f + d - vy1) <= ty
+    if e < vx0 - tx or e + a > vx1 + tx or f < vy0 - ty or f + d > vy1 + ty:
+        raise NotSimple(f"ảnh tràn ra ngoài trang — PDF cắt bớt ảnh ({geo})")
+    if not (fit_w or fit_h):
+        raise NotSimple(f"ảnh nhỏ hơn trang, không chạm 2 mép đối diện ({geo})")
+    if not (fit_w and fit_h):
+        warns.add(f"có trang lề trắng quanh ảnh (PDF đặt ảnh vừa khổ giấy {vx1 - vx0:.0f}×"
+                  f"{vy1 - vy0:.0f}pt) — bỏ lề, chép JPEG gốc")
     if abs((a / d) / (W / H) - 1) > 0.01:
         raise NotSimple("ảnh bị kéo méo tỉ lệ khi in lên trang")
 
