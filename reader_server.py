@@ -1670,11 +1670,14 @@ TOTOP_JS = """
 # Thanh tiến trình khi chuyển trang (xem #navbar trong CSS). Bắt MỌI click vào link
 # cùng origin (chạy SAU handler của trang nên tôn trọng preventDefault); điều hướng
 # bằng JS (chọn chương, phím mũi tên) gọi TOONY_NAV(url) trước khi đổi location.
+# TOONY_LEAVING = mốc bấm rời trang: iOS huỷ mọi fetch của trang cũ ngay khi điều
+# hướng bắt đầu -> bộ nạp ảnh đọc cờ này để không coi đó là lỗi mạng (xem READER_JS).
 NAV_JS = """
 (function(){
   var bar=null, tmr=0;
   function stop(){ clearTimeout(tmr); if(bar) bar.className=''; }
   window.TOONY_NAV=function(href){
+    window.TOONY_LEAVING=Date.now();
     if(window.TOONY_MARK_TAP) TOONY_MARK_TAP(href);
     clearTimeout(tmr);
     tmr=setTimeout(function(){
@@ -1691,7 +1694,7 @@ NAV_JS = """
     if(u.pathname===location.pathname&&u.search===location.search) return;   // cùng trang
     TOONY_NAV(u.href);
   });
-  addEventListener('pageshow',stop);          // quay lại từ bfcache
+  addEventListener('pageshow',function(){ window.TOONY_LEAVING=0; stop(); });   // quay lại từ bfcache
   addEventListener('pagehide',stop);
 })();
 """
@@ -3147,14 +3150,22 @@ READER_JS = """
   //     đó, bỏ qua cache (phòng iPhone vẽ lỗi mà code không biết);
   //  6. cuộn tới ô chưa có mà 3 suất đều bận ảnh ở xa (>1 màn) -> nhường suất;
   //  7. cả chương xong -> tải trước 6 ảnh đầu chương KẾ vào cache HTTP (bấm Next là có);
-  //  8. bộ đo: ev 'img' (treo/cụt/lỗi/tay/thời gian lành) gửi khi ẩn/rời trang.
+  //  8. bộ đo: ev 'img' (treo/cụt/lỗi/tay/thời gian lành) gửi khi ẩn/rời trang;
+  //  9. (14/10) rời trang / app vào nền: iOS huỷ fetch ngay lúc bấm link -> trước đây đếm
+  //     thành "lỗi" rồi dây chuyền qua CẢ hàng đợi (diag: 1247 lỗi ảo, không request nào
+  //     tới server). Nay lỗi lúc đó = 'ab' (huỷ), không tốn lượt, dừng hàng đợi tới khi
+  //     quay lại; lỗi mạng thật thì chờ 300ms mới mở ảnh kế (chặn dây chuyền chưa biết);
+  //     ảnh thử lại xếp ĐÚNG thứ tự trang (trước: chen đầu hàng -> tải ngược sau lỗi loạt);
+  // 10. (14/10) đo CHỜ TRÊN MÀN HÌNH: ô ảnh lọt vào giữa màn mà chưa có ảnh -> bấm giờ
+  //     (chỉ khi trang đang hiện) tới lúc ảnh hiện = thời gian người đọc nhìn ô trống.
   var IMGL=null;
   (function(){
     var strip=document.getElementById('strip'); if(!strip) return;
     var MAX=3, DELAYS=[1000,3000,8000], GAP=2500, FIRST=5000, MAXSTALL=6, WARM=6;
     var all=[].slice.call(strip.querySelectorAll('img'));
-    var pend=[], act=[], netSt=0;
-    var S={n:0,st:0,ns:0,tr:0,bad:0,er:0,pe:0,mt:0,md:0,rs:0,pre:0,wm:0}, sent={}, rec=[];
+    var pend=[], act=[], netSt=0, gone=false, hold=false;
+    var S={n:0,st:0,ns:0,tr:0,bad:0,er:0,ab:0,pe:0,mt:0,md:0,rs:0,pre:0,wm:0,vs:0,v0:0,vw:0,vq:0},
+        sent={}, rec=[], W=[], WQ=[];
     all.forEach(function(im,i){
       im._i=i; im._tries=0; im._stalls=0;
       if(im.dataset.src){ im._url=im.dataset.src; im.removeAttribute('data-src'); }
@@ -3170,6 +3181,9 @@ READER_JS = """
       return;
     }
     function shown(im){ return !!im.getAttribute('src'); }
+    // đang rời trang: vừa bấm link/chọn chương (<10s; quá thì coi như ở lại) hoặc đã pagehide
+    function leaving(){ var t=window.TOONY_LEAVING||0; return gone||(t>0&&Date.now()-t<10000); }
+    function offPage(){ return leaving()||document.visibilityState==='hidden'; }
     function queue(im,front){
       var k=pend.indexOf(im); if(k>=0) pend.splice(k,1);
       if(!shown(im)) im.classList.add('ldg');
@@ -3226,7 +3240,15 @@ READER_JS = """
         return pump();
       })
       .then(function(b){ if(b&&!j.dead) put(j,b); })
-      .catch(function(){ if(j.dead) return; end(j); S.er++; retry(im,false); next(); });
+      .catch(function(e){
+        if(j.dead) return; end(j);
+        // iOS huỷ vì rời trang / app vào nền: không phải lỗi, không tốn lượt -> xếp lại,
+        // dừng hàng đợi (hold) tới khi trang hiện lại
+        if(offPage()){ S.ab++; hold=true; queue(im,false); return; }
+        S.er++; retry(im,false);
+        if(String(e&&e.message).indexOf('HTTP ')===0) next();   // server vẫn trả lời
+        else setTimeout(next,300);   // lỗi mạng: chậm lại, khỏi dây chuyền cả hàng đợi
+      });
     }
     function put(j,b){
       var im=j.im;
@@ -3247,6 +3269,7 @@ READER_JS = """
       im.classList.remove('ldg','perr');
       if((im._stalls||im._tries||im._bad!=null)&&rec.length<30) rec.push(Date.now()-im._t1);
       im._tries=0; im._stalls=0; im._bad=null; im._t1=0; S.n++;
+      if(im._wp) wDone(im);
       next();
     }
     function giveUp(im){
@@ -3254,7 +3277,9 @@ READER_JS = """
       if(shown(im)) return;                    // còn bản cũ đang hiện -> giữ nguyên
       im.classList.add('perr'); S.pe++;
     }
-    // lỗi thật (HTTP/mạng): thử lại sau 1s-3s-8s; bản cụt/giải mã hỏng: thử lại ngay
+    // lỗi thật (HTTP/mạng): thử lại sau 1s-3s-8s; bản cụt/giải mã hỏng: thử lại ngay.
+    // Thử lại sau chờ: xếp theo THỨ TỰ TRANG (pick() lấy ảnh gần chỗ đọc) — chen đầu
+    // hàng thì sau 1 loạt lỗi, timer nổ theo thứ tự lỗi -> ảnh lỗi sau cùng lên đầu.
     function retry(im,now){
       im._tries++;
       if(im._tries>DELAYS.length){ giveUp(im); return; }
@@ -3262,7 +3287,7 @@ READER_JS = """
       if(!shown(im)) im.classList.add('ldg');
       setTimeout(function(){
         if(im._job||pend.indexOf(im)>=0||im.classList.contains('perr')) return;
-        queue(im,true); next();
+        queue(im,false); next();
       },DELAYS[im._tries-1]);
     }
     function stall(j,many){
@@ -3279,8 +3304,12 @@ READER_JS = """
       tick=Date.now();
       wd=setInterval(function(){
         var now=Date.now(), lag=now-tick-500; tick=now;
-        if(!act.length){ if(!pend.length){ clearInterval(wd); wd=0; } return; }
-        if(document.visibilityState==='hidden'||lag>700){
+        if(!act.length){
+          if(!pend.length){ clearInterval(wd); wd=0; }
+          else if(!offPage()){ hold=false; next(); }   // bấm rời trang mà vẫn ở lại (>10s)
+          return;
+        }
+        if(document.visibilityState==='hidden'||lag>700||leaving()){
           act.forEach(function(j){ j.last=now; }); return;
         }
         var dead=act.filter(function(j){ return now-j.last>(j.hb?j.gap:j.fb); });
@@ -3292,7 +3321,7 @@ READER_JS = """
       },500);
     }
     function next(){
-      while(act.length<MAX&&pend.length) start(pick());
+      if(!hold&&!leaving()) while(act.length<MAX&&pend.length) start(pick());
       if(act.length||pend.length) watch();
       else warm();
     }
@@ -3389,14 +3418,60 @@ READER_JS = """
     },{passive:true});
     var hidAt=0;
     document.addEventListener('visibilitychange',function(){
-      if(document.visibilityState==='hidden'){ hidAt=Date.now(); report(); return; }
-      var away=hidAt?Date.now()-hidAt:0; hidAt=0;
+      var t=Date.now();
+      if(document.visibilityState==='hidden'){ hidAt=t; inV.forEach(function(im){ wOff(im,t); }); report(); return; }
+      var away=hidAt?t-hidAt:0; hidAt=0; hold=false;
+      inV.forEach(function(im){ wIn(im,t); });
       if(away>3000) restartAll();
       else { revivePerr(null); next(); }
     });
-    addEventListener('pageshow',function(e){ if(e.persisted) restartAll(); });
+    addEventListener('pageshow',function(e){ if(e.persisted){ gone=false; hold=false; restartAll(); } });
     addEventListener('online',function(){ rsT=0; restartAll(); });
-    addEventListener('pagehide',report);
+    addEventListener('pagehide',function(){ gone=true; wFlush(); report(); });
+    // --- đo chờ trên màn hình (14/10) — thứ người đọc thật sự thấy, thay cho đếm request.
+    // Ô ảnh lọt vào dải giữa màn (bỏ 20% mép trên/dưới) mà chưa có ảnh: bấm giờ, chỉ tính
+    // lúc trang đang hiện; ảnh hiện -> chốt tổng thời gian ô trống nằm trên màn.
+    //   vs = số ảnh lọt vào màn lần đầu | v0 = trong đó có sẵn (hoặc chờ <150ms)
+    //   vw + w[] = phải chờ (ms) | vq + wq[] = rời chương khi ô vẫn trống (đã chờ bao lâu)
+    var inV=[];
+    function ready(im){ return !!im.getAttribute('src')&&im.complete&&im.naturalWidth>0; }
+    function wIn(im,t){
+      if(document.visibilityState!=='visible') return;
+      if(!im._seen){ im._seen=1; S.vs++;
+        if(ready(im)){ S.v0++; return; }
+        im._wp=1; }
+      if(im._wp&&!im._w0) im._w0=t;
+    }
+    function wOff(im,t){ if(im._w0){ im._ws=(im._ws||0)+Math.max(0,t-im._w0); im._w0=0; } }
+    function wNow(){                           // đã bấm rời trang: chỉ tính tới lúc bấm
+      var t=Date.now(), l=window.TOONY_LEAVING||0;
+      return (l>0&&l<t&&t-l<10000)?l:t;
+    }
+    function wDone(im){
+      wOff(im,wNow()); im._wp=0;
+      var ws=im._ws||0; im._ws=0;
+      if(ws<150) S.v0++; else { S.vw++; if(W.length<60) W.push(ws); }
+    }
+    function wFlush(){                         // rời chương: ô còn trống -> ghi đã chờ bao lâu
+      var t=wNow();
+      all.forEach(function(im){
+        if(!im._wp) return;
+        wOff(im,t); im._wp=0;
+        var ws=im._ws||0; im._ws=0;
+        if(ws>=150){ S.vq++; if(WQ.length<30) WQ.push(ws); }
+      });
+    }
+    if(window.IntersectionObserver){
+      var io=new IntersectionObserver(function(es){
+        var t=Date.now();
+        es.forEach(function(e){
+          var im=e.target, k=inV.indexOf(im);
+          if(e.isIntersecting){ if(k<0) inV.push(im); wIn(im,t); }
+          else { if(k>=0) inV.splice(k,1); wOff(im,t); }
+        });
+      },{rootMargin:'-20% 0px -20% 0px'});
+      all.forEach(function(im){ io.observe(im); });
+    }
     // chương đã về đủ -> tải trước vài ảnh đầu chương KẾ vào cache HTTP (lần lượt từng
     // ảnh, chỉ khi trang đang hiện). Mở chương kế: bộ nạp fetch cùng URL -> trúng cache.
     var warmed=false;
@@ -3425,6 +3500,8 @@ READER_JS = """
       var o={ev:'img'}, any=false;
       for(var k in S){ var d=S[k]-(sent[k]||0); if(d){ o[k]=d; any=true; } sent[k]=S[k]; }
       if(rec.length){ o.rec=rec.splice(0,30); any=true; }
+      if(W.length){ o.w=W.splice(0,60); any=true; }
+      if(WQ.length){ o.wq=WQ.splice(0,30); any=true; }
       if(!any||!window.TOONY_DIAG) return;
       o.tot=all.length; o.left=strip.querySelectorAll('img.ldg').length;
       window.TOONY_DIAG(o);

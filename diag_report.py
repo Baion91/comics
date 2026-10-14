@@ -9,7 +9,8 @@ Nguồn dữ liệu (đều nằm trên máy SERVER):
                    (lưu kho kích thước), selfping 5' kèm RAM reader + số liệu kho.
   - client.jsonl : trình duyệt gửi POST /api/diag — Navigation Timing (SW khởi động,
                    byte đầu, trang hiện), bấm -> trang mới, đứng luồng chính, sự kiện SW,
-                   ev='img' = bộ nạp ảnh chương (treo/cụt/lỗi/tải lại tay, từ 11/10).
+                   ev='img' = bộ nạp ảnh chương (treo/cụt/lỗi/tải lại tay, từ 11/10;
+                   chờ trên màn hình + huỷ do rời trang, từ 14/10).
 Xem báo cáo:
   - python diag_report.py [số giờ]         (in ra màn hình, mặc định 48h gần nhất)
   - bot Telegram /diag                      (tóm tắt + link báo cáo đầy đủ)
@@ -24,6 +25,7 @@ import secrets
 import statistics
 import sys
 import time
+from urllib.parse import unquote
 
 FILES = ("client", "server")
 
@@ -371,19 +373,45 @@ def build_report(meta_dir, hours=48.0, brief=False):
     # từ lần gửi trước (gửi khi ẩn/rời trang, chỉ khi có gì mới)
     im = [r for r in cl if r.get("ev") == "img"]
     add("")
-    add("[11] BỘ NẠP ẢNH CHƯƠNG (fetch + canh treo, từ 11/10)")
+    add("[11] BỘ NẠP ẢNH CHƯƠNG (fetch + canh treo từ 11/10; chờ trên màn, huỷ do rời trang từ 14/10)")
     if im:
         t = {k: sum(r.get(k) or 0 for r in im)
-             for k in ("n", "st", "ns", "tr", "bad", "er", "pe", "mt", "md", "rs", "pre", "wm")}
+             for k in ("n", "st", "ns", "tr", "bad", "er", "ab", "pe", "mt", "md", "rs", "pre", "wm",
+                       "vs", "v0", "vw", "vq")}
         add(f"  {len(im)} bản ghi | ảnh hiện {t['n']} | treo được cứu {t['st']}"
             f" (cả loạt cùng treo {t['ns']}) | cụt byte {t['tr']} | giải mã hỏng {t['bad']}"
             f" | lỗi mạng/HTTP {t['er']} | bỏ cuộc (ô chạm để tải lại) {t['pe']}")
-        add(f"  chạm ô chưa hiện {t['mt']} | chạm đúp tải lại {t['md']} | mở lại app phải tải lại"
+        add(f"  huỷ do rời trang/app vào nền (không phải lỗi) {t['ab']}"
+            f" | chạm ô chưa hiện {t['mt']} | chạm đúp tải lại {t['md']} | mở lại app phải tải lại"
             f" ảnh dở {t['rs']} | nhường suất cho ảnh trên màn {t['pre']}"
             f" | tải trước chương kế {t['wm']} ảnh")
         recs = [x for r in im for x in (r.get("rec") or []) if isinstance(x, (int, float))]
         if recs:
             add(f"  ảnh từng treo/lỗi — từ lúc bắt đầu tải tới khi hiện đủ: {_stat(recs)} (n={len(recs)})")
+        # chờ trên màn hình: ô ảnh nằm giữa màn mà chưa có ảnh (chỉ tính lúc trang đang hiện)
+        num = lambda v: [x for x in (v or []) if isinstance(x, (int, float))]
+        ws = [x for r in im for x in num(r.get("w"))]
+        wq = [x for r in im for x in num(r.get("wq"))]
+        if t["vs"]:
+            add(f"  CHỜ TRÊN MÀN HÌNH: ảnh lọt vào màn {t['vs']} | có sẵn {t['v0']}"
+                f" ({100 * t['v0'] / t['vs']:.0f}%) | phải chờ {t['vw']}: {_stat(ws)}"
+                f" | rời chương khi ô còn trống {t['vq']}: {_stat(wq)}")
+            agg = {}
+            for r in im:
+                w = num(r.get("w")) + num(r.get("wq"))
+                if not w:
+                    continue
+                a = agg.setdefault((_dev(r), r.get("path") or ""), {"n": 0, "w": [], "rt": 0})
+                a["n"] += (r.get("vw") or 0) + (r.get("vq") or 0)
+                a["w"] += w
+                a["rt"] = max(a["rt"], r.get("rt") or 0)
+            if agg:
+                add("  chương phải chờ nhiều nhất (giờ | thiết bị | chương | số ảnh chờ | tổng | lâu nhất):")
+            for (dev, path), a in sorted(agg.items(), key=lambda kv: -sum(kv[1]["w"]))[:3 if brief else 8]:
+                add(f"    {_hm(a['rt'])} {dev:<8} {unquote(path)[:60]} | {a['n']} ảnh | {_fmt(sum(a['w']))}"
+                    f" | {_fmt(max(a['w']))}")
+        else:
+            add("  chờ trên màn hình: (chưa có số — bản đo từ 14/10)")
         bad = [r for r in im if sum(r.get(k) or 0 for k in ("st", "ns", "tr", "bad", "er", "pe"))]
         for r in sorted(bad, key=lambda r: -(r.get("rt") or 0))[:5 if brief else 12]:
             add(f"  {_hm(r.get('rt'))} {_dev(r):<8} {(r.get('path') or '')[:50]} | treo {r.get('st', 0)}"
