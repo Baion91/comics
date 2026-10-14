@@ -630,7 +630,7 @@ cách chạy thật + decode thử ảnh.
   (vòng lặp hỏi thư mục/--fix/--black → chạy).
 - `convert_webp.py` — chuyển PNG→WebP hàng loạt, xuất cây mới `<tên>_webp`,
   không đụng cây gốc. Tách riêng khỏi asura_downloader vì Asura đã webp sẵn.
-- `pdf_import.py` + `Nhap PDF.bat` (07/10/2026, gộp + SMask 08/10, vừa khổ có lề 12/10) — **nhập truyện PDF**: mỗi PDF đặt
+- `pdf_import.py` + `Nhap PDF.bat` (07/10/2026, gộp + SMask 08/10, vừa khổ có lề 12/10, CBZ 15/10) — **nhập truyện PDF/CBZ**: mỗi PDF đặt
   THẲNG trong folder truyện (hoặc 1 folder con chứa các PDF bị tách của 1 tập → gộp) → thư mục chương
   `Tập NN` (`001.jpg…`), PDF gốc → `<truyện>/.pdf-goc/`. *Vì sao tách chứ không
   cho reader đọc PDF*: reader + check_library + kho kích thước + ghép trang đôi + chữ ký thư viện đều
@@ -726,6 +726,25 @@ cách chạy thật + decode thử ảnh.
   *Test*: chặn import `cryptography`/`Crypto` (meta_path) → provider `local_crypt_fallback`: Vol.29 thật,
   AES-128, AES-256 (rỗng + có mật khẩu) → thông báo mới; RC4-128 vẫn qua; có thư viện → 4/4 qua, AES-256
   có mật khẩu → "PDF có mật khẩu".
+  **CBZ (15/10)** — user có `Doraemon - Kindle Edition v001 (2013) (Digital).cbz` (bản rip Kindle, ZIP
+  36 JPEG 1083×1536 màu ~q90 4:4:4 + 1 trang đôi `00017-00018.jpg` 2166×1536 + `Vol 1 Script.txt` lời
+  thoại tiếng Indonesia), hỏi "update vào tool Nhap PDF" → thêm CBZ vào CHÍNH tool này (cùng bố cục/
+  tmp/kiểm/cất), không tool riêng. `find_sources` nhận `.pdf`+`.cbz`; `cbz_pages`: bỏ thư mục, `__MACOSX/`,
+  tên chấm-đầu, `SYS_FILES`; ảnh = đuôi `CBZ_IMG_EXTS` (= `IMG_EXTS` reader), file khác → `warns` "bỏ qua
+  file không phải ảnh"; sắp `_natkey` theo CẢ đường dẫn trong ZIP (nhiều thư mục con → warns); bytes
+  NGUYÊN TRẠNG, đuôi theo `sniff_format` (`.jpeg`→`.jpg`, PNG mang tên `.jpg` → `.png`); `check_image_bytes`
+  NGAY LÚC ĐỌC (khác PDF — để `--dry-run` cũng bắt ảnh hỏng; ghi thì kiểm lại lần 2, rẻ). Mục có mật
+  khẩu (`flag_bits & 1`) / không có ảnh → `NotSimple`; ZIP hỏng → "không đọc được CBZ". Chỉ kiểu 1
+  (thẳng trong folder truyện); CBZ trong folder con → từ chối (không gộp); folder gộp PDF có CBZ → từ chối
+  như cũ ("ngoài PDF còn có"). Gốc → `<truyện>/.cbz-goc/` (`Job.orig_dir`/`Job.what`; `_stash(src,
+  orig_dir)`). Trang ngang (W > H) GIỮ NGUYÊN 1 ẢNH (user chốt: không cắt đôi; bản này đọc PHẢI→TRÁI
+  kiểu Nhật nên cắt thì nửa PHẢI mới là trang trước) — chỉ in "N trang ngang". `pypdf` chỉ bắt buộc khi
+  có PDF. *Test*: bản sao Kindle v001 → `Tập 01` 36/36 ảnh giống từng byte (018 = trang đôi), 0.8s; chạy
+  lại → "đã tách từ trước" + cất ` (2)`; CBZ giả: 2 thư mục con + ComicInfo.xml + `__MACOSX` + PNG tên
+  `.jpg` → `001.jpg 002.png 003.webp 004.png` đúng thứ tự; ảnh cụt → dry-run báo đúng trang; ZIP rác,
+  không ảnh, tên không số, CBZ ngay downloads/ / trong folder con → từ chối; PDF (bản sao Tập 18 phần
+  121) chạy y cũ. `check_library` báo NHẦM "tráo ô" trang 008 của Kindle v001 (trang thường, khung kẻ
+  thẳng hàng — heuristic comix) → `check-ignore.txt`.
 - `reader_server.py` — web reader kiểu Asura (HTML sinh trong Python stdlib; CSS/JS
   từ 21/08 tách ra file tĩnh versioned `/static/*` + có Service Worker `/sw.js`, xem
   mục "Tài nguyên tĩnh + Service Worker"; không dependency ngoài Pillow tùy chọn), port mặc định **8080**, user
@@ -1511,6 +1530,6 @@ python check_library.py [downloads\<Tên>] [--fix] [--recheck] [--workers N] [--
 python asura_downloader.py <URL|slug> ...           # shim cũ, vẫn chạy (mặc định Asura)
 # hoặc double-click "Tai truyen.bat" trong folder rồi dán link
 python convert_webp.py "<folder>" [--quality 90] [--jpg-too]
-python pdf_import.py ["downloads\<Tên>" | "<file>.pdf" | "<truyện>\<folder các phần>"] [--dry-run]   # PDF -> "Tập NN"; folder con = gộp (hoặc Nhap PDF.bat)
+python pdf_import.py ["downloads\<Tên>" | "<file>.pdf|.cbz" | "<truyện>\<folder các phần>"] [--dry-run]   # PDF/CBZ -> "Tập NN"; folder con = gộp PDF (hoặc Nhap PDF.bat)
 python reader_server.py [--port 8080]   # thường bật bằng shortcut "Toony"
 ```

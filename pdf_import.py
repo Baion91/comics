@@ -1,6 +1,12 @@
 #!/usr/bin/env python3
-"""Nhập truyện dạng PDF vào thư viện: mỗi tập (1 file PDF, hoặc 1 folder chứa các phần bị
-tách) -> 1 thư mục chương "Tập NN" chứa ảnh.
+"""Nhập truyện dạng PDF (hoặc CBZ) vào thư viện: mỗi tập (1 file PDF/CBZ, hoặc 1 folder chứa
+các PDF bị tách) -> 1 thư mục chương "Tập NN" chứa ảnh.
+
+CBZ (= file ZIP chứa ảnh, vd bản rip Kindle/digital): ảnh chép NGUYÊN TRẠNG theo thứ tự tên
+(sắp tự nhiên theo cả đường dẫn trong ZIP), đánh lại `001.jpg, 002.jpg...` (đuôi theo định
+dạng thật). File không phải ảnh (ComicInfo.xml, .txt...) bỏ qua + báo; trang ngang (trang
+đôi) giữ nguyên 1 ảnh. CBZ chỉ nhận kiểu 1 (thẳng trong folder truyện, không gộp), gốc cất
+vào <folder truyện>/.cbz-goc/. Phần còn lại dưới đây nói về PDF.
 
 Reader chỉ hiểu "chương = thư mục ảnh", nên PDF phải tách ra một lần. Chỉ nhận loại PDF
 "vỏ bọc ảnh": mỗi trang là ĐÚNG 1 ảnh JPEG phủ kín trang (bản scan/ghép ảnh thường gặp),
@@ -65,9 +71,10 @@ import shutil
 import sys
 import time
 import unicodedata
+import zipfile
 from pathlib import Path
 
-from comics_core import Image, check_image_bytes
+from comics_core import Image, check_image_bytes, sniff_format
 
 for _s in (sys.stdout, sys.stderr):
     try:
@@ -77,7 +84,10 @@ for _s in (sys.stdout, sys.stderr):
 
 DOWNLOADS = Path(__file__).resolve().parent / "downloads"
 ORIG_DIR = ".pdf-goc"       # nơi cất PDF gốc, trong folder truyện
+CBZ_ORIG_DIR = ".cbz-goc"   # nơi cất CBZ gốc, trong folder truyện
 TMP_DIR = ".pdf-tmp"        # nơi ghi dở, ở gốc downloads/ (reader bỏ qua folder chấm-đầu)
+# Ảnh nhận trong CBZ = đuôi reader đọc được (IMG_EXTS của reader_server.py).
+CBZ_IMG_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp", ".avif"}
 # Lớp trong suốt (SMask): trình đọc PDF ghép ảnh lên nền trang trắng. Điểm lệch JPEG gốc quá
 # ALPHA_TOL (/255) mà không quá ALPHA_MAX_PX điểm (1 ô 8×8) = vết thừa vô hại -> chép JPEG gốc;
 # nhiều hơn = vùng trong suốt thật -> trang đó lưu PNG đã ghép nền trắng. Gặp thật: Doraemon
@@ -306,6 +316,50 @@ def _flatten_png(data, alpha):
     return buf.getvalue()
 
 
+def cbz_pages(cbz, warns):
+    """[(bytes, (W, H), đuôi)] các trang trong CBZ, sắp tự nhiên theo cả đường dẫn trong ZIP.
+    Bytes chép NGUYÊN TRẠNG; đuôi theo định dạng thật ('.jpeg' -> '.jpg'). File không phải ảnh
+    -> bỏ qua + báo; rác hệ thống (__MACOSX/, ._x, Thumbs.db) -> bỏ im lặng. Không có ảnh / có
+    mật khẩu -> NotSimple."""
+    with zipfile.ZipFile(cbz) as z:
+        imgs, skipped = [], []
+        for info in z.infolist():
+            if info.is_dir():
+                continue
+            parts = info.filename.split("/")
+            base = parts[-1]
+            if parts[0] == "__MACOSX" or base.startswith(".") or base.lower() in SYS_FILES:
+                continue
+            (imgs if Path(base).suffix.lower() in CBZ_IMG_EXTS else skipped).append(info)
+        if not imgs:
+            raise NotSimple("CBZ không có ảnh nào")
+        if any(i.flag_bits & 0x1 for i in imgs):
+            raise NotSimple("CBZ có mật khẩu")
+        imgs.sort(key=lambda i: _natkey(i.filename))
+        dirs = {i.filename.rpartition("/")[0] for i in imgs}
+        if len(dirs) > 1:
+            warns.add(f"ảnh nằm trong {len(dirs)} thư mục con — xếp theo tên thư mục rồi tên file")
+        if skipped:
+            names = [i.filename.rpartition("/")[2] for i in skipped]
+            warns.add("bỏ qua file không phải ảnh: " + ", ".join(names[:5])
+                      + ("…" if len(names) > 5 else ""))
+        pages = []
+        for n, info in enumerate(imgs, 1):
+            data = z.read(info)     # zipfile tự kiểm CRC
+            # Kiểm ngay lúc đọc (rẻ, khác PDF) để --dry-run cũng bắt được ảnh hỏng.
+            verdict, detail = check_image_bytes(data, who=f"{cbz.name}/{info.filename}")
+            if verdict != "ok":
+                raise NotSimple(f"trang {n} ({info.filename}): ảnh lỗi ({verdict}: {detail})")
+            fmt = sniff_format(data)
+            ext = (".jpg" if fmt == "jpeg" else f".{fmt}") if fmt else Path(info.filename).suffix.lower()
+            wh = (0, 0)
+            if Image is not None:
+                with Image.open(io.BytesIO(data)) as im:
+                    wh = im.size
+            pages.append((data, wh, ext))
+    return pages
+
+
 def _natkey(s):
     """Sắp tự nhiên: 'x 2' < 'x 10'."""
     return [int(t) if t.isdigit() else t.lower() for t in re.split(r"(\d+)", str(s))]
@@ -316,21 +370,21 @@ def _key(p):
     return unicodedata.normalize("NFC", str(p)).casefold()
 
 
-def find_pdfs(targets):
-    """Danh sách PDF từ đối số (file hoặc folder — tìm cả folder con, bỏ folder chấm-đầu
+def find_sources(targets):
+    """Danh sách PDF/CBZ từ đối số (file hoặc folder — tìm cả folder con, bỏ folder chấm-đầu
     như .pdf-goc). Không đối số = cả downloads/."""
     out = []
     for t in targets or [str(DOWNLOADS)]:
         p = Path(t).resolve()
         if p.is_file():
-            if p.suffix.lower() == ".pdf":
+            if p.suffix.lower() in (".pdf", ".cbz"):
                 out.append(p)
             else:
-                print(f"  ! Bỏ qua (không phải PDF): {p}")
+                print(f"  ! Bỏ qua (không phải PDF/CBZ): {p}")
         elif p.is_dir():
             for root, dirs, files in os.walk(p):
                 dirs[:] = [x for x in dirs if not x.startswith(".")]
-                out += [Path(root) / x for x in files if x.lower().endswith(".pdf")]
+                out += [Path(root) / x for x in files if x.lower().endswith((".pdf", ".cbz"))]
         else:
             print(f"  ! Không thấy: {p}")
     seen, uniq = set(), []
@@ -396,12 +450,16 @@ def check_order(items, counts):
 
 
 class Job:
-    """1 tập cần nhập: các PDF `items` [(pdf, số|None)] theo thứ tự -> thư mục <folder
-    truyện>/<name>. `src` = thứ được cất vào .pdf-goc/ sau khi xong: file PDF (lẻ) hoặc CẢ
-    folder các phần (gộp — 1 lần đổi tên, bị ngắt giữa chừng thì các phần vẫn đủ ở 1 chỗ)."""
+    """1 tập cần nhập: các PDF `items` [(pdf, số|None)] theo thứ tự (hoặc 1 CBZ) -> thư mục
+    <folder truyện>/<name>. `src` = thứ được cất vào .pdf-goc/ (.cbz-goc/) sau khi xong: file
+    PDF/CBZ (lẻ) hoặc CẢ folder các phần (gộp — 1 lần đổi tên, bị ngắt giữa chừng thì các phần
+    vẫn đủ ở 1 chỗ)."""
 
     def __init__(self, items, name, src, merged):
         self.items, self.name, self.src, self.merged = items, name, src, merged
+        self.cbz = not merged and src.suffix.lower() == ".cbz"
+        self.orig_dir = CBZ_ORIG_DIR if self.cbz else ORIG_DIR
+        self.what = "folder PDF gốc" if merged else ("CBZ gốc" if self.cbz else "PDF gốc")
         self.series = src.parent
         self.dest = self.series / name
         self.where = f"{self.series.name}\\{src.name}" + ("\\" if merged else "")
@@ -419,24 +477,28 @@ def _fail(where, why, hint=None, nested=False):
     return False
 
 
-def plan_jobs(pdfs):
-    """Chia PDF thành các tập theo bố cục (xem đầu file). Lỗi bố cục -> in ra, không lập tập.
-    Trả (jobs, số nguồn bị từ chối)."""
+def plan_jobs(srcs):
+    """Chia PDF/CBZ thành các tập theo bố cục (xem đầu file). Lỗi bố cục -> in ra, không lập
+    tập. Trả (jobs, số nguồn bị từ chối)."""
     jobs, bad, folders = [], 0, {}
-    for pdf in pdfs:
+    for pdf in srcs:
         depth = len(pdf.relative_to(DOWNLOADS).parts) if _under(pdf, DOWNLOADS) else 2
         if depth == 1:
             bad += 1
             _fail(pdf.name, "đang nằm ngay downloads\\",
-                  "tạo folder truyện, bỏ PDF vào đó rồi chạy lại")
+                  "tạo folder truyện, bỏ file vào đó rồi chạy lại")
         elif depth == 2:
             name = chapter_name(pdf.stem)
             if name is None:
                 bad += 1
                 _fail(f"{pdf.parent.name}\\{pdf.name}", "tên file không có số tập",
-                      "đổi tên (vd 'Tập 3.pdf') rồi chạy lại")
+                      f"đổi tên (vd 'Tập 3{pdf.suffix.lower()}') rồi chạy lại")
             else:
                 jobs.append(Job([(pdf, None)], name, pdf, merged=False))
+        elif depth == 3 and pdf.suffix.lower() == ".cbz":
+            bad += 1
+            _fail(str(pdf.relative_to(DOWNLOADS)), "CBZ nằm trong folder con",
+                  "CBZ phải nằm thẳng trong folder truyện (1 file = 1 tập, không gộp)")
         elif depth == 3:
             folders.setdefault(pdf.parent, []).append(pdf)
         else:
@@ -517,10 +579,10 @@ def _move(src, dst):
         shutil.move(str(src), str(dst))
 
 
-def _stash(src):
-    """Cất nguồn (file PDF / cả folder gộp) vào <folder truyện>/.pdf-goc/ bằng 1 lần đổi tên
-    (trùng tên thì thêm ' (2)'...)."""
-    dest_dir = src.parent / ORIG_DIR
+def _stash(src, orig_dir):
+    """Cất nguồn (file PDF/CBZ / cả folder gộp) vào <folder truyện>/<orig_dir>/ bằng 1 lần đổi
+    tên (trùng tên thì thêm ' (2)'...)."""
+    dest_dir = src.parent / orig_dir
     dest_dir.mkdir(exist_ok=True)
     is_dir = src.is_dir()
     stem, suffix = (src.name, "") if is_dir else (src.stem, src.suffix)
@@ -535,7 +597,7 @@ def _stash(src):
     return target
 
 
-def _same_as_pdf(folder, pages):
+def _same_as_src(folder, pages):
     """Thư mục đã có có đúng là bản tách từ nguồn này không (cùng số ảnh, từng byte)."""
     try:
         names = sorted((x for x in os.listdir(folder) if (folder / x).is_file()), key=_natkey)
@@ -553,15 +615,16 @@ def _same_as_pdf(folder, pages):
 
 
 def _finish(job, msg):
-    """Cất nguồn vào .pdf-goc/ + in kết quả. Cất không được (file/folder đang bị chương trình
-    khác mở) -> chương đã tách vẫn giữ; chạy lại thì tool thấy 'đã tách từ trước' và chỉ cất."""
-    what = "folder PDF gốc" if job.merged else "PDF gốc"
+    """Cất nguồn vào .pdf-goc/ (.cbz-goc/) + in kết quả. Cất không được (file/folder đang bị
+    chương trình khác mở) -> chương đã tách vẫn giữ; chạy lại thì tool thấy 'đã tách từ trước'
+    và chỉ cất."""
+    what = job.what
     try:
-        moved = _stash(job.src)
+        moved = _stash(job.src, job.orig_dir)
     except OSError as e:
-        print(f"{msg}; NHƯNG chưa cất được {what} vào {ORIG_DIR}/ ({e.strerror or e}) — "
+        print(f"{msg}; NHƯNG chưa cất được {what} vào {job.orig_dir}/ ({e.strerror or e}) — "
               f"đóng chương trình đang mở nó rồi chạy lại")
-        _FAILS.append((job.where, f"đã tách nhưng chưa cất được {what} vào {ORIG_DIR}/ "
+        _FAILS.append((job.where, f"đã tách nhưng chưa cất được {what} vào {job.orig_dir}/ "
                                   f"({e.strerror or e})"))
         return False
     print(f"{msg}; {what} -> {moved.parent.name}/{moved.name}{'/' if job.merged else ''}")
@@ -571,39 +634,47 @@ def _finish(job, msg):
 def import_job(job, dry_run):
     """Tách 1 tập. Trả True nếu xong (hoặc dry-run kiểm đạt), False nếu lỗi/bỏ qua."""
     t0 = time.time()
-    from pypdf import PdfReader     # main() đã kiểm có pypdf
-    from pypdf.errors import DependencyError
 
     def fail(why, hint=None):
         return _fail(job.where, why, hint, nested=True)
 
     warns, pages, counts = set(), [], []
-    for pdf, _ in job.items:
-        who = f"{pdf.name}: " if job.merged else ""
+    if job.cbz:
         try:
-            reader = PdfReader(str(pdf))
-            if reader.is_encrypted and not reader.decrypt(""):
-                return fail(f"{who}PDF có mật khẩu", "bỏ qua")
-            n0 = len(pages)
-            for i, page in enumerate(reader.pages, 1):
-                try:
-                    pages.append(page_jpeg(page, warns))
-                except NotSimple as e:
-                    return fail(f"{who}trang {i}: {e}", "chưa tách được (không đụng gì)")
-        except DependencyError as e:
-            # PDF mã hoá AES (vd Acrobat khoá cấm in/chép, mở không cần mật khẩu): pypdf cần
-            # `cryptography` để giải mã — thiếu thì nó báo lúc kiểm mật khẩu (R6) hoặc lúc đọc
-            # stream (AES-128). Mã hoá RC4 cũ thì pypdf tự giải được, không tới đây.
-            if "AES" not in str(e):
-                return fail(f"{who}không đọc được PDF (thiếu thư viện: {e})")
-            return fail(f"{who}PDF mã hoá AES, thiếu thư viện cryptography để giải mã",
-                        "cài:  python -m pip install cryptography  (hoặc chạy cap-nhat.bat) rồi "
-                        "chạy lại")
-        except Exception as e:
-            return fail(f"{who}không đọc được PDF ({e.__class__.__name__}: {e})")
-        counts.append(len(pages) - n0)
-        if not counts[-1]:
-            return fail(f"{who}PDF không có trang nào")
+            pages = cbz_pages(job.src, warns)
+        except NotSimple as e:
+            return fail(str(e), "chưa tách được (không đụng gì)")
+        except Exception as e:      # ZIP hỏng / sai CRC / không đọc được file
+            return fail(f"không đọc được CBZ ({e.__class__.__name__}: {e})")
+    else:
+        from pypdf import PdfReader     # main() đã kiểm có pypdf
+        from pypdf.errors import DependencyError
+        for pdf, _ in job.items:
+            who = f"{pdf.name}: " if job.merged else ""
+            try:
+                reader = PdfReader(str(pdf))
+                if reader.is_encrypted and not reader.decrypt(""):
+                    return fail(f"{who}PDF có mật khẩu", "bỏ qua")
+                n0 = len(pages)
+                for i, page in enumerate(reader.pages, 1):
+                    try:
+                        pages.append(page_jpeg(page, warns))
+                    except NotSimple as e:
+                        return fail(f"{who}trang {i}: {e}", "chưa tách được (không đụng gì)")
+            except DependencyError as e:
+                # PDF mã hoá AES (vd Acrobat khoá cấm in/chép, mở không cần mật khẩu): pypdf cần
+                # `cryptography` để giải mã — thiếu thì nó báo lúc kiểm mật khẩu (R6) hoặc lúc đọc
+                # stream (AES-128). Mã hoá RC4 cũ thì pypdf tự giải được, không tới đây.
+                if "AES" not in str(e):
+                    return fail(f"{who}không đọc được PDF (thiếu thư viện: {e})")
+                return fail(f"{who}PDF mã hoá AES, thiếu thư viện cryptography để giải mã",
+                            "cài:  python -m pip install cryptography  (hoặc chạy cap-nhat.bat) rồi "
+                            "chạy lại")
+            except Exception as e:
+                return fail(f"{who}không đọc được PDF ({e.__class__.__name__}: {e})")
+            counts.append(len(pages) - n0)
+            if not counts[-1]:
+                return fail(f"{who}PDF không có trang nào")
     if job.merged:
         for k, ((pdf, _), n) in enumerate(zip(job.items, counts), 1):
             print(f"    {k}. {pdf.name}  ({n} trang)")
@@ -615,27 +686,37 @@ def import_job(job, dry_run):
     for w in sorted(warns):
         print(f"  ! {w}")
     png = [i for i, (_, _, ext) in enumerate(pages, 1) if ext == ".png"]
-    if png:
+    if png and not job.cbz:
         print(f"  ! {len(png)} trang có vùng trong suốt thật -> lưu PNG đã ghép nền trắng (y như "
               f"PDF hiển thị): trang {', '.join(map(str, png))}")
+    wide = [i for i, (_, (w, h), _) in enumerate(pages, 1) if w > h]
+    if wide and job.cbz:
+        print(f"  ! {len(wide)} trang ngang (thường là trang đôi, giữ nguyên 1 ảnh): trang "
+              f"{', '.join(map(str, wide))}")
     sizes = {wh for _, wh, _ in pages}
     size_txt = (f"{next(iter(sizes))[0]}×{next(iter(sizes))[1]}" if len(sizes) == 1
                 else f"{len(sizes)} cỡ khác nhau")
+    if job.cbz and len(sizes) == 2 and wide:    # trang dọc + trang đôi: in cỡ trang dọc
+        size_txt = "{}×{}".format(*next(wh for wh in sizes if wh[0] <= wh[1])) + " (+ trang đôi)"
     total = sum(len(dta) for dta, _, _ in pages)
     name, dest = job.name, job.dest
-    kind = f"JPEG + {len(png)} PNG" if png else "JPEG"
+    exts = sorted({ext for _, _, ext in pages})
+    kind = (" + ".join(e[1:].upper().replace("JPG", "JPEG") for e in exts) if job.cbz
+            else f"JPEG + {len(png)} PNG" if png else "JPEG")
     info = f"{len(pages)} trang {kind} {size_txt}, {total / 1048576:.1f}MB"
-    what = "folder PDF gốc" if job.merged else "PDF gốc"
+    what = job.what
 
     if dest.exists():
-        if _same_as_pdf(dest, pages):
+        if _same_as_src(dest, pages):
             if dry_run:
-                print(f"  = '{name}' đã tách từ trước ({info}) — sẽ chỉ cất {what} vào {ORIG_DIR}/")
+                print(f"  = '{name}' đã tách từ trước ({info}) — sẽ chỉ cất {what} vào "
+                      f"{job.orig_dir}/")
                 return True
             return _finish(job, f"  = '{name}' đã tách từ trước")
         return fail(f"đã có thư mục '{name}' (nội dung khác nguồn này)",
                     f"không ghi đè. Đổi tên/xoá thư mục đó hoặc đổi tên "
-                    f"{'folder' if job.merged else 'file PDF'} rồi chạy lại")
+                    f"{'folder' if job.merged else 'file ' + job.src.suffix[1:].upper()} rồi "
+                    f"chạy lại")
     if dry_run:
         print(f"  ✓ -> '{name}/' ({info})")
         return True
@@ -668,24 +749,25 @@ def import_job(job, dry_run):
 
 
 def main():
-    ap = argparse.ArgumentParser(description="Tách PDF (mỗi trang 1 ảnh JPEG) thành thư mục "
-                                             "chương 'Tập NN' cho reader. PDF trong folder con "
-                                             "của truyện = 1 tập bị tách, gộp lại.")
-    ap.add_argument("targets", nargs="*", help="file PDF / folder (mặc định: cả downloads/)")
+    ap = argparse.ArgumentParser(description="Tách PDF (mỗi trang 1 ảnh JPEG) / CBZ thành thư "
+                                             "mục chương 'Tập NN' cho reader. PDF trong folder "
+                                             "con của truyện = 1 tập bị tách, gộp lại.")
+    ap.add_argument("targets", nargs="*", help="file PDF/CBZ / folder (mặc định: cả downloads/)")
     ap.add_argument("--dry-run", action="store_true", help="chỉ kiểm + in kế hoạch, không ghi gì")
     args = ap.parse_args()
 
-    pdfs = find_pdfs(args.targets)
-    if not pdfs:
-        print("Không thấy file PDF nào.")
+    srcs = find_sources(args.targets)
+    if not srcs:
+        print("Không thấy file PDF/CBZ nào.")
         return 2
-    if importlib.util.find_spec("pypdf") is None:
-        print("✗ Thiếu thư viện pypdf — cài:  python -m pip install pypdf")
+    if (any(p.suffix.lower() == ".pdf" for p in srcs)
+            and importlib.util.find_spec("pypdf") is None):
+        print("✗ Thiếu thư viện pypdf (để đọc PDF) — cài:  python -m pip install pypdf")
         return 2
 
     # Chia tập + chặn lỗi bố cục TRƯỚC khi đụng file nào.
     _FAILS.clear()
-    jobs, bad = plan_jobs(pdfs)
+    jobs, bad = plan_jobs(srcs)
     if any(not _under(j.src, DOWNLOADS) for j in jobs):
         print("! Lưu ý: reader chỉ đọc truyện trong downloads\\ — file ngoài đó tách xong "
               "phải tự chép vào.")

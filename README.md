@@ -10,7 +10,7 @@ Các script trong thư mục này, mỗi cái một việc:
 | `Kiem tra truyen.bat` | Bấm để kiểm tra: chọn thư mục (chạy check_library) |
 | `asura_downloader.py` | (cũ, vẫn chạy) lối tắt chỉ-Asura của comic_downloader |
 | `convert_webp.py` | Chuyển PNG→WebP **và** re-nén WebP nặng (comix.to) về q85 — có chế độ nén tại chỗ |
-| `pdf_import.py` / `Nhap PDF.bat` | **Nhập truyện PDF**: mỗi file PDF (hoặc 1 folder các PDF bị tách của 1 tập → gộp) → 1 thư mục chương `Tập NN` (ảnh JPEG gốc) để reader đọc |
+| `pdf_import.py` / `Nhap PDF.bat` | **Nhập truyện PDF / CBZ**: mỗi file PDF hoặc CBZ (hoặc 1 folder các PDF bị tách của 1 tập → gộp) → 1 thư mục chương `Tập NN` (ảnh gốc) để reader đọc |
 | `realesrgan-.../lam-net.bat` | **Làm nét ảnh scan** bằng Real-ESRGAN (AI upscale 2x) |
 | `reader_server.py` | Web đọc truyện kiểu Asura, đọc từ PC lẫn điện thoại |
 
@@ -384,9 +384,9 @@ python convert_webp.py "..." --in-place      :: NÉN WebP TẠI CHỖ (sửa th�
 - **Chạy tay trên server**: bấm **`convert_webp.bat`** → để mức **85** → trả lời **`y`** ở dòng
   *"Nen TAI CHO (…comix cu)?"* để nén tại chỗ (hoặc `N` rồi chọn *"Re-nen ca WebP?"* nếu muốn ra cây `_webp`).
 
-## Nhập truyện PDF — `pdf_import.py` (hoặc bấm `Nhap PDF.bat`)
+## Nhập truyện PDF / CBZ — `pdf_import.py` (hoặc bấm `Nhap PDF.bat`)
 
-Reader chỉ đọc "chương = thư mục ảnh", nên truyện dạng **PDF** phải tách ra 1 lần.
+Reader chỉ đọc "chương = thư mục ảnh", nên truyện dạng **PDF** hoặc **CBZ** phải tách ra 1 lần.
 
 1. Đặt PDF theo 1 trong 2 kiểu (tool tự nhận theo vị trí, không cần chọn chế độ):
    - **1 file = 1 tập**: PDF **thẳng trong folder truyện** — `downloads\Doraemon truyện dài\Long 1 LITE.pdf`.
@@ -435,6 +435,12 @@ python pdf_import.py "...\14 - Ba chàng hiệp sĩ mộng mơ"  :: 1 tập bị
   mở xem không cần mật khẩu; thiếu thì riêng các tập đó báo lỗi kèm lệnh cài
   (`python -m pip install cryptography`). PDF đòi mật khẩu mới mở được → báo "có mật khẩu", bỏ qua.
   Muốn đọc trên server thì chép **thư mục đã tách** (không cần chép PDF) vào `downloads` của server.
+- **CBZ** (file ZIP chứa ảnh, vd bản rip Kindle/digital): chỉ kiểu **1 file = 1 tập**, đặt thẳng trong
+  folder truyện — `downloads\Doraemon Kindle EN\Doraemon - Kindle Edition v001 (2013) (Digital).cbz` →
+  `Tập 01\001.jpg … 036.jpg`. Ảnh chép **nguyên bytes** (không nén lại), xếp theo tên file trong CBZ,
+  đánh lại số `001…`. File không phải ảnh (`ComicInfo.xml`, `.txt`…) bỏ qua + báo; **trang đôi** (ảnh
+  ngang) giữ nguyên 1 ảnh + báo số trang. Ảnh hỏng → bước kiểm tra báo đúng trang, không đụng gì. CBZ
+  gốc cất vào `<folder truyện>\.cbz-goc\`. Không cần `pypdf`.
 
 ## Làm nét ảnh scan — Real-ESRGAN (`realesrgan-ncnn-vulkan-v0.2.0-windows\lam-net.bat`)
 
