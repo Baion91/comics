@@ -1375,7 +1375,7 @@ cách chạy thật + decode thử ảnh.
   `FIRST`=5s / ngưng giữa chừng `GAP`=2.5s = treo → `AbortController.abort()` + xếp lại đầu hàng; ảnh treo lại thì
   hạn ×2, ×4 (mạng yếu vẫn xong); nhịp canh trễ >700ms (máy đứng/ngủ dậy) hoặc trang ẩn → không tính vào treo;
   cả loạt cùng treo (`many`) = nghẽn chung → `netSt` nới hạn chung, không trừ lượt ảnh; treo >`MAXSTALL`=6 → ô
-  "chạm để tải lại" (`perr`). Lỗi HTTP/mạng thật → thử lại 1s-3s-8s như cũ. (3) Đếm byte so `Content-Length`
+  "chạm để tải lại" (`perr`). Lỗi HTTP/mạng thật → thử lại 1s-3s-8s như cũ (từ 14/10 xếp lại theo thứ tự trang, lỗi lúc rời trang/ẩn = `ab` — xem "đợt 14/10"). (3) Đếm byte so `Content-Length`
   (có content-encoding thì lấy cỡ từ ETag `"mtime_ns-size"`): thiếu/thừa = bản cụt → tải lại `cache:'reload'`
   ngay; cụt y hệt 2 lần thì nhận (phòng server đổi file). Giải mã hỏng (`onerror` của blob) → cũng reload. (4)
   Vào lại app sau >3s ẩn / `pageshow` bfcache / `online` → `restartAll()` (chặn 800ms vì pageshow+visibility
@@ -1399,6 +1399,49 @@ cách chạy thật + decode thử ảnh.
   → mở chương 2 sáu ảnh đầu transferSize 0; chạm đúp → request `no-cache`; diag `{n:24,st:3,tr:1,wm:6}` ra [11].
   *Rủi ro chưa kiểm*: iPhone thật (bộ nhớ blob chương dài, nhấn giữ lưu ảnh blob, cử chỉ chạm đúp vs zoom).
   `SW_VERSION` đổi (JS đổi) → PAGE_CACHE xoá 1 lần sau `/update`.
+- **Bộ nạp ảnh — đợt 14/10 theo diag 12–14/10** (`READER_JS` bộ nạp + `NAV_JS` + `diag_report.py` [11]).
+  *Nghiệm thu bộ nạp 11/10 trên iPhone (48h)*: hết bệnh ảnh đứng nửa chừng — 0 treo/cụt/bỏ cuộc, 16k ảnh hiện.
+  Hai điều diag lộ ra: (a) **"1247 lỗi" là ẢO**: mỗi bản ghi lỗi có `er == left` (số ảnh còn chờ) và ngay sau là
+  điều hướng có `tap` → iOS HUỶ mọi `fetch` của trang cũ ngay lúc bấm link, `.catch` đếm lỗi + `next()` mở ảnh
+  kế → hỏng tức thì → dây chuyền qua CẢ hàng đợi (không request nào tới server); (b) **thử lại đảo thứ tự**: lỗi
+  loạt → timer 1s nổ theo thứ tự lỗi, mỗi lần `queue(im,true)` chen đầu hàng → ảnh lỗi sau cùng tải trước.
+  *Sửa*: ① `NAV_JS` `TOONY_NAV()` đặt `window.TOONY_LEAVING=Date.now()` (mọi click link cùng origin + điều hướng
+  JS chọn chương/phím đều đi qua đây), `pageshow` xoá về 0. Bộ nạp: `leaving()` = `gone` (đã `pagehide`) hoặc
+  TOONY_LEAVING <10s; `offPage()` = leaving hoặc trang ẩn. `fetch` hỏng lúc `offPage()` → đếm `ab` (huỷ, KHÔNG
+  phải lỗi), không tốn lượt, xếp lại theo thứ tự trang, bật `hold` (dừng mở ảnh mới). `next()` không mở ảnh khi
+  `hold`/`leaving()`. Hết dừng khi: trang hiện lại (`visibilitychange` xoá `hold`), `pageshow` persisted (xoá
+  `gone`+`hold` rồi `restartAll`), hoặc bấm link mà vẫn ở lại >10s (nhịp canh: không ảnh nào đang tải + còn ảnh
+  chờ + không `offPage()` → chạy tiếp). Nhịp canh không tính treo lúc `leaving()`. ② Lỗi mạng thật (không phải
+  `HTTP xxx`) → `setTimeout(next,300)` thay vì `next()` ngay: điều hướng KHÔNG qua TOONY_NAV (vuốt back, iOS tự
+  tải lại) chỉ dây chuyền ~3 ảnh/300ms thay vì cả hàng trong tích tắc; lỗi `HTTP xxx` (server vẫn trả lời) vẫn
+  `next()` ngay. ③ `retry()` nhánh chờ → `queue(im,false)` (xếp theo `_i` = thứ tự trang; `pick()` lấy ảnh đầu
+  tiên từ vị trí đọc − 1 màn). Nhánh thử lại NGAY (cụt byte/giải mã hỏng), `stall()`, `restartAll()`, chạm tay
+  vẫn chen đầu (1 ảnh hoặc ≤3 ảnh, không đáng kể). ④ **Đo CHỜ TRÊN MÀN HÌNH** (thứ người đọc thật sự thấy, thay
+  cho đếm request): `IntersectionObserver` rootMargin `-20% 0px -20% 0px` (dải giữa màn) trên mọi ảnh; ô lọt vào
+  dải lần đầu → `vs`++; đã có ảnh (`src` + `complete` + `naturalWidth`) → `v0`++; chưa có → bấm giờ `_w0`, chỉ
+  cộng dồn `_ws` lúc trang HIỆN và ô nằm trong dải (ẩn/ra khỏi dải thì dừng, `inV` giữ danh sách đang trong dải để
+  bấm lại khi hiện); ảnh hiện (`ok()`) → chờ <150ms tính `v0`, còn lại `vw`++ + `w[]` (ms, ≤60/bản ghi); `pagehide`
+  → ô vẫn trống → `vq`++ + `wq[]` (≤30). Mốc kết thúc lấy `wNow()` = lúc bấm rời trang (TOONY_LEAVING) nếu đang
+  rời, không phải lúc trang tắt. Báo cáo [11] thêm dòng `huỷ do rời trang/app vào nền` (`ab`) + `CHỜ TRÊN MÀN HÌNH`
+  (lọt màn / có sẵn % / phải chờ trung vị-p90-max / rời chương khi còn trống) + 8 chương chờ nhiều nhất (tên đã
+  giải mã URL).
+  *Test 14/10* (Playwright Chromium headless 390×800 qua proxy giữ ảnh 0.8s, chương 24 ảnh; thay `fetch` trong
+  trang để giả iOS huỷ/rớt mạng, so với code cũ cùng kịch bản): bấm rời trang lúc 3 ảnh đang tải và cả 3 bị huỷ →
+  mới `ab=3, er=0`, đúng 3 lần gọi, không mở ảnh nào nữa (cũ: `er=9` trong 2.5s và còn tiếp); vẫn ở lại >10s → tự
+  tải tiếp đủ 24/24; app vào nền + huỷ → `ab=3`, hiện lại → 24/24; bfcache giả (`pagehide`/`pageshow persisted`) →
+  dừng rồi tải tiếp đủ; rớt mạng 2.5s → sau khi có mạng tải `004→024` đúng thứ tự (cũ: `004,005,006,019,020,022,
+  023,014,024,021,018…`); cuộn nhanh xuống giữa chương → `vs=3 vw=3 w=[320,1339,320]`; rời chương khi ô còn
+  trống → `wq` tính tới lúc bấm. Bấm link thật rồi Back → 24/24.
+  *Đã cân nhắc, KHÔNG làm (user chốt 14/10)*: diag cũng thấy **iPhone web app không dùng lại HTTP cache cho ảnh
+  tải bằng `fetch()`** (72% request ảnh là tải lại, mở lại 1 chương = tải lại đủ ~110MB; warm 6 ảnh chương kế
+  trúng 0/176) — nhưng user đọc chủ yếu wifi, thấy ảnh nhanh → KHÔNG làm kho IndexedDB (~1–1.5GB trên máy, user
+  bác), KHÔNG quay về `<img>` (sợ sống lại bệnh nửa ảnh), KHÔNG làm bản ảnh nhẹ cho điện thoại (đụng ảnh tráo ô
+  `s:1` + trang EN), KHÔNG làm cầu dao mạng; warm giữ nguyên (vô hại, phí ~3.6MB/lần). Webtoons/Asura (soi 14/10)
+  đều `<img>` trơn, không SW/IDB/Cache Storage, chấp nhận tải lại vì ảnh nhẹ (~5.6MB và ~14MB/chương so với ~110MB
+  Doraemon HD) + CDN gần. **Màn trắng 1–2s khi mở app từ icon**: HTML đã nền tối inline + `color-scheme:dark` từ
+  byte đầu → phần trắng là màn khởi động iOS (chưa có `apple-touch-startup-image`); phần của Toony chỉ 0.3s/p90
+  0.5s (bấm Home trong app 0.04s) → chưa làm gì (splash tối chỉ đổi màu, không nhanh hơn; phải xoá/thêm lại icon).
+  `SW_VERSION` đổi (base.js + reader.js đổi) → PAGE_CACHE iPhone xoá 1 lần sau `/update`.
 - **Hồ sơ đọc = 1 JSON CHUNG server-side, không login/cookie/device-id** (05/08): trước đây
   vị trí đọc/chương-đã-đọc để localStorage → **chết theo origin**; user chia sẻ bằng
   cloudflared quick tunnel (`Chia se link doc thu.bat`) đổi URL ngẫu nhiên mỗi lần bật →
