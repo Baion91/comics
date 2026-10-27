@@ -403,14 +403,32 @@ cách chạy thật + decode thử ảnh.
     4 tầng, `make_cbz`, `safe_name`, `append_log`). Vì sao riêng: API mã hóa
     `{"e":...}` + token ký per-request (`secure-*.js` đổi theo build) → phải mở
     Chromium thật (Playwright HEADFUL, dep tùy chọn import lười) cho JS site tự gọi
-    API rồi **hook `JSON.parse`** bắt payload đã giải mã; và 1 chương có NHIỀU bản
-    upload (Official/scan) cần chọn + upgrade — không nhét vừa hợp đồng provider.
+    API rồi ĐỌC payload đã giải mã trong page (`SNAP_JS`, mỗi 0,4s trong `_pump`); và 1
+    chương có NHIỀU bản upload (Official/scan) cần chọn + upgrade — không nhét vừa hợp
+    đồng provider. **Đọc 2 đường song song**: (a) định dạng CŨ — hook `JSON.parse` bắt
+    `{status, result}`; (b) định dạng MỚI (từ ~10/2026, phát hiện 27/10) — site giải mã
+    bằng parser JSON tự viết (hook không thấy) + **XÁO tên trường** (`t9`/`zV`/`e8`/`q4`…,
+    nghi đổi theo build) → đọc **React Query cache** (QueryClient lấy từ props `client`
+    khi đi ngược fiber `__reactFiber$*`), rồi **nhận diện trường THEO GIÁ TRỊ** (url
+    `/title/<slug>/<id>-chapter-N`, id khớp url, mã ngôn ngữ, object nhóm, bool Official;
+    tên quan sát được chỉ để phân xử khi mơ hồ — `KEY_HINTS`) và đổi về dạng cũ
+    (`_canon_chapters` chạy 1 lần trên mọi trang list gộp; `_pages_from_detail`) → phần
+    chọn bản/sidecar/tải không đổi. Không hiểu được dữ liệu dù trang render xong và không
+    query nào đang tải → `SiteChanged` → `run()` in 1 dòng "comix.to đổi cấu trúc…" (thoát 1,
+    KHÔNG chứa từ khoá lỗi mạng của supervisor — xem `_snap_reason`); trang trắng/API
+    chậm vẫn báo kiểu mạng để supervisor giữ job thử lại.
     Chỉ browser lo metadata; ảnh tải bằng HTTP client RIÊNG `ComixImageClient`
     (KHÔNG dùng `core.session` chung — xem "Danh tính tách đôi" ở Quyết định): giả
     vân tay TLS Chrome (`curl_cffi` impersonate, thiếu thì lùi về `requests`) + MƯỢN
     cf_clearance/UA thật từ browser đang sống; refresh vé ở MAIN THREAD (đầu mỗi
     chương + khi 403); 403 chỉ gắn cookie cho host `*.comix.to`, wowpic không cần.
-    URL ảnh `*.wowpicN.store` KHÔNG có đuôi file → tải xong sniff magic bytes đổi đuôi.
+    **Referer theo host**: `Referer: https://comix.to/` CHỈ cho `*.comix.to`/`wowpic*.store`
+    (CDN cũ đòi); CDN MỚI `NNN.<ngẫu nhiên>.site/hi/<token>` (Cloudflare WAF, 10/2026) gặp
+    Referer đó là 403 "you have been blocked" (site dùng `referrerpolicy=no-referrer`).
+    Mỗi trang site cho kèm list domain DỰ PHÒNG (`LR`) → `_ALT_URLS` (giữ tiền tố `NNN.`);
+    `ComixImageClient.get` lỗi ở domain gốc (exception/403/404/5xx, KHÔNG gồm 429) thì thử
+    lần lượt domain dự phòng. URL ảnh (wowpic lẫn CDN mới) KHÔNG có đuôi file → tải xong
+    sniff magic bytes đổi đuôi.
     Luật chọn per chương: `isOfficial` trước → hết official mới tới scan CÓ tên nhóm
     (`id`/chapterId lớn nhất = mới nhất trước) → hết bản có nhóm mới tới scan KHÔNG nhóm
     (id lớn nhất trước). id tăng đơn điệu = độ mới (API không có timestamp thô, chỉ

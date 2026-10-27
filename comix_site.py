@@ -5,10 +5,16 @@ Vì sao không theo hợp đồng provider thường (providers.py):
 - API trả response MÃ HÓA {"e": "..."} + token ký per-request (`_=`, sinh bởi
   secure-*.js đổi theo build) -> KHÔNG craft request bằng requests được.
 - Cách duy nhất đã kiểm chứng: mở trình duyệt thật (Playwright HEADFUL), để chính
-  JS của site gọi API + giải mã, mình hook JSON.parse trong page bắt object
-  {status, result} đã giải mã. Browser CHỈ lo metadata (danh sách chương + URL ảnh);
-  tải ảnh vẫn bằng requests qua PoliteGate của comics_core (CDN *.wowpicN.store
-  chỉ đòi Referer https://comix.to/).
+  JS của site gọi API + giải mã, rồi ĐỌC dữ liệu đã giải mã trong page (SNAP_JS).
+  Trước 10/2026: hook JSON.parse bắt object {status, result}. Từ ~10/2026 (phát hiện
+  27/10): site giải mã bằng parser JSON TỰ VIẾT + XÁO tên trường -> đọc React Query
+  cache, nhận diện trường THEO GIÁ TRỊ rồi đổi về dạng cũ (_canon_chapters,
+  _pages_from_detail); cả 2 đường cùng chạy, đường nào ra dữ liệu thì dùng. Không
+  hiểu được dữ liệu -> SiteChanged (báo rõ, không giả làm lỗi mạng).
+  Browser CHỈ lo metadata (danh sách chương + URL ảnh); tải ảnh vẫn bằng HTTP qua
+  PoliteGate của comics_core. CDN cũ *.wowpicN.store đòi Referer https://comix.to/;
+  CDN mới NNN.<ngẫu nhiên>.site lại CHẶN Referer đó -> Referer gửi theo host
+  (ComixImageClient), kèm domain CDN dự phòng site cho sẵn.
 - 1 chương có NHIỀU bản upload (official + các nhóm scan) -> phải CHỌN bản, và khi
   chạy lại có thể THAY bản scan cũ bằng bản Official mới xuất hiện. Logic này không
   có chỗ trong run() generic nên viết loop riêng, 5 site cũ không bị đụng.
@@ -155,6 +161,54 @@ HOOK_JS = """
 })();
 """
 
+# Ảnh chụp dữ liệu trang cho _pump: (1) rút window.__cap của HOOK_JS (định dạng CŨ) và
+# (2) đọc React Query cache — định dạng MỚI (site đổi ~10/2026: giải mã bằng parser JSON
+# TỰ VIẾT nên JSON.parse không còn thấy payload, xem _canon_chapters). QueryClient lấy từ
+# props `client` của QueryClientProvider: đi NGƯỢC fiber (`__reactFiber$*`) từ phần tử
+# DOM đầu tiên có fiber. Chỉ trả DỮ LIỆU query 'success' có chuỗi `needle` trong key hoặc
+# dữ liệu (bỏ comments/recommended cho nhẹ); query không serialize được thì bỏ qua. Kèm
+# chẩn đoán cho thông báo lỗi: react (trang đã render), client, total (số query), busy
+# (query đang tải / lỗi API — query tắt 'pending'+'idle' không tính).
+SNAP_JS = r"""
+(needle) => {
+  const cap = window.__cap || []; window.__cap = [];
+  const isClient = c => !!c && typeof c.getQueryCache === 'function';
+  let client = isClient(window.__rqc) ? window.__rqc : null, react = !!client;
+  if (!client) {
+    let tried = 0;
+    for (const el of document.querySelectorAll('body *')) {
+      const fk = Object.keys(el).find(k => k.startsWith('__reactFiber$'));
+      if (!fk) continue;
+      react = true;
+      for (let f = el[fk], d = 0; f && d < 400 && !client; f = f.return, d++) {
+        const p = f.memoizedProps;
+        if (p && isClient(p.client)) client = p.client;
+      }
+      if (client || ++tried >= 40) break;
+    }
+    if (client) window.__rqc = client;
+  }
+  const queries = [];
+  let total = 0, busy = 0;
+  if (client) {
+    for (const q of client.getQueryCache().getAll()) {
+      total++;
+      const st = q.state || {};
+      if (st.fetchStatus === 'fetching' || st.status === 'error') busy++;
+      const d = st.data;
+      if (st.status !== 'success' || !d || typeof d !== 'object') continue;
+      try {
+        if (needle && !JSON.stringify(q.queryKey).includes(needle)
+            && !JSON.stringify(d).includes(needle)) continue;
+        queries.push({key: q.queryKey, data: d});
+      } catch (e) {}
+    }
+  }
+  return {cap: cap, react: react, client: !!client, total: total, busy: busy,
+          queries: queries};
+}
+"""
+
 # Giải-xáo trang TRÁO Ô (cờ s:1): dùng CHÍNH thuật toán của site nhưng KHÔNG đọc canvas.
 # chunk secure-*.js xuất hàm `vs` (export 't'); vs(url) trả object có .apply(canvas) — nó
 # tải ảnh xáo rồi VẼ CÁC Ô ĐÃ SẮP LẠI lên canvas bằng nhiều lệnh drawImage (lưới ô, vd
@@ -260,6 +314,330 @@ class FetchStalled(Exception):
     """Nhiều chương LIÊN TIẾP không lấy được ảnh dù browser CÒN SỐNG (nghi bị chặn IP
     mềm / site đổi API). Dừng phiên + báo lỗi thật, thay vì ghi 'để sau' cả bộ rồi
     thoát 0 khiến người dùng tưởng đã tải xong."""
+
+
+class SiteChanged(RuntimeError):
+    """Trang comix mở được nhưng tool KHÔNG đọc ra dữ liệu (site đổi cấu trúc/API) —
+    thử lại vô ích, phải sửa code. run() bắt để in 1 dòng rõ ràng làm tin ❌ của bot.
+    Thông điệp KHÔNG được chứa dấu hiệu lỗi mạng (NET_ERR_MARKERS của supervisor, vd
+    'mạng chập chờn') kẻo supervisor giữ job thử lại âm thầm 4 lần (sự cố 27/10)."""
+
+
+# --- Đọc dữ liệu site — định dạng XÁO TÊN (từ ~10/2026) ---------------------------
+#
+# Phát hiện 27/10/2026 (build 35595e3d...): API vẫn mã hoá {"e":..} nhưng site giải mã ra
+# BYTES rồi parse bằng parser JSON TỰ VIẾT -> hook JSON.parse chỉ còn thấy phong bì; dữ
+# liệu nay lấy từ React Query cache (SNAP_JS). Tên trường còn bị XÁO (items/meta ->
+# t9/zV, isOfficial -> e8, url -> q4...) và nhiều khả năng đổi theo mỗi bản build, nên
+# NHẬN DIỆN TRƯỜNG THEO GIÁ TRỊ (url chương, id khớp url, bool duy nhất...) rồi đổi về
+# đúng dạng CŨ ({id, url, number, language, isOfficial, group, groupId}) — phần còn lại
+# của file không phải biết gì. Tên trong KEY_HINTS CHỈ để phân xử khi nhiều trường cùng
+# hợp lệ theo giá trị (tên xáo có thể bị gán nghĩa khác ở build sau -> không bao giờ tin
+# một tên khi giá trị không khớp). Không chắc chắn -> SiteChanged, KHÔNG đoán bừa rồi tải
+# nhầm bản. Xem [[comix-site-change-oct26]].
+
+CH_URL_RE = re.compile(r"/title/([^/?#]+)/(\d+)-chapter-([^/?#]*)")
+LANG_RE = re.compile(r"^[a-z]{2,3}(?:[-_][a-z0-9]{2,8})?$", re.I)
+DOMAIN_RE = re.compile(r"^[a-z0-9-]+(?:\.[a-z0-9-]+)+$", re.I)
+KEY_HINTS = {          # tên thật (định dạng cũ) + tên xáo quan sát được ở build 10/2026
+    "url": ("url", "q4"), "id": ("id", "yH"), "number": ("number", "_x"),
+    "language": ("language", "UC"), "isOfficial": ("isOfficial", "e8"),
+    "group": ("group", "Jj"), "name": ("name", "ek"), "pages": ("pages", "rB"),
+}
+# URL ảnh -> URL cùng ảnh trên domain DỰ PHÒNG của CDN (site gửi kèm mỗi trang). Ghi ở
+# main thread (fetch_pages), worker tải ảnh chỉ đọc (ComixImageClient.get).
+_ALT_URLS = {}
+
+
+def _is_int(v):
+    return isinstance(v, int) and not isinstance(v, bool)
+
+
+def _is_num(v):
+    return isinstance(v, (int, float)) and not isinstance(v, bool)
+
+
+def _pick(cands, field):
+    """1 ứng viên -> nó; nhiều -> tên trong KEY_HINTS[field]; vẫn mơ hồ -> None."""
+    cands = sorted(set(cands))
+    if len(cands) == 1:
+        return cands[0]
+    for h in KEY_HINTS.get(field, ()):
+        if h in cands:
+            return h
+    return None
+
+
+def _url_num(url):
+    """'/title/x/123-chapter-53.2' -> 53.2 ; không có số -> None."""
+    m = CH_URL_RE.search(url or "")
+    try:
+        return float(m.group(3)) if m and m.group(3) else None
+    except ValueError:
+        return None
+
+
+def _canon_group(g):
+    """Object nhóm (xáo tên) -> {"id", "name"}; None/không phải dict -> None."""
+    if isinstance(g, str):
+        return {"id": None, "name": g} if g else None
+    if not isinstance(g, dict):
+        return None
+    if "name" in g:                                   # định dạng cũ
+        return g
+    strs = [k for k, v in g.items() if isinstance(v, str)]
+    ints = [k for k, v in g.items() if _is_int(v)]
+    nk = _pick(strs, "name") or (sorted(strs)[0] if strs else None)
+    ik = _pick(ints, "id") or (sorted(ints)[0] if ints else None)
+    return {"id": g.get(ik) if ik else None, "name": g.get(nk) if nk else None}
+
+
+def _canon_chapters(raw):
+    """Danh sách bản upload (định dạng xáo tên) -> dạng CŨ. Nhận diện trên TOÀN BỘ danh
+    sách (mọi trang list gộp lại) để đủ dữ liệu khử mơ hồ:
+      url        = chuỗi khớp /title/<slug>/<id>-chapter-<số> ở MỌI bản
+      id         = số nguyên BẰNG <id> trong url
+      number     = số BẰNG <số> trong url (url không có số -> trường số/None); không ra -> lấy từ url
+      language   = mã ngôn ngữ ngắn (en, pt-br...) ở mọi bản
+      group      = object (hoặc null) có chuỗi tên — null = bản không nhóm
+      isOfficial = trường bool (hoặc null); nhiều trường bool -> trường True ở các bản
+                   nhóm official đã biết (OFFICIAL_GROUP_RANK), rồi mới tới KEY_HINTS
+    Định dạng cũ (đã có id/url) trả nguyên. Không chắc -> SiteChanged."""
+    raw = [o for o in raw if isinstance(o, dict)]
+    if not raw or all("id" in o and "url" in o for o in raw):
+        return raw
+    keys = set().union(*(o.keys() for o in raw))
+
+    def every(pred):
+        return [k for k in keys if all(pred(o.get(k), o) for o in raw)]
+
+    url_k = _pick(every(lambda v, o: isinstance(v, str) and CH_URL_RE.search(v)), "url")
+    if not url_k:
+        raise SiteChanged("không nhận ra trường url chương trong danh sách")
+
+    def uid(o):
+        return int(CH_URL_RE.search(o[url_k]).group(2))
+
+    id_k = _pick(every(lambda v, o: _is_int(v) and v == uid(o)), "id")
+    if not id_k:
+        raise SiteChanged("không nhận ra trường id chương (khớp id trong url)")
+
+    num_k = None
+    if any(_url_num(o[url_k]) is not None for o in raw):
+        def num_ok(v, o):
+            u = _url_num(o[url_k])
+            return (v is None or _is_num(v)) if u is None else (_is_num(v) and abs(v - u) < 1e-6)
+        num_c = [k for k in every(num_ok) if k != id_k]
+        # Nhiều trường cùng bằng số trong url ở MỌI bản -> lấy trường nào cũng ra cùng số.
+        num_k = _pick(num_c, "number") or (sorted(num_c)[0] if num_c else None)
+
+    lang_c = every(lambda v, o: isinstance(v, str) and LANG_RE.match(v))
+    lang_k = _pick(lang_c, "language")
+    if lang_k is None and lang_c:     # mơ hồ -> trường mà 'en' xuất hiện nhiều nhất
+        lang_k = max(sorted(lang_c), key=lambda k: sum(o.get(k) == "en" for o in raw))
+    if lang_k is None:
+        raise SiteChanged("không nhận ra trường ngôn ngữ của bản upload")
+
+    grp_c = [k for k in every(lambda v, o: v is None or (
+                 isinstance(v, dict) and any(isinstance(x, str) for x in v.values())))
+             if any(isinstance(o.get(k), dict) for o in raw)]
+    grp_k = _pick(grp_c, "group")
+    if grp_k is None and len(grp_c) > 1:
+        raise SiteChanged(f"mơ hồ trường nhóm dịch ({', '.join(sorted(grp_c))})")
+
+    off_c = [k for k in every(lambda v, o: v is None or isinstance(v, bool))
+             if any(isinstance(o.get(k), bool) for o in raw)]
+    if not off_c:
+        raise SiteChanged("không nhận ra trường Official (bool) của bản upload")
+    off_k = off_c[0] if len(off_c) == 1 else None
+    if off_k is None:
+        known = {_norm_group(n) for n in OFFICIAL_GROUP_RANK}
+
+        def score(k):
+            s = 0
+            for o in raw:
+                g = _canon_group(o.get(grp_k)) if grp_k else None
+                if g and _norm_group(g.get("name")) in known:
+                    s += 1 if o.get(k) is True else -1
+            return s
+        scores = {k: score(k) for k in off_c}
+        best = max(scores.values())
+        tops = [k for k, s in scores.items() if s == best]
+        off_k = tops[0] if best > 0 and len(tops) == 1 else _pick(off_c, "isOfficial")
+    if off_k is None:
+        raise SiteChanged(f"mơ hồ trường Official ({', '.join(sorted(off_c))})")
+
+    out = []
+    for o in raw:
+        url = o[url_k]
+        if url.startswith("http"):
+            url = urllib.parse.urlparse(url).path
+        group = _canon_group(o.get(grp_k)) if grp_k else None
+        num = o.get(num_k) if num_k else None
+        out.append({"id": o[id_k], "url": url,
+                    "number": num if num is not None else _url_num(url),
+                    "language": o.get(lang_k), "isOfficial": bool(o.get(off_k)),
+                    "group": group, "groupId": group.get("id") if group else None})
+    return out
+
+
+def _key_opt(key, name):
+    """Tham số số nguyên trong queryKey (vd [.., {"page": 2, "limit": 20}], "page") -> 2."""
+    for part in key if isinstance(key, list) else []:
+        if isinstance(part, dict) and _is_int(part.get(name)):
+            return part[name]
+    return None
+
+
+def _list_from_data(data):
+    """Dữ liệu 1 query -> (mảng bản upload, meta) nếu là danh sách chương, không thì None.
+    Mảng chương = list các dict có chuỗi url chương; meta = dict có >= 3 số nguyên. Trang
+    list RỖNG (lật quá trang cuối) -> ([], meta) khi data chỉ có đúng 1 list và nó rỗng."""
+    if not isinstance(data, dict):
+        return None
+    arrs = [v for v in data.values() if isinstance(v, list)]
+    lists = [v for v in arrs if v
+             and all(isinstance(o, dict) and any(isinstance(x, str) and CH_URL_RE.search(x)
+                                                  for x in o.values()) for o in v)]
+    metas = [v for v in data.values() if isinstance(v, dict)
+             and sum(_is_int(x) for x in v.values()) >= 3]
+    meta = metas[0] if len(metas) == 1 else None
+    if len(lists) == 1:
+        return lists[0], meta
+    if not lists and len(arrs) == 1 and not arrs[0]:
+        return [], meta
+    return None
+
+
+def _snap_list_page(snap, n, hid):
+    """Ảnh chụp SNAP_JS -> trang list chương số n: {"items", "last", "per"} hoặc None.
+    `last` None = meta không cho biết chắc trang cuối (người gọi lật tới trang thiếu).
+    Định dạng cũ (window.__cap) trả item nguyên; mới trả item THÔ (chuẩn hoá sau, khi đủ
+    mọi trang). Chỉ nhận query có page == n trong key và url chương đúng truyện `hid`
+    (phần mã trước '-' của slug) — trang rỗng thì key phải chứa `hid`."""
+    for o in snap.get("cap") or []:                               # định dạng cũ
+        r = o.get("result") if isinstance(o, dict) else None
+        if not isinstance(r, dict):
+            continue
+        meta, its = r.get("meta"), r.get("items")
+        if (isinstance(meta, dict) and isinstance(its, list) and meta.get("page") == n
+                and (not its or "isOfficial" in its[0])):
+            return {"items": its, "last": int(meta.get("lastPage") or 1),
+                    "per": meta.get("perPage") or 20}
+    for q in snap.get("queries") or []:                           # định dạng mới
+        key = q.get("key")
+        if _key_opt(key, "page") != n:
+            continue
+        got = _list_from_data(q.get("data"))
+        if got is None:
+            continue
+        its, meta = got
+        if its:
+            urls = [next(x for x in o.values() if isinstance(x, str) and CH_URL_RE.search(x))
+                    for o in its]
+            if any(CH_URL_RE.search(u).group(1).split("-")[0] != hid for u in urls):
+                continue
+        elif hid not in json.dumps(key):
+            continue
+        per = _key_opt(key, "limit") or 20
+        return {"items": its, "last": _last_page(meta, per), "per": per}
+    return None
+
+
+def _snap_reason(snap):
+    """Ảnh chụp cuối của 1 lượt hụt -> (site_doi: bool, mô tả). site_doi=True khi trang
+    ĐÃ render + đọc được React Query + không query nào đang tải/lỗi mà vẫn không ra dữ
+    liệu = tool không hiểu cấu trúc mới (thử lại vô ích). Ngược lại là mạng/API chậm."""
+    if not isinstance(snap, dict):
+        return False, "trang không phản hồi"
+    if not snap.get("react"):
+        return False, "trang chưa hiện nội dung"
+    if not snap.get("client"):
+        return True, "trang đã hiện nhưng không tìm thấy kho dữ liệu React Query"
+    if snap.get("busy"):
+        return False, f"{snap['busy']} truy vấn API còn đang tải/lỗi"
+    return True, (f"đọc được {snap.get('total', 0)} truy vấn nhưng không nhận ra dữ "
+                  "liệu cần lấy")
+
+
+def _last_page(meta, per):
+    """Trang cuối từ meta xáo tên: tổng = số nguyên LỚN NHẤT, trang cuối = ceil(tổng/per)
+    — chỉ nhận khi con số đó CÓ trong meta (đối chiếu), hoặc = 1. Không chắc -> None
+    (người gọi lật tiếp tới khi gặp trang thiếu)."""
+    if not isinstance(meta, dict) or not per:
+        return None
+    if _is_int(meta.get("lastPage")):
+        return max(1, meta["lastPage"])
+    ints = [v for v in meta.values() if _is_int(v)]
+    if not ints:
+        return None
+    lp = max(1, -(-max(ints) // per))
+    return lp if (lp == 1 or lp in ints) else None
+
+
+def _alt_urls(url, domains):
+    """Đổi domain gốc của URL ảnh sang các domain DỰ PHÒNG, GIỮ tiền tố (vd '447.'):
+    https://447.a.site/hi/x + ['b.site'] -> ['https://447.b.site/hi/x']. Đã thử thật
+    27/10: domain dự phòng trả đúng cùng ảnh."""
+    try:
+        p = urllib.parse.urlparse(url)
+    except ValueError:
+        return []
+    labels = (p.hostname or "").split(".")
+    pre = ".".join(labels[:-2])            # tiền tố trước domain gốc 2 nhãn, vd '447'
+    out = []
+    for d in domains or []:
+        host = d if not pre or d.startswith(pre + ".") else f"{pre}.{d}"
+        if host != p.hostname:
+            out.append(p._replace(netloc=host).geturl())
+    return out
+
+
+def _pages_from_detail(data, chap_id):
+    """Dữ liệu query chi tiết chương -> [{"url", "s", "alts"}], [] nếu chương đúng id
+    nhưng không có trang (khoá), None nếu KHÔNG phải chương chap_id. Mảng trang = list
+    các dict có URL http(s); URL ảnh = chuỗi http KHÁC NHAU giữa các trang; domain dự
+    phòng = list chuỗi dạng domain. Định dạng cũ ({id, pages:{baseUrl, items}}) vẫn đọc."""
+    if not isinstance(data, dict):
+        return None
+    if data.get("id") == chap_id and isinstance(data.get("pages"), dict):   # định dạng cũ
+        pg = data["pages"]
+        base = (pg.get("baseUrl") or "").rstrip("/")
+        out = []
+        for it in pg.get("items") or []:
+            u = it.get("url") or ""
+            if u:
+                if not u.startswith("http"):
+                    u = base + "/" + u.lstrip("/")
+                out.append({"url": u, "s": it.get("s") == 1, "alts": []})
+        return out
+    if not any(_is_int(v) and v == chap_id for v in data.values()):
+        return None
+
+    def is_http(x):
+        return isinstance(x, str) and x.startswith(("http://", "https://"))
+
+    arrs = {k: v for k, v in data.items() if isinstance(v, list) and v
+            and all(isinstance(o, dict) and any(is_http(x) for x in o.values()) for o in v)}
+    if not arrs:
+        return []
+    pk = _pick(arrs, "pages") or max(sorted(arrs), key=lambda k: len(arrs[k]))
+    pages = arrs[pk]
+    keys = set().union(*(o.keys() for o in pages))
+    url_c = [k for k in keys if all(is_http(o.get(k)) for o in pages)]
+    if len(pages) > 1:     # URL ảnh khác nhau giữa các trang; chuỗi http cố định thì không phải
+        url_c = [k for k in url_c if len({o[k] for o in pages}) == len(pages)] or url_c
+    url_k = _pick(url_c, "url") or (sorted(url_c)[0] if url_c else None)
+    if not url_k:
+        raise SiteChanged("không nhận ra trường URL ảnh trong chương")
+    alt_ks = [k for k in keys if all(isinstance(o.get(k), list) and o[k] and all(
+        isinstance(x, str) and DOMAIN_RE.match(x) for x in o[k]) for o in pages)]
+    out = []
+    for o in pages:
+        doms = [d for k in sorted(alt_ks) for d in o[k]]
+        out.append({"url": o[url_k], "s": o.get("s") == 1,
+                    "alts": _alt_urls(o[url_k], list(dict.fromkeys(doms)))})
+    return out
 
 
 # --- Telegram (đọc chung notify-config.json với supervisor; lỗi thì im lặng) -----
@@ -589,25 +967,32 @@ class ComixSession:
                     raise RuntimeError(f"Không mở được {url}: {e}") from e
                 time.sleep(3 * (attempt + 1))
 
-    def _pump(self, want, timeout=20.0, desc="dữ liệu"):
-        """Rút dần window.__cap tới khi gặp payload thỏa `want`. Site SPA gọi API ngay
-        sau load nên thường bắt được trong ~1-2s. Trả payload, hoặc None nếu hết giờ
-        (KHÔNG raise — người gọi tự quyết retry / rơi xuống bản khác / bỏ qua)."""
+    def _pump(self, extract, needle="", timeout=20.0, desc="dữ liệu"):
+        """Chụp dữ liệu trang (SNAP_JS: window.__cap định dạng cũ + React Query cache định
+        dạng mới) tới khi `extract(snap)` trả khác None. Site SPA gọi API ngay sau load nên
+        thường có trong ~1-2s. Trả kết quả extract, hoặc None nếu hết giờ (KHÔNG raise —
+        người gọi tự quyết retry / rơi xuống bản khác / bỏ qua); ảnh chụp cuối để ở
+        self.last_snap cho chẩn đoán (_snap_reason). SiteChanged của extract bay thẳng ra
+        (dữ liệu đã có mà không hiểu được — chụp lại cũng vậy)."""
         end = time.monotonic() + timeout
+        self.last_snap = None
         while time.monotonic() < end:
             try:
-                batch = self.page.evaluate(
-                    "() => { const c = window.__cap || []; window.__cap = []; return c; }")
+                snap = self.page.evaluate(SNAP_JS, needle)
             except Exception:
                 if not self.alive():
                     raise BrowserGone("Chromium đã đóng khi đọc payload")
-                batch = []
-            for o in batch or []:
+                snap = None
+            if isinstance(snap, dict):
+                self.last_snap = snap
                 try:
-                    if want(o):
-                        return o
+                    res = extract(snap)
+                except SiteChanged:
+                    raise
                 except Exception:
-                    pass
+                    res = None
+                if res is not None:
+                    return res
             if self._challenge_present():
                 self._wait_challenge()
                 end = time.monotonic() + timeout   # qua challenge -> làm mới đồng hồ
@@ -616,21 +1001,19 @@ class ComixSession:
 
     def fetch_series(self, slug):
         """Gom TOÀN BỘ bản upload của truyện (mọi trang list, limit 20 do site cố
-        định; phân trang bằng URL ?page=N — không lệ thuộc DOM nút bấm).
-        Trả (title, cover_url, items)."""
-        items, page_no, last = [], 1, None
+        định; phân trang bằng URL ?page=N — không lệ thuộc DOM nút bấm). Đọc cả định
+        dạng cũ (hook JSON.parse) lẫn mới (React Query, tên trường XÁO — gom THÔ mọi trang
+        rồi mới chuẩn hoá 1 lần bằng _canon_chapters cho đủ dữ liệu khử mơ hồ).
+        Trả (title, cover_url, items). Hụt sau 3 lần mở: trang render được mà không nhận
+        ra dữ liệu -> SiteChanged (thử lại vô ích); trang trắng / API chậm-lỗi ->
+        RuntimeError kiểu mạng (supervisor giữ job thử lại)."""
+        hid = slug.split("-")[0]
+        raw, page_no, last = [], 1, None
         title = cover = None
         while last is None or page_no <= last:
-            def is_list(o, n=page_no):
-                r = o.get("result") or {}
-                meta, its = r.get("meta"), r.get("items")
-                return (isinstance(meta, dict) and isinstance(its, list)
-                        and meta.get("page") == n
-                        and (not its or "isOfficial" in its[0]))
-
             # Retry mỗi trang list: cùng nguyên nhân với ảnh chương (quảng cáo/mạng
             # chèn) có thể làm hụt 1 lần — mở lại vài lần trước khi chịu thua.
-            payload = None
+            got = None
             for attempt in range(3):
                 time.sleep(random.uniform(0.6, 1.2))
                 try:
@@ -639,16 +1022,22 @@ class ComixSession:
                     raise
                 except Exception:
                     continue
-                payload = self._pump(is_list, desc=f"danh sách chương (trang {page_no})")
-                if payload is not None:
+                got = self._pump(lambda s, n=page_no: _snap_list_page(s, n, hid), needle=hid,
+                                 desc=f"danh sách chương (trang {page_no})")
+                if got is not None:
                     break
-            if payload is None:
+            if got is None:
+                changed, why = _snap_reason(getattr(self, "last_snap", None))
+                if changed:
+                    raise SiteChanged(f"{why} (danh sách chương, trang {page_no})")
                 raise RuntimeError(
-                    f"Không lấy được danh sách chương (trang {page_no}) từ comix.to — "
-                    "mạng chập chờn? Thử /tai lại sau.")
-            r = payload["result"]
-            last = int(r["meta"].get("lastPage") or 1)
-            items.extend(r["items"])
+                    f"Không lấy được danh sách chương (trang {page_no}) từ comix.to ({why}) "
+                    "— mạng chập chờn? Thử /tai lại sau.")
+            raw.extend(got["items"])
+            if got["last"] is not None:
+                last = got["last"]
+            elif len(got["items"]) < got["per"]:
+                last = page_no          # meta không rõ trang cuối: trang thiếu = trang cuối
             if title is None:
                 # Site KHÔNG có og:image — bìa là <img> đầu tiên trỏ static.comix.to,
                 # dạng .../68deeb...@280.jpg (thumbnail 280px; bỏ '@280' = bản full).
@@ -661,28 +1050,44 @@ class ComixSession:
                             i => (i.currentSrc || i.src || '').includes('static.comix.to'));
                         return [name, img ? (img.currentSrc || img.src) : null];
                     }""")
-            print(f"\r  Danh sách chương: trang {page_no}/{last} — "
-                  f"cộng dồn {len(items)} bản upload   ", end="", flush=True)
+            print(f"\r  Danh sách chương: trang {page_no}/{last or '?'} — "
+                  f"cộng dồn {len(raw)} bản upload   ", end="", flush=True)
             page_no += 1
         print()
-        return title or slug, cover, items
+        return title or slug, cover, _canon_chapters(raw)
 
     def fetch_pages(self, url_path, chap_id, tries=3):
         """URL ảnh của 1 bản upload (điều hướng tới trang đọc, hook bắt payload).
 
         Trả:
-          [{"url":.., "s":bool}, ...] - lấy được (rỗng nếu payload có nhưng 0 trang =
-                       khóa/premium thật). `s`=True là trang bị TRÁO Ô (comix official
-                       chèn mỗi trang thứ 10): url trả bytes xáo, phải giải-xáo qua canvas
-                       của site — xem descramble_pages + [[comix-scramble-s-flag]].
-          None       - KHÔNG bắt được payload sau `tries` lần (mạng/quảng cáo chèn) ->
+          [{"url":.., "s":bool, "alts":[..]}, ...] - lấy được (rỗng nếu chương có nhưng
+                       0 trang = khóa/premium thật). `s`=True là trang bị TRÁO Ô (định
+                       dạng cũ, comix official chèn mỗi trang thứ 10): url trả bytes xáo,
+                       phải giải-xáo qua canvas của site — xem descramble_pages +
+                       [[comix-scramble-s-flag]]. `alts` = cùng ảnh trên domain CDN dự
+                       phòng (định dạng mới) — ghi luôn vào _ALT_URLS cho client tải ảnh.
+          None       - KHÔNG bắt được dữ liệu sau `tries` lần (mạng/quảng cáo chèn) ->
                        người gọi rơi xuống bản khác / đánh dấu 'để sau', KHÔNG raise.
+        Dữ liệu chương có mà không nhận ra trường URL ảnh -> SiteChanged.
         """
-        def is_chap(o):
-            r = o.get("result") or {}
-            return r.get("id") == chap_id and isinstance(r.get("pages"), dict)
+        def extract(snap):
+            for o in snap.get("cap") or []:                       # định dạng cũ
+                got = _pages_from_detail(o.get("result") if isinstance(o, dict) else None,
+                                         chap_id)
+                if got is not None:
+                    return got
+            # Định dạng mới: query có chap_id NGAY TRONG key (["chapters","detail",id])
+            # xét trước — query khác (vd chi tiết truyện) có thể tình cờ mang id này.
+            qs = snap.get("queries") or []
+            in_key = [q for q in qs if isinstance(q.get("key"), list)
+                      and any(k in (chap_id, str(chap_id)) for k in q["key"])]
+            for q in in_key + [q for q in qs if q not in in_key]:
+                got = _pages_from_detail(q.get("data"), chap_id)
+                if got is not None:
+                    return got
+            return None
 
-        payload = None
+        out = None
         for attempt in range(tries):
             time.sleep(random.uniform(0.6, 1.2))
             try:
@@ -691,24 +1096,18 @@ class ComixSession:
                 raise
             except Exception:
                 continue                      # goto hỏng -> mở lại
-            payload = self._pump(is_chap, desc=f"ảnh chương (id {chap_id})")
-            if payload is not None:
+            out = self._pump(extract, needle=str(chap_id),
+                             desc=f"ảnh chương (id {chap_id})")
+            if out is not None:
                 break                          # bắt được (kể cả 0 trang) -> thôi retry
-        if payload is None:
+        if out is None:
+            _changed, why = _snap_reason(getattr(self, "last_snap", None))
             print(f"\n    ! Chưa lấy được ảnh chương (id {chap_id}) sau {tries} lần thử "
-                  "(mạng/quảng cáo chèn?).", file=sys.stderr, flush=True)
+                  f"({why}).", file=sys.stderr, flush=True)
             return None
-
-        pg = payload["result"]["pages"]
-        base = (pg.get("baseUrl") or "").rstrip("/")
-        out = []
-        for it in pg.get("items") or []:
-            u = it.get("url") or ""
-            if not u:
-                continue
-            if not u.startswith("http"):
-                u = base + "/" + u.lstrip("/")
-            out.append({"url": u, "s": it.get("s") == 1})
+        for it in out:
+            if it.get("alts"):
+                _ALT_URLS[it["url"]] = it["alts"]
         return out
 
     def descramble_ops(self, url_path, urls, timeout_ms=12000):
@@ -787,7 +1186,12 @@ class ComixImageClient:
        Thiếu curl_cffi -> tự lùi về requests thường (vẫn mượn vé, chỉ không giả TLS).
     2. DANH TÍNH MƯỢN SỐNG: đọc UA thật + cookie .comix.to (gồm cf_clearance) từ
        CHÍNH browser Playwright đang mở, nạp vào client. Nhờ vậy request ảnh mang cùng
-       "vé + UA + Referer + TLS" như trình duyệt đang qua cửa -> Cloudflare cho đi.
+       "vé + UA + TLS" như trình duyệt đang qua cửa -> Cloudflare cho đi.
+    3. REFERER THEO HOST (27/10/2026): Referer comix.to CHỈ gửi cho host comix.to /
+       wowpic*.store (CDN cũ đòi). CDN mới `NNN.<ngẫu nhiên>.site` (Cloudflare WAF) gặp
+       Referer comix.to là chặn 403 "you have been blocked" — chính site dùng
+       referrerpolicy=no-referrer. Ảnh hỏng ở domain gốc -> thử domain DỰ PHÒNG site gửi
+       kèm (_ALT_URLS, fetch_pages ghi).
 
     An toàn luồng: refresh_identity() ĐỘNG tới browser (page.evaluate/ctx.cookies) nên
     CHỈ được gọi ở MAIN THREAD (Playwright sync API cấm gọi chéo luồng). get() không
@@ -831,7 +1235,8 @@ class ComixImageClient:
                 self._impl.headers["User-Agent"] = ua
         except Exception:
             pass   # giữ UA cũ nếu page đang bận/hụt
-        self._impl.headers["Referer"] = REFERER
+        # KHÔNG đặt Referer chung cho session: CDN mới chặn Referer comix.to (xem get()).
+        self._impl.headers.pop("Referer", None)
         cookies = {}
         try:
             for c in self.cs.ctx.cookies():
@@ -843,22 +1248,46 @@ class ComixImageClient:
         if cookies:                # chỉ đè khi đọc được, tránh xoá sạch vé lúc đọc hụt
             self._cookies = cookies
 
-    def get(self, url, timeout=60):
-        """Bề mặt kiểu requests cho core.download_image. Gắn cookie comix CHỈ cho host
-        *.comix.to (wowpic không cần vé, cookie sai host còn phản tác dụng). Gói lỗi
-        nền (curl_cffi ném lớp riêng) thành requests.RequestException để core coi như
-        lỗi mạng mà retry, thay vì vỡ ra ngoài."""
+    def _get1(self, url, timeout):
         try:
             host = (urllib.parse.urlparse(url).hostname or "").lower()
         except Exception:
             host = ""
-        send = self._cookies if host.endswith("comix.to") else None
+        comix = host == "comix.to" or host.endswith(".comix.to")
+        send = self._cookies if comix else None
+        hdrs = {"Referer": REFERER} if comix or re.search(r"(^|\.)wowpic\d*\.store$", host) \
+            else None
         try:
-            return self._impl.get(url, timeout=timeout, cookies=send)
+            return self._impl.get(url, timeout=timeout, cookies=send, headers=hdrs)
         except requests.RequestException:
             raise
         except Exception as e:
             raise requests.RequestException(str(e)) from e
+
+    def get(self, url, timeout=60):
+        """Bề mặt kiểu requests cho core.download_image. Gắn cookie comix CHỈ cho host
+        *.comix.to (CDN không cần vé, cookie sai host còn phản tác dụng); Referer comix.to
+        chỉ cho comix/wowpic (xem docstring lớp). Gói lỗi nền (curl_cffi ném lớp riêng)
+        thành requests.RequestException để core coi như lỗi mạng mà retry, thay vì vỡ ra
+        ngoài. Domain gốc lỗi (exception / 403 / 404 / 5xx — KHÔNG gồm 429: giãn nhịp là
+        việc của gate) mà có domain dự phòng -> thử lần lượt, cái đầu tiên OK thắng; hụt
+        hết thì trả/ném kết quả của domain gốc."""
+        try:
+            r, err = self._get1(url, timeout), None
+        except requests.RequestException as e:
+            r, err = None, e
+        alts = _ALT_URLS.get(url)
+        if alts and (r is None or (r.status_code >= 400 and r.status_code != 429)):
+            for alt in alts:
+                try:
+                    r2 = self._get1(alt, timeout)
+                except requests.RequestException:
+                    continue
+                if r2.status_code < 400:
+                    return r2
+        if r is None:
+            raise err
+        return r
 
     def close(self):
         try:
@@ -2138,6 +2567,12 @@ def run(args):
         print("Ảnh đã tải KHÔNG mất — chạy lại đúng lệnh này để tải tiếp chỗ dở "
               "(chương đã xong tự bỏ qua).", file=sys.stderr)
         sys.exit(2)
+    except SiteChanged as e:
+        # Thử lại vô ích -> thoát 1; dòng CUỐI (supervisor cắt 200 ký tự) = tin ❌ của bot.
+        # KHÔNG chứa dấu hiệu lỗi mạng kẻo supervisor giữ job thử lại âm thầm (sự cố 27/10).
+        print(f"\n!!! comix.to đổi cấu trúc, tool chưa đọc được: {e} — cần sửa code, "
+              "/tai lại không giúp.", file=sys.stderr)
+        sys.exit(1)
 
     # ---- Tổng kết chế độ SỬA TRÁO Ô ----
     if repair_mode:
