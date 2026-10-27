@@ -10,7 +10,9 @@ Nguồn dữ liệu (đều nằm trên máy SERVER):
   - client.jsonl : trình duyệt gửi POST /api/diag — Navigation Timing (SW khởi động,
                    byte đầu, trang hiện), bấm -> trang mới, đứng luồng chính, sự kiện SW,
                    ev='img' = bộ nạp ảnh chương (treo/cụt/lỗi/tải lại tay, từ 11/10;
-                   chờ trên màn hình + huỷ do rời trang, từ 14/10).
+                   chờ trên màn hình + huỷ do rời trang, từ 14/10; zm = số lần chạm
+                   đúp phóng to, từ 27/10 — thay md "chạm đúp tải lại"); bản ghi nav
+                   có ios = phiên bản iOS/Safari (từ 27/10).
 Xem báo cáo:
   - python diag_report.py [số giờ]         (in ra màn hình, mặc định 48h gần nhất)
   - bot Telegram /diag                      (tóm tắt + link báo cáo đầy đủ)
@@ -28,6 +30,7 @@ import time
 from urllib.parse import unquote
 
 FILES = ("client", "server")
+PAUSE_MS = 5000          # khoảng đứng >= mức này = iOS dừng cả app, không phải trang nặng
 
 
 def diag_dir(meta_dir):
@@ -144,6 +147,10 @@ def _hm(ms):
     return time.strftime("%d/%m %H:%M:%S", time.localtime((ms or 0) / 1000))
 
 
+def _day(ms):
+    return time.strftime("%d/%m", time.localtime((ms or 0) / 1000))
+
+
 def _swboot(r):
     """Thời gian SW khởi động trước khi xử lý điều hướng (0 nếu SW đang sống)."""
     ws, fs = r.get("workerStart"), r.get("fetchStart")
@@ -250,8 +257,12 @@ def build_report(meta_dir, hours=48.0, brief=False):
             for g in r.get("g") or []:
                 if isinstance(g, list) and len(g) == 2:
                     gaps.append((g[1], g[0], r))
+    # khoảng >=5s: iOS dừng CẢ app mà không báo 'hidden' (27/10: "đứng 37s" trùng lúc log
+    # server cũng ngưng poll 40s) -> không phải trang nặng, tách riêng cho khỏi đọc nhầm
+    pz = [g for g in gaps if g[0] >= PAUSE_MS]
+    gaps = [g for g in gaps if g[0] < PAUSE_MS]
     add("")
-    add("[5] ĐỨNG LUỒNG CHÍNH (>350ms khi trang đang hiện)")
+    add(f"[5] ĐỨNG LUỒNG CHÍNH (>350ms và <{PAUSE_MS // 1000}s khi trang đang hiện)")
     if gaps:
         add(f"  {len(gaps)} lần, tổng {_fmt(sum(g[0] for g in gaps))}")
         for g, at, r in sorted(gaps, key=lambda x: -x[0])[:3 if brief else 8]:
@@ -259,6 +270,9 @@ def build_report(meta_dir, hours=48.0, brief=False):
                 f"tại {_fmt(at)} dài {_fmt(g)}")
     else:
         add("  (không có)")
+    if pz:
+        add(f"  iOS dừng cả app (>={PAUSE_MS // 1000}s, trang không báo ẩn — không phải lỗi trang):"
+            f" {len(pz)} lần, {_stat([g[0] for g in pz])}")
 
     res = [r for r in cl if r.get("ev") == "resume"]
     bf = [r for r in cl if r.get("ev") == "bfcache"]
@@ -368,6 +382,16 @@ def build_report(meta_dir, hours=48.0, brief=False):
                    if isinstance(r.get("sw"), dict) and (r.get("sw") or {}).get("ver")})
     if vers:
         add(f"  phiên bản SW đã thấy: {', '.join(vers)}")
+    # phiên bản iOS (ghi từ 27/10): lần đầu / lần cuối thấy mỗi bản -> biết lúc lên iOS mới
+    ios = {}
+    for r in navs:
+        v = r.get("ios")
+        if v and r.get("rt"):
+            a = ios.setdefault(v, [r["rt"], r["rt"]])
+            a[0], a[1] = min(a[0], r["rt"]), max(a[1], r["rt"])
+    if ios:
+        add("  iOS đã thấy (OS/Safari): " + ", ".join(
+            f"{v} ({_day(a[0])}–{_day(a[1])})" for v, a in sorted(ios.items(), key=lambda kv: kv[1][0])))
 
     # [11] bộ nạp ảnh chương (11/10): mỗi bản ghi = số đếm CỘNG THÊM của 1 trang đọc
     # từ lần gửi trước (gửi khi ẩn/rời trang, chỉ khi có gì mới)
@@ -376,18 +400,30 @@ def build_report(meta_dir, hours=48.0, brief=False):
     add("[11] BỘ NẠP ẢNH CHƯƠNG (fetch + canh treo từ 11/10; chờ trên màn, huỷ do rời trang từ 14/10)")
     if im:
         t = {k: sum(r.get(k) or 0 for r in im)
-             for k in ("n", "st", "ns", "tr", "bad", "er", "ab", "pe", "mt", "md", "rs", "pre", "wm",
-                       "vs", "v0", "vw", "vq")}
+             for k in ("n", "st", "ns", "tr", "bad", "er", "ab", "pe", "mt", "md", "zm", "rs", "pre",
+                       "wm", "vs", "v0", "vw", "vq")}
         add(f"  {len(im)} bản ghi | ảnh hiện {t['n']} | treo được cứu {t['st']}"
             f" (cả loạt cùng treo {t['ns']}) | cụt byte {t['tr']} | giải mã hỏng {t['bad']}"
             f" | lỗi mạng/HTTP {t['er']} | bỏ cuộc (ô chạm để tải lại) {t['pe']}")
+        # md = "chạm đúp tải lại" (bỏ 27/10, chỉ còn ở bản ghi cũ); zm = chạm đúp phóng to
         add(f"  huỷ do rời trang/app vào nền (không phải lỗi) {t['ab']}"
-            f" | chạm ô chưa hiện {t['mt']} | chạm đúp tải lại {t['md']} | mở lại app phải tải lại"
-            f" ảnh dở {t['rs']} | nhường suất cho ảnh trên màn {t['pre']}"
+            f" | chạm ô chưa hiện {t['mt']} | chạm đúp phóng to {t['zm']}"
+            + (f" (bản cũ: chạm đúp tải lại {t['md']})" if t["md"] else "")
+            + f" | mở lại app phải tải lại ảnh dở {t['rs']} | nhường suất cho ảnh trên màn {t['pre']}"
             f" | tải trước chương kế {t['wm']} ảnh")
+        zms = {}
+        for r in im:
+            if r.get("zm"):
+                k = unquote(r.get("path") or "").split("/")[2:3]
+                k = k[0] if k else "?"
+                zms[k] = zms.get(k, 0) + r["zm"]
+        if zms:
+            add("  phóng to theo truyện: " + ", ".join(
+                f"{k[:40]} {v}" for k, v in sorted(zms.items(), key=lambda kv: -kv[1])[:5]))
         recs = [x for r in im for x in (r.get("rec") or []) if isinstance(x, (int, float))]
         if recs:
-            add(f"  ảnh từng treo/lỗi — từ lúc bắt đầu tải tới khi hiện đủ: {_stat(recs)} (n={len(recs)})")
+            add(f"  ảnh từng treo/lỗi — từ lúc bắt đầu tải tới khi hiện đủ (từ 27/10 trừ lúc app"
+                f" nằm nền/bị iOS dừng): {_stat(recs)} (n={len(recs)})")
         # chờ trên màn hình: ô ảnh nằm giữa màn mà chưa có ảnh (chỉ tính lúc trang đang hiện)
         num = lambda v: [x for x in (v or []) if isinstance(x, (int, float))]
         ws = [x for r in im for x in num(r.get("w"))]
