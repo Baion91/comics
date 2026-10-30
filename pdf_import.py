@@ -1,12 +1,20 @@
 #!/usr/bin/env python3
-"""Nhập truyện dạng PDF (hoặc CBZ) vào thư viện: mỗi tập (1 file PDF/CBZ, hoặc 1 folder chứa
-các PDF bị tách) -> 1 thư mục chương "Tập NN" chứa ảnh.
+"""Nhập truyện dạng PDF (hoặc CBZ / MOBI) vào thư viện: mỗi tập (1 file PDF/CBZ, hoặc 1 folder
+chứa các PDF bị tách) -> 1 thư mục chương "Tập NN" chứa ảnh.
 
 CBZ (= file ZIP chứa ảnh, vd bản rip Kindle/digital): ảnh chép NGUYÊN TRẠNG theo thứ tự tên
 (sắp tự nhiên theo cả đường dẫn trong ZIP), đánh lại `001.jpg, 002.jpg...` (đuôi theo định
 dạng thật). File không phải ảnh (ComicInfo.xml, .txt...) bỏ qua + báo; trang ngang (trang
 đôi) giữ nguyên 1 ảnh. CBZ chỉ nhận kiểu 1 (thẳng trong folder truyện, không gộp), gốc cất
-vào <folder truyện>/.cbz-goc/. Phần còn lại dưới đây nói về PDF.
+vào <folder truyện>/.cbz-goc/.
+
+MOBI (.mobi/.azw — truyện tranh Kindle do KindleComicConverter/kindlegen tạo, KHÔNG DRM): ảnh
+trong file chép NGUYÊN TRẠNG theo thứ tự trang của sách. Sách có mục lục (≥ 2 mục) -> mỗi mục
+1 thư mục "Chapter NN" (số lấy từ tên mục: 'Chapter 14 END' -> Chapter 14); không có mục lục
+-> cả sách 1 "Tập NN" như CBZ. Chỉ nhận kiểu 1 (thẳng trong folder truyện), gốc cất vào
+<folder truyện>/.mobi-goc/. Có DRM / chỉ có định dạng KF8 (.azw3) / sách chữ -> từ chối.
+
+Phần còn lại dưới đây nói về PDF.
 
 Reader chỉ hiểu "chương = thư mục ảnh", nên PDF phải tách ra một lần. Chỉ nhận loại PDF
 "vỏ bọc ảnh": mỗi trang là ĐÚNG 1 ảnh JPEG phủ kín trang (bản scan/ghép ảnh thường gặp),
@@ -53,21 +61,27 @@ Cách dùng:
   python pdf_import.py "...\\Long 1 LITE.pdf"             # 1 file
   python pdf_import.py "...\\14 - Ba chàng hiệp sĩ mộng mơ"  # 1 tập bị tách (gộp)
   python pdf_import.py ... --dry-run                     # chỉ kiểm + in kế hoạch, không ghi
+  python pdf_import.py "...\\RockMan Series.mobi" --bia 3   # + trang 3 làm bìa (cover.jpg)
 Hoặc bấm `Nhap PDF.bat` (kéo-thả file/folder vào cũng được).
+
+--bia N (chỉ khi nhập đúng 1 file): chép trang N (đếm từ 1 trong cả file) thành cover.<đuôi>
+trong folder truyện — reader ưu tiên file cover.* làm bìa. Đã có cover.* khác -> không ghi đè.
 
 Cuối bảng có mục "Các tập lỗi" (mỗi tập 1 dòng lý do) — lỗi nhiều tập thì phần in phía trên
 trôi mất.
 
-Exit: 0 = ổn hết, 1 = có tập lỗi/bỏ qua, 2 = không thấy PDF nào / thiếu pypdf. Cần `pypdf`
+Exit: 0 = ổn hết, 1 = có tập lỗi/bỏ qua, 2 = không thấy file nào / thiếu pypdf. Cần `pypdf`
 (thuần Python) + `cryptography` cho PDF mã hoá AES (thiếu thì riêng tập đó báo lỗi kèm lệnh cài).
 """
 
 import argparse
+import bisect
 import importlib.util
 import io
 import os
 import re
 import shutil
+import struct
 import sys
 import time
 import unicodedata
@@ -85,9 +99,15 @@ for _s in (sys.stdout, sys.stderr):
 DOWNLOADS = Path(__file__).resolve().parent / "downloads"
 ORIG_DIR = ".pdf-goc"       # nơi cất PDF gốc, trong folder truyện
 CBZ_ORIG_DIR = ".cbz-goc"   # nơi cất CBZ gốc, trong folder truyện
+MOBI_ORIG_DIR = ".mobi-goc"  # nơi cất MOBI gốc, trong folder truyện
 TMP_DIR = ".pdf-tmp"        # nơi ghi dở, ở gốc downloads/ (reader bỏ qua folder chấm-đầu)
+MOBI_EXTS = (".mobi", ".azw", ".azw3")
+SRC_EXTS = (".pdf", ".cbz") + MOBI_EXTS
 # Ảnh nhận trong CBZ = đuôi reader đọc được (IMG_EXTS của reader_server.py).
 CBZ_IMG_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp", ".avif"}
+# Sách MOBI có chữ thật (tiểu thuyết kèm minh hoạ...) không phải truyện tranh — chỉ lấy ảnh là
+# mất chữ. Truyện KCC/kindlegen: text chỉ gồm thẻ ảnh/khung phóng to, 0 ký tự hiển thị.
+MOBI_TEXT_MAX = 2000
 # Lớp trong suốt (SMask): trình đọc PDF ghép ảnh lên nền trang trắng. Điểm lệch JPEG gốc quá
 # ALPHA_TOL (/255) mà không quá ALPHA_MAX_PX điểm (1 ô 8×8) = vết thừa vô hại -> chép JPEG gốc;
 # nhiều hơn = vùng trong suốt thật -> trang đó lưu PNG đã ghép nền trắng. Gặp thật: Doraemon
@@ -118,20 +138,26 @@ class NotSimple(Exception):
     """Trang không phải "đúng 1 ảnh JPEG phủ kín / vừa khổ trang" — lý do nằm trong message."""
 
 
-def chapter_name(stem):
+def _num(s):
+    """Số tập/chương trong tên (chuỗi, vd '7.5'): ưu tiên số sau từ khoá, không có thì số đầu
+    tiên. None nếu tên không có số."""
+    s = unicodedata.normalize("NFC", s)
+    m = NUM_KEY_RE.search(s)
+    if m:
+        return m.group(1) or m.group(2)
+    m = NUM_RE.search(s)
+    return m.group(0) if m else None
+
+
+def chapter_name(stem, prefix="Tập"):
     """'Long 1 LITE' -> 'Tập 01', 'X Vol.07 (lite)' -> 'Tập 07', '... 7.5' -> 'Tập 07.5'.
     None nếu tên không có số."""
-    s = unicodedata.normalize("NFC", stem)
-    m = NUM_KEY_RE.search(s)
-    num = (m.group(1) or m.group(2)) if m else None
-    if num is None:
-        m = NUM_RE.search(s)
-        num = m.group(0) if m else None
+    num = _num(stem)
     if num is None:
         return None
     whole, _, frac = num.partition(".")
     frac = frac.rstrip("0")
-    return f"Tập {int(whole):02d}" + (f".{frac}" if frac else "")
+    return f"{prefix} {int(whole):02d}" + (f".{frac}" if frac else "")
 
 
 def _mul(m, n):
@@ -360,6 +386,280 @@ def cbz_pages(cbz, warns):
     return pages
 
 
+# ---- MOBI ----
+# Truyện tranh Kindle (KCC/kindlegen) = sách bố cục cố định: mỗi trang 1 thẻ
+# <img recindex="NNNNN"> trong text, ảnh nằm nguyên trong record (ảnh đầu + NNNNN - 1). File
+# .mobi của KCC là bản lai MOBI7 + KF8 dùng chung ảnh -> chỉ đọc phần MOBI7 (record 0): text
+# nén PalmDOC, mục lục = index NCX (record INDX, nhãn nằm trong record CNCX). Cấu trúc theo
+# KindleUnpack (mobi_header / mobi_index). Gặp thật: RockMan Series.mobi (KCC 5.5.2, 527 trang
+# JPEG xám 1072×1448, mục lục 14 chương; 5 trang credit nhóm dịch trùng byte — giữ nguyên).
+
+IMG_TAG_RE = re.compile(rb"""<img\b[^>]*?\brecindex=["']?(\d+)""", re.IGNORECASE)
+NCX_NONE = 0xFFFFFFFF
+INDX_WORDS = ("len", "nul1", "type", "gen", "start", "count", "code", "lng", "total", "ordt",
+              "ligt", "nligt", "nctoc")
+
+
+def _mobi_records(f):
+    """File PalmDB (MOBI) đang mở -> (hàm đọc record thứ i, số record)."""
+    head = f.read(78)
+    if len(head) < 78 or head[60:68] != b"BOOKMOBI":
+        raise NotSimple("không phải file MOBI (thiếu chữ ký BOOKMOBI)")
+    n = struct.unpack(">H", head[76:78])[0]
+    tbl = f.read(8 * n)
+    size = f.seek(0, 2)
+    if n < 2 or len(tbl) < 8 * n:
+        raise NotSimple("file MOBI hỏng (bảng record cụt)")
+    offs = [struct.unpack_from(">I", tbl, 8 * i)[0] for i in range(n)] + [size]
+    if any(a > b for a, b in zip(offs, offs[1:])):
+        raise NotSimple("file MOBI hỏng (bảng record sai thứ tự)")
+
+    def rec(i):
+        if not 0 <= i < n:
+            raise NotSimple(f"file MOBI hỏng (trỏ tới record {i}, file chỉ có {n})")
+        f.seek(offs[i])
+        return f.read(offs[i + 1] - offs[i])
+    return rec, n
+
+
+def _trailing(r, flags):
+    """Số byte "trailing entries" cuối 1 record text (cờ extra_flags của header MOBI) — phải
+    cắt trước khi giải nén. Mỗi bit 1..15 = 1 mục, độ dài ghi ngược từ cuối (7 bit/byte, byte
+    mang bit 0x80 là byte đầu); bit 0 = phần dư ký tự nhiều byte."""
+    num, size, t = 0, len(r), flags >> 1
+    while t:
+        if t & 1:
+            val = shift = 0
+            pos = size - num
+            while pos > 0:
+                b = r[pos - 1]
+                val |= (b & 0x7F) << shift
+                shift += 7
+                pos -= 1
+                if b & 0x80 or shift >= 28:
+                    break
+            num += val
+        t >>= 1
+    if flags & 1 and size > num:
+        num += (r[size - num - 1] & 3) + 1
+    return min(num, size)
+
+
+def _palmdoc(d):
+    """Giải nén PalmDOC (LZ77 kiểu Palm) — kiểu nén text của MOBI. Hỏng -> IndexError."""
+    out = bytearray()
+    i, n = 0, len(d)
+    while i < n:
+        c = d[i]
+        i += 1
+        if c == 0 or 9 <= c <= 0x7F:
+            out.append(c)
+        elif c <= 8:
+            out += d[i:i + c]
+            i += c
+        elif c >= 0xC0:
+            out += bytes((0x20, c ^ 0x80))
+        else:
+            c = (c << 8) | d[i]
+            i += 1
+            dist, ln = (c >> 3) & 0x7FF, (c & 7) + 3
+            if not 0 < dist <= len(out):
+                raise IndexError("PalmDOC trỏ ngược quá đầu")
+            for _ in range(ln):
+                out.append(out[-dist])
+    return bytes(out)
+
+
+def _vwi(d, o):
+    """Số độ dài thay đổi tại d[o] (7 bit/byte, byte cuối mang bit 0x80) -> (số byte, giá trị)."""
+    v = c = 0
+    while True:
+        b = d[o + c]
+        c += 1
+        v = (v << 7) | (b & 0x7F)
+        if b & 0x80:
+            return c, v
+
+
+def _indx_head(d):
+    if d[:4] != b"INDX":
+        raise ValueError("thiếu INDX")
+    return dict(zip(INDX_WORDS, struct.unpack_from(f">{len(INDX_WORDS)}L", d, 4)))
+
+
+def _tagmap(cbc, table, d, start, end):
+    """Các thẻ của 1 mục index: {mã thẻ: [giá trị]} (theo bảng TAGX + `cbc` byte điều khiển)."""
+    tags, out, ci, ds = [], {}, 0, start + cbc
+    for tag, per, mask, endf in table:
+        if endf == 1:
+            ci += 1
+            continue
+        v = d[start + ci] & mask
+        if not v:
+            continue
+        if v == mask and bin(mask).count("1") > 1:     # độ dài (byte) ghi riêng ngay sau
+            c, v = _vwi(d, ds)
+            ds += c
+            tags.append((tag, None, v, per))
+        else:
+            while not mask & 1:
+                mask >>= 1
+                v >>= 1
+            tags.append((tag, v, None, per))
+    for tag, cnt, nbytes, per in tags:
+        vals = []
+        if cnt is not None:
+            for _ in range(cnt * per):
+                c, x = _vwi(d, ds)
+                ds += c
+                vals.append(x)
+        else:
+            used = 0
+            while used < nbytes:
+                c, x = _vwi(d, ds)
+                ds += c
+                used += c
+                vals.append(x)
+        out[tag] = vals
+    if ds > end:
+        raise ValueError("mục index tràn")
+    return out
+
+
+def _ncx(rec, idx):
+    """Mục lục NCX (index bắt đầu ở record `idx`) -> [(cấp, vị trí trong text, nhãn)]. Thẻ: 1 =
+    vị trí (filepos), 3 = nhãn (offset trong CNCX), 4 = cấp."""
+    d0 = rec(idx)
+    h = _indx_head(d0)
+    tx = h["len"]
+    if d0[tx:tx + 4] != b"TAGX":
+        raise ValueError("thiếu TAGX")
+    feo, cbc = struct.unpack_from(">LL", d0, tx + 4)
+    table = [tuple(d0[tx + i:tx + i + 4]) for i in range(12, feo, 4)]
+    cncx = {}
+    for k in range(h["nctoc"]):
+        d, o = rec(idx + h["count"] + 1 + k), 0
+        while o < len(d) and d[o]:
+            c, ln = _vwi(d, o)
+            cncx[k * 0x10000 + o] = d[o + c:o + c + ln].decode("utf-8", "replace").strip()
+            o += c + ln
+    out = []
+    for i in range(1, h["count"] + 1):
+        d = rec(idx + i)
+        hh = _indx_head(d)
+        pos = [struct.unpack_from(">H", d, hh["start"] + 4 + 2 * j)[0] for j in range(hh["count"])]
+        for s, e in zip(pos, pos[1:] + [hh["start"]]):
+            tags = _tagmap(cbc, table, d, s + 1 + d[s], e)
+            if 1 in tags:
+                out.append((tags.get(4, [0])[0], tags[1][0], cncx.get(tags.get(3, [-1])[0], "")))
+    return out
+
+
+def mobi_book(path):
+    """Cấu trúc 1 truyện MOBI (chưa đọc ảnh) -> (recs, toc, warns): recs = [số record ảnh] theo
+    thứ tự trang; toc = [(nhãn, trang đầu đếm từ 0)] các mục cấp ngoài cùng của mục lục, xếp
+    theo trang, mục đầu luôn từ trang 0 (rỗng = không có mục lục). Không đọc được / không phải
+    truyện tranh -> NotSimple."""
+    warns = set()
+    with open(path, "rb") as f:
+        rec, n = _mobi_records(f)
+        r0 = rec(0)
+        if len(r0) < 132 or r0[16:20] != b"MOBI":
+            raise NotSimple("không phải file MOBI (thiếu header MOBI)")
+        comp, _, _, ntext, _, enc = struct.unpack_from(">HHIHHH", r0)
+        hl, ver = struct.unpack_from(">I", r0, 20)[0], struct.unpack_from(">I", r0, 36)[0]
+        if enc:
+            raise NotSimple("sách có DRM (khoá bản quyền Kindle) — không mở được")
+        if ver >= 8:
+            raise NotSimple("sách chỉ có định dạng KF8 (AZW3) — chưa hỗ trợ; xuất lại bằng KCC "
+                            "kiểu MOBI")
+        if comp not in (1, 2):
+            raise NotSimple("text nén kiểu " + ("HUFF/CDIC" if comp == 17480 else str(comp))
+                            + " — chưa hỗ trợ")
+        first_img = struct.unpack_from(">I", r0, 108)[0]
+        flags = struct.unpack_from(">H", r0, 242)[0] if hl >= 0xE4 and len(r0) >= 244 else 0
+        ncx = struct.unpack_from(">I", r0, 244)[0] if hl >= 0xE8 and len(r0) >= 248 else NCX_NONE
+        text = bytearray()
+        for i in range(1, ntext + 1):
+            r = rec(i)
+            r = r[:len(r) - _trailing(r, flags)]
+            try:
+                text += _palmdoc(r) if comp == 2 else r
+            except IndexError:
+                raise NotSimple(f"file MOBI hỏng (giải nén text record {i} lỗi)") from None
+        tags = [(m.start(), int(m.group(1))) for m in IMG_TAG_RE.finditer(text)]
+        if not tags:
+            raise NotSimple("sách không có ảnh trang nào — không phải truyện tranh")
+        chars = len(re.sub(rb"\s+", b"", re.sub(rb"<[^>]*>", b"", bytes(text))))
+        if chars > MOBI_TEXT_MAX:
+            raise NotSimple(f"sách có {chars} ký tự chữ — không phải truyện tranh dạng ảnh (chỉ "
+                            f"lấy ảnh sẽ mất chữ)")
+        recs = [first_img + k - 1 for _, k in tags]
+        for k, r in enumerate(recs, 1):
+            if not 0 < r < n:
+                raise NotSimple(f"file MOBI hỏng (trang {k} trỏ tới record {r}, file có {n})")
+        entries = []
+        if ncx != NCX_NONE:
+            try:
+                entries = _ncx(rec, ncx)
+            except Exception as e:
+                warns.add(f"mục lục hỏng ({e.__class__.__name__}: {e}) — bỏ qua mục lục")
+
+    starts = [s for s, _ in tags]
+    top = sorted((fp, label) for depth, fp, label in entries if depth == 0)
+    if len(top) < len(entries):
+        warns.add("mục lục nhiều cấp — chia chương theo cấp ngoài cùng")
+    toc = []
+    for fp, label in top:
+        pg = bisect.bisect_left(starts, fp)     # trang đầu tiên bắt đầu từ vị trí mục trỏ tới
+        if pg >= len(starts):
+            warns.add(f"mục lục '{label}' trỏ ra sau trang cuối — bỏ")
+        elif toc and toc[-1][1] == pg:
+            warns.add(f"mục lục '{label}' cùng trang với '{toc[-1][0]}' — gộp")
+        else:
+            toc.append((label, pg))
+    if toc and toc[0][1]:
+        warns.add(f"{toc[0][1]} trang trước mục đầu tiên của mục lục — gộp vào '{toc[0][0]}'")
+        toc[0] = (toc[0][0], 0)
+    return recs, toc, warns
+
+
+def mobi_outs(stem, toc, warns):
+    """Thư mục chương của 1 truyện MOBI -> [(tên, trang đầu)]. Mục lục ≥ 2 mục: mỗi mục 1
+    'Chapter NN' (số từ nhãn mục; nhãn thiếu số / số không tăng dần -> 01, 02… theo thứ tự);
+    không có -> cả sách 1 'Tập NN' (số từ tên file, như PDF/CBZ). None = tên file không có số."""
+    if len(toc) < 2:
+        name = chapter_name(stem)
+        return [(name, 0)] if name else None
+    nums = [_num(label) for label, _ in toc]
+    if all(nums) and all(float(a) < float(b) for a, b in zip(nums, nums[1:])):
+        return [(chapter_name(label, "Chapter"), pg) for label, pg in toc]
+    warns.add("nhãn mục lục thiếu số hoặc số không tăng dần — đặt tên chương 01, 02… theo thứ tự")
+    return [(f"Chapter {k:02d}", pg) for k, (_, pg) in enumerate(toc, 1)]
+
+
+def mobi_pages(path, recs):
+    """[(bytes, (W, H), đuôi)] các trang MOBI theo thứ tự sách — bytes ảnh chép NGUYÊN TRẠNG,
+    kiểm giải mã được ngay lúc đọc (như CBZ, để --dry-run cũng bắt được ảnh hỏng)."""
+    pages = []
+    with open(path, "rb") as f:
+        rec, _ = _mobi_records(f)
+        for k, r in enumerate(recs, 1):
+            data = rec(r)
+            verdict, detail = check_image_bytes(data, who=f"{path.name} trang {k}")
+            if verdict != "ok":
+                raise NotSimple(f"trang {k} (record {r}): ảnh lỗi ({verdict}: {detail})")
+            fmt = sniff_format(data)
+            if fmt is None:
+                raise NotSimple(f"trang {k} (record {r}): định dạng ảnh lạ")
+            wh = (0, 0)
+            if Image is not None:
+                with Image.open(io.BytesIO(data)) as im:
+                    wh = im.size
+            pages.append((data, wh, ".jpg" if fmt == "jpeg" else f".{fmt}"))
+    return pages
+
+
 def _natkey(s):
     """Sắp tự nhiên: 'x 2' < 'x 10'."""
     return [int(t) if t.isdigit() else t.lower() for t in re.split(r"(\d+)", str(s))]
@@ -371,20 +671,20 @@ def _key(p):
 
 
 def find_sources(targets):
-    """Danh sách PDF/CBZ từ đối số (file hoặc folder — tìm cả folder con, bỏ folder chấm-đầu
-    như .pdf-goc). Không đối số = cả downloads/."""
+    """Danh sách PDF/CBZ/MOBI từ đối số (file hoặc folder — tìm cả folder con, bỏ folder
+    chấm-đầu như .pdf-goc). Không đối số = cả downloads/."""
     out = []
     for t in targets or [str(DOWNLOADS)]:
         p = Path(t).resolve()
         if p.is_file():
-            if p.suffix.lower() in (".pdf", ".cbz"):
+            if p.suffix.lower() in SRC_EXTS:
                 out.append(p)
             else:
-                print(f"  ! Bỏ qua (không phải PDF/CBZ): {p}")
+                print(f"  ! Bỏ qua (không phải PDF/CBZ/MOBI): {p}")
         elif p.is_dir():
             for root, dirs, files in os.walk(p):
                 dirs[:] = [x for x in dirs if not x.startswith(".")]
-                out += [Path(root) / x for x in files if x.lower().endswith((".pdf", ".cbz"))]
+                out += [Path(root) / x for x in files if x.lower().endswith(SRC_EXTS)]
         else:
             print(f"  ! Không thấy: {p}")
     seen, uniq = set(), []
@@ -450,20 +750,27 @@ def check_order(items, counts):
 
 
 class Job:
-    """1 tập cần nhập: các PDF `items` [(pdf, số|None)] theo thứ tự (hoặc 1 CBZ) -> thư mục
-    <folder truyện>/<name>. `src` = thứ được cất vào .pdf-goc/ (.cbz-goc/) sau khi xong: file
-    PDF/CBZ (lẻ) hoặc CẢ folder các phần (gộp — 1 lần đổi tên, bị ngắt giữa chừng thì các phần
-    vẫn đủ ở 1 chỗ)."""
+    """1 nguồn cần nhập: các PDF `items` [(pdf, số|None)] theo thứ tự (hoặc 1 CBZ / MOBI) ->
+    thư mục <folder truyện>/<name>; MOBI có mục lục -> nhiều thư mục `outs` [(tên, trang đầu)]
+    (`recs` = record ảnh từng trang, `warns` = lưu ý lúc đọc cấu trúc). `src` = thứ được cất vào
+    .pdf-goc/ (.cbz-goc/, .mobi-goc/) sau khi xong: file lẻ hoặc CẢ folder các phần (gộp — 1
+    lần đổi tên, bị ngắt giữa chừng thì các phần vẫn đủ ở 1 chỗ)."""
 
-    def __init__(self, items, name, src, merged):
+    def __init__(self, items, name, src, merged, outs=None, recs=None, warns=()):
         self.items, self.name, self.src, self.merged = items, name, src, merged
-        self.cbz = not merged and src.suffix.lower() == ".cbz"
-        self.orig_dir = CBZ_ORIG_DIR if self.cbz else ORIG_DIR
-        self.what = "folder PDF gốc" if merged else ("CBZ gốc" if self.cbz else "PDF gốc")
+        ext = src.suffix.lower()
+        self.kind = "pdf" if merged or ext == ".pdf" else "cbz" if ext == ".cbz" else "mobi"
+        self.raw = self.kind != "pdf"     # ảnh chép nguyên trạng từ file (CBZ/MOBI)
+        self.outs = outs or [(name, 0)]
+        self.recs, self.warns = recs, set(warns)
+        self.orig_dir = {"pdf": ORIG_DIR, "cbz": CBZ_ORIG_DIR, "mobi": MOBI_ORIG_DIR}[self.kind]
+        self.what = "folder PDF gốc" if merged else f"{self.kind.upper()} gốc"
         self.series = src.parent
-        self.dest = self.series / name
+        self.dests = [self.series / nm for nm, _ in self.outs]
         self.where = f"{self.series.name}\\{src.name}" + ("\\" if merged else "")
-        self.label = self.where + (f"  (gộp {len(items)} file PDF)" if merged else "")
+        self.label = self.where + (f"  (gộp {len(items)} file PDF)" if merged else
+                                   f"  (mục lục {len(self.outs)} chương)" if len(self.outs) > 1
+                                   else "")
 
 
 _FAILS = []     # [(nguồn, lý do)] -> mục "Các tập lỗi" cuối bảng
@@ -487,6 +794,26 @@ def plan_jobs(srcs):
             bad += 1
             _fail(pdf.name, "đang nằm ngay downloads\\",
                   "tạo folder truyện, bỏ file vào đó rồi chạy lại")
+        elif depth == 2 and pdf.suffix.lower() in MOBI_EXTS:
+            where = f"{pdf.parent.name}\\{pdf.name}"
+            try:
+                recs, toc, warns = mobi_book(pdf)
+            except NotSimple as e:
+                bad += 1
+                _fail(where, str(e), "bỏ qua")
+                continue
+            except Exception as e:      # không đọc được file / cấu trúc lạ
+                bad += 1
+                _fail(where, f"không đọc được MOBI ({e.__class__.__name__}: {e})")
+                continue
+            outs = mobi_outs(pdf.stem, toc, warns)
+            if outs is None:
+                bad += 1
+                _fail(where, "sách không có mục lục và tên file không có số tập",
+                      f"đổi tên (vd 'Tập 3{pdf.suffix.lower()}') rồi chạy lại")
+            else:
+                jobs.append(Job([(pdf, None)], outs[0][0], pdf, merged=False, outs=outs,
+                                recs=recs, warns=warns))
         elif depth == 2:
             name = chapter_name(pdf.stem)
             if name is None:
@@ -495,10 +822,11 @@ def plan_jobs(srcs):
                       f"đổi tên (vd 'Tập 3{pdf.suffix.lower()}') rồi chạy lại")
             else:
                 jobs.append(Job([(pdf, None)], name, pdf, merged=False))
-        elif depth == 3 and pdf.suffix.lower() == ".cbz":
+        elif depth == 3 and pdf.suffix.lower() != ".pdf":
+            kind = pdf.suffix[1:].upper()
             bad += 1
-            _fail(str(pdf.relative_to(DOWNLOADS)), "CBZ nằm trong folder con",
-                  "CBZ phải nằm thẳng trong folder truyện (1 file = 1 tập, không gộp)")
+            _fail(str(pdf.relative_to(DOWNLOADS)), f"{kind} nằm trong folder con",
+                  f"{kind} phải nằm thẳng trong folder truyện (1 file = 1 nguồn, không gộp)")
         elif depth == 3:
             folders.setdefault(pdf.parent, []).append(pdf)
         else:
@@ -549,17 +877,20 @@ def plan_jobs(srcs):
     # 2 nguồn cùng ra 1 thư mục (vd 'Long 14.pdf' + folder '14 - …') -> loại cả 2.
     by_dest = {}
     for j in jobs:
-        by_dest.setdefault(_key(j.dest), []).append(j)
-    for group in by_dest.values():
+        for d in j.dests:
+            by_dest.setdefault(_key(d), (d.name, []))[1].append(j)
+    clash = []
+    for name, group in by_dest.values():
         if len(group) > 1:
-            print(f"✗ {len(group)} nguồn cùng ra '{group[0].name}' trong "
-                  f"'{group[0].series.name}': " + ", ".join(j.src.name for j in group)
-                  + " — đổi tên cho khác số rồi chạy lại")
-            bad += len(group)
+            print(f"✗ {len(group)} nguồn cùng ra '{name}' trong '{group[0].series.name}': "
+                  + ", ".join(j.src.name for j in group) + " — đổi tên cho khác số rồi chạy lại")
             for j in group:
-                _FAILS.append((j.where, f"trùng đích '{j.name}' với " + ", ".join(
+                _FAILS.append((j.where, f"trùng đích '{name}' với " + ", ".join(
                     o.src.name for o in group if o is not j)))
-    jobs = [j for j in jobs if len(by_dest[_key(j.dest)]) == 1]
+                if j not in clash:
+                    clash.append(j)
+    bad += len(clash)
+    jobs = [j for j in jobs if j not in clash]
     return sorted(jobs, key=lambda j: _natkey(j.src)), bad
 
 
@@ -631,21 +962,76 @@ def _finish(job, msg):
     return True
 
 
-def import_job(job, dry_run):
-    """Tách 1 tập. Trả True nếu xong (hoặc dry-run kiểm đạt), False nếu lỗi/bỏ qua."""
+def _describe(pages, job):
+    """'49 trang JPEG 1072×1448, 19.6MB' — mô tả 1 thư mục chương sắp ghi."""
+    wide = any(w > h for _, (w, h), _ in pages)
+    sizes = {wh for _, wh, _ in pages}
+    size_txt = (f"{next(iter(sizes))[0]}×{next(iter(sizes))[1]}" if len(sizes) == 1
+                else f"{len(sizes)} cỡ khác nhau")
+    if job.raw and len(sizes) == 2 and wide:    # trang dọc + trang đôi: in cỡ trang dọc
+        size_txt = "{}×{}".format(*next(wh for wh in sizes if wh[0] <= wh[1])) + " (+ trang đôi)"
+    exts = sorted({ext for _, _, ext in pages})
+    png = sum(ext == ".png" for _, _, ext in pages)
+    kind = (" + ".join(e[1:].upper().replace("JPG", "JPEG") for e in exts) if job.raw
+            else f"JPEG + {png} PNG" if png else "JPEG")
+    total = sum(len(dta) for dta, _, _ in pages)
+    return f"{len(pages)} trang {kind} {size_txt}, {total / 1048576:.1f}MB"
+
+
+def _cover(series, n, page, dry_run):
+    """--bia: ghi trang `n` thành cover.<đuôi> trong folder truyện (reader ưu tiên file cover.*
+    làm bìa). Đã có cover.*: giống hệt thì thôi, khác thì KHÔNG ghi đè. Trả dòng báo."""
+    data, _, ext = page
+    try:
+        olds = sorted(e.name for e in os.scandir(series) if e.is_file()
+                      and os.path.splitext(e.name)[0].lower() == "cover"
+                      and os.path.splitext(e.name)[1].lower() in CBZ_IMG_EXTS)
+    except OSError as e:
+        return f"  ! bìa: không đọc được folder truyện ({e.strerror or e})"
+    for name in olds:
+        try:
+            if (series / name).read_bytes() == data:
+                return f"  = bìa: {name} đã là trang {n}"
+        except OSError:
+            pass
+    if olds:
+        return (f"  ! bìa: đã có {olds[0]} (ảnh khác) — không ghi đè; muốn đổi thì xoá nó rồi "
+                f"chạy lại, hoặc đổi bìa trên reader")
+    dest = series / f"cover{ext}"
+    if not dry_run:
+        tmp = dest.with_name(dest.name + ".tmp")
+        try:
+            tmp.write_bytes(data)
+            os.replace(tmp, dest)
+        except OSError as e:
+            return f"  ! bìa: không ghi được {dest.name} ({e.strerror or e})"
+    return f"  ✓ bìa: trang {n} -> {dest.name}"
+
+
+def import_job(job, dry_run, cover=None):
+    """Tách 1 nguồn (1 tập; MOBI có mục lục -> nhiều chương). `cover` = số trang (đếm từ 1 trong
+    cả nguồn) ghi thành cover.* của folder truyện. Trả True nếu xong (hoặc dry-run kiểm đạt),
+    False nếu lỗi/bỏ qua."""
     t0 = time.time()
 
     def fail(why, hint=None):
         return _fail(job.where, why, hint, nested=True)
 
-    warns, pages, counts = set(), [], []
-    if job.cbz:
+    warns, pages, counts = set(job.warns), [], []
+    if job.kind == "cbz":
         try:
             pages = cbz_pages(job.src, warns)
         except NotSimple as e:
             return fail(str(e), "chưa tách được (không đụng gì)")
         except Exception as e:      # ZIP hỏng / sai CRC / không đọc được file
             return fail(f"không đọc được CBZ ({e.__class__.__name__}: {e})")
+    elif job.kind == "mobi":
+        try:
+            pages = mobi_pages(job.src, job.recs)
+        except NotSimple as e:
+            return fail(str(e), "chưa tách được (không đụng gì)")
+        except Exception as e:      # file đổi/hỏng từ lúc đọc cấu trúc, không đọc được
+            return fail(f"không đọc được MOBI ({e.__class__.__name__}: {e})")
     else:
         from pypdf import PdfReader     # main() đã kiểm có pypdf
         from pypdf.errors import DependencyError
@@ -686,79 +1072,111 @@ def import_job(job, dry_run):
     for w in sorted(warns):
         print(f"  ! {w}")
     png = [i for i, (_, _, ext) in enumerate(pages, 1) if ext == ".png"]
-    if png and not job.cbz:
+    if png and not job.raw:
         print(f"  ! {len(png)} trang có vùng trong suốt thật -> lưu PNG đã ghép nền trắng (y như "
               f"PDF hiển thị): trang {', '.join(map(str, png))}")
     wide = [i for i, (_, (w, h), _) in enumerate(pages, 1) if w > h]
-    if wide and job.cbz:
+    if wide and job.raw:
         print(f"  ! {len(wide)} trang ngang (thường là trang đôi, giữ nguyên 1 ảnh): trang "
               f"{', '.join(map(str, wide))}")
-    sizes = {wh for _, wh, _ in pages}
-    size_txt = (f"{next(iter(sizes))[0]}×{next(iter(sizes))[1]}" if len(sizes) == 1
-                else f"{len(sizes)} cỡ khác nhau")
-    if job.cbz and len(sizes) == 2 and wide:    # trang dọc + trang đôi: in cỡ trang dọc
-        size_txt = "{}×{}".format(*next(wh for wh in sizes if wh[0] <= wh[1])) + " (+ trang đôi)"
-    total = sum(len(dta) for dta, _, _ in pages)
-    name, dest = job.name, job.dest
-    exts = sorted({ext for _, _, ext in pages})
-    kind = (" + ".join(e[1:].upper().replace("JPG", "JPEG") for e in exts) if job.cbz
-            else f"JPEG + {len(png)} PNG" if png else "JPEG")
-    info = f"{len(pages)} trang {kind} {size_txt}, {total / 1048576:.1f}MB"
-    what = job.what
+    if cover is not None and not 1 <= cover <= len(pages):
+        return fail(f"--bia {cover}: nguồn chỉ có {len(pages)} trang", "không đụng gì")
+    what, multi = job.what, len(job.outs) > 1
 
-    if dest.exists():
-        if _same_as_src(dest, pages):
-            if dry_run:
-                print(f"  = '{name}' đã tách từ trước ({info}) — sẽ chỉ cất {what} vào "
-                      f"{job.orig_dir}/")
-                return True
-            return _finish(job, f"  = '{name}' đã tách từ trước")
-        return fail(f"đã có thư mục '{name}' (nội dung khác nguồn này)",
-                    f"không ghi đè. Đổi tên/xoá thư mục đó hoặc đổi tên "
-                    f"{'folder' if job.merged else 'file ' + job.src.suffix[1:].upper()} rồi "
-                    f"chạy lại")
+    # Kiểm hết các thư mục đích TRƯỚC khi ghi: đã có + giống hệt = xong từ lần trước (bỏ qua),
+    # đã có + khác = dừng cả nguồn, không ghi chương nào.
+    ends = [a for _, a in job.outs[1:]] + [len(pages)]
+    plan = []       # [(tên, trang, mô tả, đã có)]
+    for (name, a), b in zip(job.outs, ends):
+        pgs = pages[a:b]
+        dest = job.series / name
+        done = dest.exists()
+        if done and not _same_as_src(dest, pgs):
+            return fail(f"đã có thư mục '{name}' (nội dung khác nguồn này)",
+                        f"không ghi đè. Đổi tên/xoá thư mục đó hoặc đổi tên "
+                        f"{'folder' if job.merged else 'file ' + job.src.suffix[1:].upper()} rồi "
+                        f"chạy lại")
+        plan.append((name, pgs, _describe(pgs, job), done))
+    all_done = all(done for *_, done in plan)
+
     if dry_run:
-        print(f"  ✓ -> '{name}/' ({info})")
+        for k, (name, _, info, done) in enumerate(plan, 1):
+            tail = (f" — sẽ chỉ cất {what} vào {job.orig_dir}/" if all_done and k == len(plan)
+                    else "")
+            print((f"  = '{name}' đã tách từ trước ({info})" if done
+                   else f"  ✓ -> '{name}/' ({info})") + tail)
+        if cover is not None:
+            print(_cover(job.series, cover, pages[cover - 1], dry_run=True))
         return True
 
-    # Ghi vào downloads/.pdf-tmp/ (reader không quét) rồi mới đổi tên sang chỗ thật.
+    # Ghi vào downloads/.pdf-tmp/ (reader không quét), kiểm đủ TẤT CẢ chương rồi mới đổi tên
+    # sang chỗ thật -> reader không bao giờ thấy chương dở / nguồn mới nhập một nửa.
     tmp_root = DOWNLOADS / TMP_DIR if _under(job.src, DOWNLOADS) else job.series / TMP_DIR
-    tmp = tmp_root / f"{job.series.name} - {name}"
-    if tmp.exists():
-        shutil.rmtree(tmp)          # bản dở của lần chạy trước bị ngắt
-    tmp.mkdir(parents=True)
-    width = max(3, len(str(len(pages))))
+    tmps, moved = [], 0
     try:
-        for i, (data, _, ext) in enumerate(pages, 1):
-            verdict, detail = check_image_bytes(data, who=f"{job.src.name} trang {i}")
-            if verdict != "ok":
-                raise RuntimeError(f"trang {i}: ảnh lỗi ({verdict}: {detail})")
-            (tmp / f"{i:0{width}d}{ext}").write_bytes(data)
-        if len(os.listdir(tmp)) != len(pages):
-            raise RuntimeError("số ảnh ghi ra lệch số trang")
-        _move(tmp, dest)
+        for name, pgs, _, done in plan:
+            if done:
+                continue
+            tmp = tmp_root / f"{job.series.name} - {name}"
+            if tmp.exists():
+                shutil.rmtree(tmp)          # bản dở của lần chạy trước bị ngắt
+            tmp.mkdir(parents=True)
+            tmps.append((tmp, job.series / name))
+            width = max(3, len(str(len(pgs))))
+            for i, (data, _, ext) in enumerate(pgs, 1):
+                verdict, detail = check_image_bytes(data, who=f"{job.src.name} {name} trang {i}")
+                if verdict != "ok":
+                    raise RuntimeError(f"{name + ' ' if multi else ''}trang {i}: ảnh lỗi "
+                                       f"({verdict}: {detail})")
+                (tmp / f"{i:0{width}d}{ext}").write_bytes(data)
+            if len(os.listdir(tmp)) != len(pgs):
+                raise RuntimeError(f"{name + ': ' if multi else ''}số ảnh ghi ra lệch số trang")
+        for tmp, dest in tmps:
+            _move(tmp, dest)
+            moved += 1
     except Exception as e:
-        shutil.rmtree(tmp, ignore_errors=True)
-        return fail(str(e), "đã huỷ, không đụng gì")
+        for tmp, _ in tmps:
+            shutil.rmtree(tmp, ignore_errors=True)
+        return fail(str(e), "đã huỷ, không đụng gì" if not moved else
+                    f"đã chuyển {moved}/{len(tmps)} chương vào chỗ — chạy lại để làm nốt")
     finally:
         try:
             tmp_root.rmdir()        # chỉ xoá khi rỗng
         except OSError:
             pass
-    return _finish(job, f"  ✓ -> '{name}/' ({info}, {time.time() - t0:.1f}s)")
+
+    secs = time.time() - t0
+    if multi:
+        for name, _, info, done in plan:
+            print(f"  = '{name}' đã tách từ trước ({info})" if done
+                  else f"  ✓ -> '{name}/' ({info})")
+        msg = (f"  = cả {len(plan)} chương đã tách từ trước" if all_done else
+               f"  ✓ {len(tmps)}/{len(plan)} chương mới, {len(pages)} trang ({secs:.1f}s)")
+    else:
+        name, _, info, done = plan[0]
+        msg = (f"  = '{name}' đã tách từ trước" if done
+               else f"  ✓ -> '{name}/' ({info}, {secs:.1f}s)")
+    ok = _finish(job, msg)
+    if cover is not None:
+        print(_cover(job.series, cover, pages[cover - 1], dry_run=False))
+    return ok
 
 
 def main():
-    ap = argparse.ArgumentParser(description="Tách PDF (mỗi trang 1 ảnh JPEG) / CBZ thành thư "
-                                             "mục chương 'Tập NN' cho reader. PDF trong folder "
-                                             "con của truyện = 1 tập bị tách, gộp lại.")
-    ap.add_argument("targets", nargs="*", help="file PDF/CBZ / folder (mặc định: cả downloads/)")
+    ap = argparse.ArgumentParser(description="Tách PDF (mỗi trang 1 ảnh JPEG) / CBZ / MOBI thành "
+                                             "thư mục chương cho reader. PDF trong folder con "
+                                             "của truyện = 1 tập bị tách, gộp lại.")
+    ap.add_argument("targets", nargs="*",
+                    help="file PDF/CBZ/MOBI / folder (mặc định: cả downloads/)")
     ap.add_argument("--dry-run", action="store_true", help="chỉ kiểm + in kế hoạch, không ghi gì")
+    ap.add_argument("--bia", type=int, metavar="N",
+                    help="chép trang N (đếm từ 1 trong cả file) thành cover.* trong folder "
+                         "truyện (chỉ khi nhập đúng 1 file)")
     args = ap.parse_args()
 
     srcs = find_sources(args.targets)
     if not srcs:
-        print("Không thấy file PDF/CBZ nào.")
+        print("Không thấy file PDF/CBZ/MOBI nào.")
         return 2
     if (any(p.suffix.lower() == ".pdf" for p in srcs)
             and importlib.util.find_spec("pypdf") is None):
@@ -768,13 +1186,16 @@ def main():
     # Chia tập + chặn lỗi bố cục TRƯỚC khi đụng file nào.
     _FAILS.clear()
     jobs, bad = plan_jobs(srcs)
+    if args.bia is not None and len(jobs) + bad != 1:
+        print(f"✗ --bia chỉ dùng khi nhập đúng 1 file/tập (đang có {len(jobs) + bad})")
+        return 2
     if any(not _under(j.src, DOWNLOADS) for j in jobs):
         print("! Lưu ý: reader chỉ đọc truyện trong downloads\\ — file ngoài đó tách xong "
               "phải tự chép vào.")
     ok = 0
     for job in jobs:
         print(job.label)
-        ok += import_job(job, args.dry_run)
+        ok += import_job(job, args.dry_run, args.bia)
     total = len(jobs) + bad
     bad = total - ok
     verb = "kiểm đạt" if args.dry_run else "xong"

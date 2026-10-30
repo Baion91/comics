@@ -10,7 +10,7 @@ Các script trong thư mục này, mỗi cái một việc:
 | `Kiem tra truyen.bat` | Bấm để kiểm tra: chọn thư mục (chạy check_library) |
 | `asura_downloader.py` | (cũ, vẫn chạy) lối tắt chỉ-Asura của comic_downloader |
 | `convert_webp.py` | Chuyển PNG→WebP **và** re-nén WebP nặng (comix.to) về q85 — có chế độ nén tại chỗ |
-| `pdf_import.py` / `Nhap PDF.bat` | **Nhập truyện PDF / CBZ**: mỗi file PDF hoặc CBZ (hoặc 1 folder các PDF bị tách của 1 tập → gộp) → 1 thư mục chương `Tập NN` (ảnh gốc) để reader đọc |
+| `pdf_import.py` / `Nhap PDF.bat` | **Nhập truyện PDF / CBZ / MOBI**: mỗi file PDF hoặc CBZ (hoặc 1 folder các PDF bị tách của 1 tập → gộp) → 1 thư mục chương `Tập NN` (ảnh gốc) để reader đọc; MOBI có mục lục → mỗi mục 1 `Chapter NN` |
 | `realesrgan-.../lam-net.bat` | **Làm nét ảnh scan** bằng Real-ESRGAN (AI upscale 2x) |
 | `reader_server.py` | Web đọc truyện kiểu Asura, đọc từ PC lẫn điện thoại |
 
@@ -384,9 +384,9 @@ python convert_webp.py "..." --in-place      :: NÉN WebP TẠI CHỖ (sửa th�
 - **Chạy tay trên server**: bấm **`convert_webp.bat`** → để mức **85** → trả lời **`y`** ở dòng
   *"Nen TAI CHO (…comix cu)?"* để nén tại chỗ (hoặc `N` rồi chọn *"Re-nen ca WebP?"* nếu muốn ra cây `_webp`).
 
-## Nhập truyện PDF / CBZ — `pdf_import.py` (hoặc bấm `Nhap PDF.bat`)
+## Nhập truyện PDF / CBZ / MOBI — `pdf_import.py` (hoặc bấm `Nhap PDF.bat`)
 
-Reader chỉ đọc "chương = thư mục ảnh", nên truyện dạng **PDF** hoặc **CBZ** phải tách ra 1 lần.
+Reader chỉ đọc "chương = thư mục ảnh", nên truyện dạng **PDF**, **CBZ** hoặc **MOBI** phải tách ra 1 lần.
 
 1. Đặt PDF theo 1 trong 2 kiểu (tool tự nhận theo vị trí, không cần chọn chế độ):
    - **1 file = 1 tập**: PDF **thẳng trong folder truyện** — `downloads\Doraemon truyện dài\Long 1 LITE.pdf`.
@@ -401,6 +401,7 @@ python pdf_import.py                                   :: tìm PDF trong cả do
 python pdf_import.py "downloads\Doraemon truyện dài"   :: 1 folder
 python pdf_import.py "...\Long 1 LITE.pdf" --dry-run   :: chỉ kiểm, không ghi gì
 python pdf_import.py "...\14 - Ba chàng hiệp sĩ mộng mơ"  :: 1 tập bị tách (gộp)
+python pdf_import.py "...\RockMan Series.mobi" --bia 3  :: + chép trang 3 thành cover.jpg
 ```
 
 - Kết quả: `Doraemon truyện dài\Tập 01\001.jpg … 189.jpg`. **Số tập** lấy theo chữ
@@ -441,6 +442,18 @@ python pdf_import.py "...\14 - Ba chàng hiệp sĩ mộng mơ"  :: 1 tập bị
   đánh lại số `001…`. File không phải ảnh (`ComicInfo.xml`, `.txt`…) bỏ qua + báo; **trang đôi** (ảnh
   ngang) giữ nguyên 1 ảnh + báo số trang. Ảnh hỏng → bước kiểm tra báo đúng trang, không đụng gì. CBZ
   gốc cất vào `<folder truyện>\.cbz-goc\`. Không cần `pypdf`.
+- **MOBI** (`.mobi`/`.azw` — truyện tranh Kindle do KindleComicConverter/kindlegen tạo): đặt thẳng trong
+  folder truyện, vd `downloads\Rockman 8\RockMan Series.mobi`. Ảnh JPEG trong file chép **nguyên bytes**
+  theo thứ tự trang của sách. Sách có **mục lục** (≥ 2 mục) → mỗi mục 1 thư mục `Chapter NN` (số lấy từ
+  tên mục: "Chapter 14 END" → `Chapter 14`; tên mục thiếu số → đánh 01, 02… theo thứ tự); không có mục
+  lục → cả sách 1 `Tập NN` như CBZ. Ghi đủ mọi chương vào `.pdf-tmp` rồi mới chuyển sang chỗ thật. Gốc
+  cất vào `<folder truyện>\.mobi-goc\`. **Từ chối** (báo rõ, không đụng gì): sách có **DRM** (mua trên
+  Kindle Store), sách chỉ có định dạng **KF8/AZW3** (chưa hỗ trợ — xuất lại bằng KCC kiểu MOBI), sách
+  **chữ** (tiểu thuyết: chỉ lấy ảnh sẽ mất chữ). Không cần thư viện mới. Lưu ý: KCC thường đã thu nhỏ +
+  chuyển ảnh sang trắng đen theo máy Kindle (vd 1072×1448), nên có bản scan gốc thì dùng bản gốc.
+- **Bìa** `--bia N` (chỉ khi nhập đúng 1 file; `Nhap PDF.bat` hỏi khi kéo-thả 1 file): chép trang N (đếm
+  từ 1 trong cả file) thành `cover.jpg` trong folder truyện — reader ưu tiên file `cover.*`. Dùng khi
+  trang đầu không phải bìa (vd trang credit nhóm dịch). Đã có `cover.*` khác → không ghi đè.
 
 ## Làm nét ảnh scan — Real-ESRGAN (`realesrgan-ncnn-vulkan-v0.2.0-windows\lam-net.bat`)
 
