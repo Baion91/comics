@@ -763,6 +763,33 @@ cách chạy thật + decode thử ảnh.
   không ảnh, tên không số, CBZ ngay downloads/ / trong folder con → từ chối; PDF (bản sao Tập 18 phần
   121) chạy y cũ. `check_library` báo NHẦM "tráo ô" trang 008 của Kindle v001 (trang thường, khung kẻ
   thẳng hàng — heuristic comix) → `check-ignore.txt`.
+  **MOBI (30/10)** — user có `RockMan Series.mobi` (KindleComicConverter 5.5.2, 220MB) → thêm vào CHÍNH
+  tool này như CBZ. Truyện KCC/kindlegen = sách bố cục cố định: mỗi trang 1 `<img recindex="NNNNN">`
+  trong text, ảnh = record `first_img + NNNNN - 1` (JPEG nguyên bytes). File `.mobi` của KCC là bản LAI
+  MOBI7 + KF8 dùng chung ảnh → chỉ đọc phần MOBI7 (record 0; `version` ≥ 8 ở record 0 = KF8 thuần/.azw3 →
+  từ chối "chưa hỗ trợ"). Bộ đọc tự viết bằng stdlib theo KindleUnpack: PalmDB (`BOOKMOBI`, bảng record),
+  header MOBI (`encryption` ≠ 0 → DRM, từ chối; nén 1/2 = không/PalmDOC, 17480 HUFF/CDIC → từ chối;
+  `extra_flags` @242 → cắt trailing entries mỗi record text TRƯỚC khi giải nén; NCX @244), text nối lại
+  → thứ tự trang = thứ tự thẻ ảnh (lặp recindex vẫn chép lặp); mục lục NCX = index INDX (TAGX, IDXT, nhãn
+  trong CNCX; thẻ 1 = filepos trong text đã giải nén, 3 = nhãn, 4 = cấp) → trang đầu mỗi mục =
+  `bisect_left` filepos trên vị trí các thẻ ảnh (đã đối chiếu bằng mắt trang tiêu đề chương 3/6/7/9/13).
+  Chỉ lấy mục cấp 0; mục trùng trang → gộp; trang trước mục đầu → gộp vào mục đầu (đều báo). Đặt tên:
+  ≥ 2 mục → `Chapter NN` (số từ nhãn qua `_num`, phải tăng dần; không thì 01, 02… theo thứ tự); < 2 mục
+  → `Tập NN` từ tên file như CBZ. Sách có > `MOBI_TEXT_MAX` (2000) ký tự hiển thị → "sách chữ", từ chối
+  (chỉ lấy ảnh sẽ mất chữ). Cấu trúc đọc LÚC LẬP KẾ HOẠCH (`mobi_book` ~1s, chưa đọc ảnh) để biết trước
+  mọi thư mục đích → chặn trùng đích theo TỪNG thư mục (`Job.dests`). `import_job` thành nhiều chương:
+  kiểm HẾT đích trước (đã có + giống → bỏ qua; khác → dừng cả nguồn, chưa ghi gì) → ghi đủ mọi chương
+  vào `.pdf-tmp` + kiểm → mới đổi tên lần lượt (lỗi giữa lúc đổi tên → báo số chương đã chuyển, chạy lại
+  làm nốt). Gốc → `.mobi-goc/`. MOBI trong folder con → từ chối. **`--bia N`** (mọi loại nguồn, chỉ khi
+  đúng 1 file/tập): trang N (đếm trong CẢ nguồn) → `cover.<đuôi>` trong folder truyện (`cover_source` của
+  reader ưu tiên `cover.*`); đã có `cover.*` giống → thôi, khác → không ghi đè. Lý do có tuỳ chọn: bìa
+  nhúng EXTH 201 của KCC + trang 1 của Rockman 8 đều là poster credit nhóm dịch, bìa thật là trang 3
+  (trang 2|3 = bìa áo bị KCC cắt đôi). KCC thường đã thu nhỏ + chuyển xám ảnh theo máy Kindle (Rockman 8:
+  1072×1448, mất màu) — có scan gốc thì dùng scan gốc. *Test*: Rockman 8 → 14 chương / 527 ảnh khớp
+  từng byte, 5.9s (dry-run 3.4s); mobi giả dựng từ header thật (DRM/KF8/HUFF/sách chữ/không ảnh/tên
+  không số/không phải mobi) → từ chối đúng. *Gotcha thử bat*: đưa câu trả lời bằng redirect/pipe vào
+  `Nhap PDF.bat` thì `set /p` đọc RỖNG vì `chcp 65001` (pipe thì còn dính khoảng trắng + nuốt cả bộ
+  đệm) — thử logic bat thì bỏ dòng `chcp` ở bản sao rồi redirect file; không phải lỗi bat.
 - `reader_server.py` — web reader kiểu Asura (HTML sinh trong Python stdlib; CSS/JS
   từ 21/08 tách ra file tĩnh versioned `/static/*` + có Service Worker `/sw.js`, xem
   mục "Tài nguyên tĩnh + Service Worker"; không dependency ngoài Pillow tùy chọn), port mặc định **8080**, user
