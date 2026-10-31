@@ -10,8 +10,9 @@ Nguồn dữ liệu (đều nằm trên máy SERVER):
   - client.jsonl : trình duyệt gửi POST /api/diag — Navigation Timing (SW khởi động,
                    byte đầu, trang hiện), bấm -> trang mới, đứng luồng chính, sự kiện SW,
                    ev='img' = bộ nạp ảnh chương (treo/cụt/lỗi/tải lại tay, từ 11/10;
-                   chờ trên màn hình + huỷ do rời trang, từ 14/10; zm = số lần chạm
-                   đúp phóng to, từ 27/10 — thay md "chạm đúp tải lại"); bản ghi nav
+                   chờ trên màn hình + huỷ do rời trang, từ 14/10; md = chạm đúp tải
+                   lại tới 27/10, zm = chạm đúp phóng 2x 27–30/10; từ 30/10 chạm đúp
+                   để iOS lo: dz/dzo/d1/pz/dzf = bộ đo chạm đúp + véo phóng); bản ghi nav
                    có ios = phiên bản iOS/Safari (từ 27/10).
 Xem báo cáo:
   - python diag_report.py [số giờ]         (in ra màn hình, mặc định 48h gần nhất)
@@ -400,25 +401,35 @@ def build_report(meta_dir, hours=48.0, brief=False):
     add("[11] BỘ NẠP ẢNH CHƯƠNG (fetch + canh treo từ 11/10; chờ trên màn, huỷ do rời trang từ 14/10)")
     if im:
         t = {k: sum(r.get(k) or 0 for r in im)
-             for k in ("n", "st", "ns", "tr", "bad", "er", "ab", "pe", "mt", "md", "zm", "rs", "pre",
-                       "wm", "vs", "v0", "vw", "vq")}
+             for k in ("n", "st", "ns", "tr", "bad", "er", "ab", "pe", "mt", "md", "zm", "dz", "dzo",
+                       "d1", "pz", "rs", "pre", "wm", "vs", "v0", "vw", "vq")}
         add(f"  {len(im)} bản ghi | ảnh hiện {t['n']} | treo được cứu {t['st']}"
             f" (cả loạt cùng treo {t['ns']}) | cụt byte {t['tr']} | giải mã hỏng {t['bad']}"
             f" | lỗi mạng/HTTP {t['er']} | bỏ cuộc (ô chạm để tải lại) {t['pe']}")
-        # md = "chạm đúp tải lại" (bỏ 27/10, chỉ còn ở bản ghi cũ); zm = chạm đúp phóng to
         add(f"  huỷ do rời trang/app vào nền (không phải lỗi) {t['ab']}"
-            f" | chạm ô chưa hiện {t['mt']} | chạm đúp phóng to {t['zm']}"
-            + (f" (bản cũ: chạm đúp tải lại {t['md']})" if t["md"] else "")
-            + f" | mở lại app phải tải lại ảnh dở {t['rs']} | nhường suất cho ảnh trên màn {t['pre']}"
+            f" | chạm ô chưa hiện {t['mt']}"
+            f" | mở lại app phải tải lại ảnh dở {t['rs']} | nhường suất cho ảnh trên màn {t['pre']}"
             f" | tải trước chương kế {t['wm']} ảnh")
+        # chạm đúp: tới 27/10 = tải lại ảnh (md), 27–30/10 = phóng 2x (zm), từ 30/10 để iOS
+        # lo (đang véo phóng mà chạm đúp ảnh -> iOS về cỡ gốc): dz chạm đúp lúc đang phóng,
+        # dzo số lần 0.8s sau đã về cỡ gốc, d1 chạm đúp ở cỡ gốc, pz số lần véo phóng to
+        add(f"  PHÓNG TO (iOS lo, từ 30/10): véo phóng to {t['pz']} | chạm đúp lúc đang phóng {t['dz']}"
+            f" -> đã về cỡ gốc {t['dzo']} | chạm đúp ở cỡ gốc {t['d1']}"
+            + (f" | bản 27/10: chạm đúp phóng 2x {t['zm']}" if t["zm"] else "")
+            + (f" | bản cũ: chạm đúp tải lại {t['md']}" if t["md"] else ""))
+        dzf = [x for r in im for x in (r.get("dzf") or []) if isinstance(x, list) and len(x) == 2]
+        if dzf:
+            add(f"  ⚠ chạm đúp mà KHÔNG về cỡ gốc {len(dzf)} lần (cỡ lúc chạm -> 0.8s sau): "
+                + ", ".join(f"{a}x->{b}x" for a, b in dzf[:15]))
         zms = {}
         for r in im:
-            if r.get("zm"):
+            v = (r.get("pz") or 0) + (r.get("dz") or 0) + (r.get("zm") or 0)
+            if v:
                 k = unquote(r.get("path") or "").split("/")[2:3]
                 k = k[0] if k else "?"
-                zms[k] = zms.get(k, 0) + r["zm"]
+                zms[k] = zms.get(k, 0) + v
         if zms:
-            add("  phóng to theo truyện: " + ", ".join(
+            add("  phóng to theo truyện (véo + chạm đúp): " + ", ".join(
                 f"{k[:40]} {v}" for k, v in sorted(zms.items(), key=lambda kv: -kv[1])[:5]))
         recs = [x for r in im for x in (r.get("rec") or []) if isinstance(x, (int, float))]
         if recs:
