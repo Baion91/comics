@@ -1363,9 +1363,14 @@ img{border:0}
 /* Cột ảnh: 100% = 800px; nút chỉnh cỡ (--imgw) trong header đổi giá trị này.
    Kẹp min(...,100%) để không bao giờ vượt bề rộng màn (không cuộn ngang);
    mobile hẹp cũng tự về full-width nên bỏ được media 768 riêng cho #strip.
-   KHÔNG thêm touch-action ở đây: chặn mất chạm đúp về cỡ gốc của iOS (30/10). */
+   KHÔNG thêm touch-action ở đây: chặn mất chạm đúp thu về cỡ gốc của iOS (30/10). */
 #strip{margin:0 auto;width:100%;max-width:min(var(--imgw,800px),100%)}
 #strip img{display:block;width:100%;height:auto;background:#15161b}
+/* Chạm đúp ở cỡ gốc = phóng 2 lần (kiểu app Ảnh, 31/10): JS đặt --zw (2 x bề rộng cột lúc
+   thường), --zl (lề trái, đủ để trang đôi không tràn mép trái), --spz (2 x bề rộng trang đôi)
+   rồi bật html.zm -> cột ảnh rộng hơn màn, cuộn ngang/dọc = cuộn thường; véo 2 ngón vẫn chạy. */
+html.zm #strip{width:var(--zw);max-width:none;margin-left:var(--zl)}
+html.zm .spread{width:var(--spz)}
 /* Ảnh hỏng hẳn (hết lượt tự retry): cả ô là nút "chạm để tải lại" */
 #strip img.perr{cursor:pointer;min-height:230px;background:#15161b url('data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" width="220" height="120" viewBox="0 0 220 120"><g fill="none" stroke="%239a9aa5" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" transform="translate(93,16) scale(1.4)"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></g><text x="110" y="102" text-anchor="middle" font-family="system-ui,sans-serif" font-size="14" fill="%239a9aa5">Image failed — tap to retry</text></svg>') center no-repeat}
 #strip .spread img.perr{min-height:0}
@@ -1813,9 +1818,12 @@ DIAG_JS = """
 
 def page(title, body, body_class=""):
     return ("<!doctype html><html lang=\"vi\"><head><meta charset=\"utf-8\">"
-            # không thêm maximum-scale / user-scalable=no: iOS chỉ cho véo phóng to + chạm
-            # đúp về cỡ gốc khi trang còn phóng được
-            "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1, viewport-fit=cover\">"
+            # minimum-scale=1 + shrink-to-fit=no: trang đọc phóng 2x (chạm đúp) làm cột ảnh
+            # rộng hơn màn -> không có 2 cái này WebKit được tự co cả trang cho vừa bề ngang
+            # (ViewportConfiguration::shouldIgnoreHorizontalScalingConstraints). KHÔNG thêm
+            # maximum-scale / user-scalable=no: iOS cần trang phóng được để véo + chạm đúp thu về.
+            "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1, minimum-scale=1,"
+            " shrink-to-fit=no, viewport-fit=cover\">"
             "<meta name=\"theme-color\" content=\"#0b0c10\">"
             # color-scheme + nền tối inline: áp NGAY, trước khi app.css (link
             # ngoài) tải xong. Chặn frame trắng đầu tiên khi iOS dựng lại trang
@@ -2973,13 +2981,13 @@ READER_JS = """
   var netT=0, netTimer=null, lsT=0;
   function mirrorPos(){
     lsT=Date.now();
-    var y=Math.round(scrollY);
+    var y=posY();
     try{ if(LOGGEDIN) LS.mset(D.uk,D.sid,D.rel,y,D.name); else LS.setProg(D.sid,D.rel,y,D.name); }catch(e){}
   }
   function sendPos(){
     netT=Date.now();
     if(netTimer){clearTimeout(netTimer);netTimer=null;}
-    var y=Math.round(scrollY);
+    var y=posY();
     if(!LOGGEDIN){ try{LS.setProg(D.sid,D.rel,y,D.name);}catch(e){} return; }
     // đã đăng nhập: ghi server + MIRROR localStorage (đồng bộ, sống sót cả khi
     // request keepalive thất lạc); ts để trang khác / lần mở sau so độ tươi với
@@ -3068,29 +3076,102 @@ READER_JS = """
     if(!hid && Date.now()-barT>600) setBars(true);
     savePos(); markRead();
   },{passive:true});
-  // chạm/click vùng đọc để bật tắt thanh công cụ (trừ ô ảnh chưa hiện / "chạm để tải lại").
-  // Chạm đúp ảnh để lại cho iOS (30/10): đang véo phóng to mà chạm đúp lên ảnh -> iOS tự
-  // thu về cỡ gốc (vừa khít ảnh); ở cỡ gốc iOS bỏ qua chạm đúp, mỗi chạm ra 1 click ->
-  // chạm trên ảnh chờ DT ms, có click thứ 2 (chạm đúp / đúp chuột PC) thì thôi, khỏi nháy
-  // thanh. Đang phóng rõ (>ZS) iOS đã tự chờ xem có chạm thứ 2 -> bật/tắt ngay; dưới ZS
-  // (phóng nhẹ) iOS coi chạm đúp không đáng phóng nên cũng ra 2 click như cỡ gốc.
-  // KHÔNG thêm touch-action / preventDefault chạm trên ảnh: chặn mất chạm đúp của iOS
-  // (bản 11/10 chặn để "tải lại ảnh", bản 27/10 chặn để tự phóng 2x — đều đã gỡ).
-  var DT=350, ZS=1.25, barTm=0, vv=window.visualViewport;
+  // --- chạm ảnh / chạm đúp kiểu app Ảnh iPhone (31/10) ---
+  // - cỡ gốc: chạm đúp ảnh -> phóng 2x đúng điểm chạm (CODE MÌNH: nới rộng cột ảnh, CSS
+  //   html.zm). iOS không làm được: trang width=device-width ở cỡ gốc WebKit tắt hẳn chạm đúp
+  //   (cho chạm ăn ngay), có bật thì cũng chỉ phóng "vừa khít ảnh" = ảnh full ngang, không đổi;
+  // - đã phóng 2x (cỡ iOS vẫn 1): chạm đúp -> về cỡ gốc (code mình);
+  // - đang véo phóng (visualViewport.scale > 1): ĐỂ iOS tự thu về vừa khít ảnh (= cỡ gốc; diag
+  //   31/10 thấy chạy đúng), mình chỉ bỏ nốt 2x nếu có. iOS từ chối (véo nhẹ <=1.25x, nửa trang
+  //   đôi — luật "không đáng phóng" 0.8 của WebKit) -> đổi tạm viewport maximum-scale=1 để ép về
+  //   1x (WebKit bỏ qua nếu bật "luôn cho phóng" -> bộ đo ghi được/không);
+  // - chạm 1 lần trên ảnh: chờ DT ms (tính từ touchend, mọi cỡ) rồi bật/tắt thanh công cụ, chạm
+  //   thứ 2 tới thì là chạm đúp -> thanh không đổi. PC: nhấp đúp không làm gì (dùng nút cỡ ảnh).
+  // KHÔNG touch-action / preventDefault chạm trên ảnh: chặn mất chạm đúp thu về của iOS (bản
+  // 11/10 chặn để "tải lại ảnh", bản 27/10 chặn để tự phóng 2x -> véo xong chạm đúp lại phóng thêm).
+  // Vị trí đọc luôn lưu theo cỡ thường (posY) — mở lại chương là đúng chỗ.
+  var DT=350, barTm=0, tapT=0, vv=window.visualViewport,
+      zStrip=document.getElementById('strip'), zk=1, vpM=document.querySelector('meta[name=viewport]');
+  // bộ đo (gửi kèm ev 'img' của bộ nạp): zi/zo = chạm đúp phóng/thu 2x (code mình), zs = cỡ iOS
+  // 0.5s sau khi phóng (phải =1; <1 là iOS co trang); pz = số lần véo phóng >1.1x; dz = chạm đúp
+  // lúc đang véo, dzo = iOS tự về cỡ gốc, nr = iOS không về -> ép bằng viewport, nrk = ép được;
+  // f = [cỡ lúc chạm, cỡ sau khi ép] của lần vẫn không về
+  var DZ={zi:0,zo:0,pz:0,dz:0,dzo:0,nr:0,nrk:0,zs:[],f:[]};
   function vScale(){ return vv&&vv.scale>0?vv.scale:1; }
+  function r2(x){ return Math.round(x*100)/100; }
+  function toggleLater(){
+    if(barTm) clearTimeout(barTm);
+    barTm=setTimeout(function(){ barTm=0; setBars(!hid); },DT);
+  }
   document.addEventListener('click',function(e){
     if(e.target.closest('a,button,select,option,header,footer,img.perr,img.ldg')) return;
-    if(barTm){ clearTimeout(barTm); barTm=0; return; }   // click thứ 2 của cú chạm/đúp chuột
-    if(!e.target.closest('#strip img')||vScale()>ZS){ setBars(!hid); return; }
-    barTm=setTimeout(function(){ barTm=0; setBars(!hid); },DT);
+    var onImg=e.target.closest('#strip img');
+    if(onImg&&Date.now()-tapT<1000) return;    // click giả của cú chạm đã xử lý ở touchend
+    if(!onImg){ setBars(!hid); return; }
+    if(barTm){ clearTimeout(barTm); barTm=0; return; }   // click thứ 2 của cú nhấp đúp (PC)
+    toggleLater();
   });
-  // bộ đo chạm đúp (chỉ NGHE, passive): dz = chạm đúp ảnh lúc đang phóng to, dzo = số lần
-  // trong đó 0.8s sau đã về cỡ gốc (xác nhận iOS làm đúng), f = [cỡ lúc chạm, cỡ sau 0.8s]
-  // của lần không về; d1 = chạm đúp ảnh ở cỡ gốc; pz = số lần véo phóng to (>1.1x)
-  var DZ={dz:0,dzo:0,d1:0,pz:0,f:[]};
+  function posY(){
+    var y=scrollY;
+    if(zk!==1&&zStrip){ var T=zStrip.getBoundingClientRect().top+scrollY; if(y>T) y=T+(y-T)/zk; }
+    return Math.round(y);
+  }
+  // đổi cỡ cột ảnh, giữ điểm (cx,cy) của ảnh im nằm yên trên màn
+  function setZoom(k,im,cx,cy){
+    if(k===zk||!zStrip) return;
+    var fx=0, fy=0, R=document.documentElement;
+    if(im){ var r=im.getBoundingClientRect(); fx=(cx-r.left)/r.width; fy=(cy-r.top)/r.height; }
+    if(k===1) R.classList.remove('zm');
+    else{
+      var W0=zStrip.getBoundingClientRect().width, sp=zStrip.querySelector('.spread'),
+          Sw=sp?sp.getBoundingClientRect().width:0, W1=W0*k;
+      zStrip.style.setProperty('--zw',W1+'px');
+      zStrip.style.setProperty('--spz',(Sw*k)+'px');
+      // trang đôi rộng hơn cột, căn giữa cột -> lề trái đủ để nó không lòi ra ngoài mép trái
+      zStrip.style.setProperty('--zl',Math.max(0,(Sw-W0)*k/2,(R.clientWidth-W1)/2)+'px');
+      R.classList.add('zm');
+    }
+    zk=k;
+    if(im){ var q=im.getBoundingClientRect();
+      scrollTo(scrollX+q.left+fx*q.width-cx,scrollY+q.top+fy*q.height-cy); }
+  }
+  // về hẳn 1x sau khi iOS đã thu phần véo: giữ ảnh đang ở giữa màn
+  function unzoomCenter(im){
+    if(zk===1) return;
+    var cx=document.documentElement.clientWidth/2, cy=innerHeight/2,
+        el=document.elementFromPoint(cx,cy), m=el&&el.closest&&el.closest('#strip img');
+    setZoom(1,m||im,cx,cy);
+  }
+  // ép iOS về cỡ 1: viewport maximum-scale=1 một nhịp rồi trả lại (WebKit kẹp cỡ vào [min,max]).
+  // Luôn trả về đúng bản lúc mở trang (vp0) + không ép chồng: kẹt maximum-scale=1 = hết véo được.
+  var vp0=vpM&&vpM.getAttribute('content'), vpBusy=false;
+  function vpReset(cb){
+    if(!vp0||vpBusy){ cb(); return; }
+    vpBusy=true;
+    vpM.setAttribute('content',vp0+', maximum-scale=1');
+    setTimeout(function(){ vpM.setAttribute('content',vp0); vpBusy=false; setTimeout(cb,350); },300);
+  }
+  function dbl(im,cx,cy,z){
+    if(z<=1.02){                               // iOS ở cỡ gốc -> mình phóng / thu
+      if(zk===1){
+        setZoom(2,im,cx,cy); DZ.zi++;
+        setTimeout(function(){ if(DZ.zs.length<10) DZ.zs.push(r2(vScale())); },500);
+      } else { setZoom(1,im,cx,cy); DZ.zo++; }
+      return;
+    }
+    DZ.dz++;                                   // đang véo -> iOS tự thu (không ra click)
+    setTimeout(function(){
+      if(vScale()<1.02){ DZ.dzo++; unzoomCenter(im); return; }
+      DZ.nr++;
+      vpReset(function(){
+        var a=vScale();
+        if(a<1.02){ DZ.nrk++; unzoomCenter(im); }
+        else if(DZ.f.length<10) DZ.f.push([r2(z),r2(a)]);
+      });
+    },700);
+  }
   (function(){
     var tS=null, tL=null, big=false;
-    function r2(x){ return Math.round(x*100)/100; }
     if(vv) vv.addEventListener('resize',function(){
       var s=vScale();
       if(!big&&s>1.1){ big=true; DZ.pz++; } else if(big&&s<1.02) big=false;
@@ -3100,22 +3181,27 @@ READER_JS = """
       tS=(e.touches.length===1&&t)?{x:t.clientX,y:t.clientY,t:Date.now(),s:vScale()}:null;
       if(!tS) tL=null;                         // véo 2 ngón: không phải chạm
     },{passive:true});
+    // passive: chỉ NGHE, không bao giờ chặn — để iOS còn tự thu phần véo khi chạm đúp
     document.addEventListener('touchend',function(e){
       var c=e.changedTouches&&e.changedTouches[0], t=Date.now(), s=tS; tS=null;
       if(!s||!c||e.touches.length||t-s.t>350||Math.abs(c.clientX-s.x)>12||Math.abs(c.clientY-s.y)>12){ tL=null; return; }
       var im=e.target.closest&&e.target.closest('#strip img');
-      if(im&&tL&&t-tL.t<DT&&Math.abs(c.clientX-tL.x)<40&&Math.abs(c.clientY-tL.y)<40){
+      if(!im||im.classList.contains('ldg')||im.classList.contains('perr')){ tL=null; return; }
+      tapT=t;
+      if(tL&&t-tL.t<DT&&Math.abs(c.clientX-tL.x)<40&&Math.abs(c.clientY-tL.y)<40){
         var z=tL.s; tL=null;
-        if(z<=1.02){ DZ.d1++; return; }
-        DZ.dz++;
-        setTimeout(function(){
-          var a=vScale();
-          if(a<1.02) DZ.dzo++; else if(DZ.f.length<10) DZ.f.push([r2(z),r2(a)]);
-        },800);
+        if(barTm){ clearTimeout(barTm); barTm=0; }
+        dbl(im,c.clientX,c.clientY,z);
         return;
       }
-      tL=im?{t:t,x:c.clientX,y:c.clientY,s:s.s}:null;
+      tL={t:t,x:c.clientX,y:c.clientY,s:s.s};
+      toggleLater();
     },{passive:true});
+    // xoay máy: bề rộng cột đổi -> về cỡ thường, giữ chỗ đang đọc
+    addEventListener('orientationchange',function(){
+      if(zk===1) return;
+      var y=posY(); setZoom(1); scrollTo(0,y);
+    });
   })();
   // phím tắt PC
   addEventListener('keydown',function(e){
@@ -3198,7 +3284,7 @@ READER_JS = """
   //  4. mở lại app (ẩn >3s) / bfcache / có mạng lại: coi kết nối cũ đã chết -> huỷ +
   //     tải lại ngay mọi ảnh đang dở, hồi cả ô "chạm để tải lại";
   //  5. tay: chạm ô chưa hiện = tải ngay ô đó (27/10 bỏ "chạm đúp ảnh = tải lại": chạm đúp
-  //     để lại cho iOS, xem trên; ảnh hỏng vẫn tự thử lại + ô lỗi vẫn chạm để tải lại);
+  //     giờ là phóng/thu kiểu app Ảnh, xem trên; ảnh hỏng vẫn tự thử lại + ô lỗi vẫn chạm để tải lại);
   //  6. cuộn tới ô chưa có mà 3 suất đều bận ảnh ở xa (>1 màn) -> nhường suất;
   //  7. cả chương xong -> tải trước 6 ảnh đầu chương KẾ vào cache HTTP (bấm Next là có);
   //  8. bộ đo: ev 'img' (treo/cụt/lỗi/tay/thời gian lành) gửi khi ẩn/rời trang;
@@ -3215,7 +3301,7 @@ READER_JS = """
     var MAX=3, DELAYS=[1000,3000,8000], GAP=2500, FIRST=5000, MAXSTALL=6, WARM=6;
     var all=[].slice.call(strip.querySelectorAll('img'));
     var pend=[], act=[], netSt=0, gone=false, hold=false;
-    var S={n:0,st:0,ns:0,tr:0,bad:0,er:0,ab:0,pe:0,mt:0,dz:0,dzo:0,d1:0,pz:0,rs:0,pre:0,wm:0,vs:0,v0:0,vw:0,vq:0},
+    var S={n:0,st:0,ns:0,tr:0,bad:0,er:0,ab:0,pe:0,mt:0,zi:0,zo:0,pz:0,dz:0,dzo:0,nr:0,nrk:0,rs:0,pre:0,wm:0,vs:0,v0:0,vw:0,vq:0},
         sent={}, rec=[], W=[], WQ=[];
     all.forEach(function(im,i){
       im._i=i; im._tries=0; im._stalls=0;
@@ -3526,9 +3612,10 @@ READER_JS = """
     }
     function report(){
       var o={ev:'img'}, any=false;
-      S.dz=DZ.dz; S.dzo=DZ.dzo; S.d1=DZ.d1; S.pz=DZ.pz;   // bộ đo chạm đúp (code phía trên)
+      ['zi','zo','pz','dz','dzo','nr','nrk'].forEach(function(k){ S[k]=DZ[k]; });   // bộ đo chạm đúp (code phía trên)
       for(var k in S){ var d=S[k]-(sent[k]||0); if(d){ o[k]=d; any=true; } sent[k]=S[k]; }
       if(DZ.f.length){ o.dzf=DZ.f.splice(0,10); any=true; }
+      if(DZ.zs.length){ o.zs=DZ.zs.splice(0,10); any=true; }
       if(rec.length){ o.rec=rec.splice(0,30); any=true; }
       if(W.length){ o.w=W.splice(0,60); any=true; }
       if(WQ.length){ o.wq=WQ.splice(0,30); any=true; }

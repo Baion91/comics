@@ -11,8 +11,9 @@ Nguồn dữ liệu (đều nằm trên máy SERVER):
                    byte đầu, trang hiện), bấm -> trang mới, đứng luồng chính, sự kiện SW,
                    ev='img' = bộ nạp ảnh chương (treo/cụt/lỗi/tải lại tay, từ 11/10;
                    chờ trên màn hình + huỷ do rời trang, từ 14/10; md = chạm đúp tải
-                   lại tới 27/10, zm = chạm đúp phóng 2x 27–30/10; từ 30/10 chạm đúp
-                   để iOS lo: dz/dzo/d1/pz/dzf = bộ đo chạm đúp + véo phóng); bản ghi nav
+                   lại tới 27/10, zm = chạm đúp phóng 2x 27–30/10, d1 = chạm đúp ở cỡ gốc
+                   30–31/10; từ 31/10 kiểu app Ảnh: zi/zo/zs + pz/dz/dzo/nr/nrk/dzf = bộ
+                   đo chạm đúp + véo phóng); bản ghi nav
                    có ios = phiên bản iOS/Safari (từ 27/10).
 Xem báo cáo:
   - python diag_report.py [số giờ]         (in ra màn hình, mặc định 48h gần nhất)
@@ -402,7 +403,7 @@ def build_report(meta_dir, hours=48.0, brief=False):
     if im:
         t = {k: sum(r.get(k) or 0 for r in im)
              for k in ("n", "st", "ns", "tr", "bad", "er", "ab", "pe", "mt", "md", "zm", "dz", "dzo",
-                       "d1", "pz", "rs", "pre", "wm", "vs", "v0", "vw", "vq")}
+                       "d1", "pz", "zi", "zo", "nr", "nrk", "rs", "pre", "wm", "vs", "v0", "vw", "vq")}
         add(f"  {len(im)} bản ghi | ảnh hiện {t['n']} | treo được cứu {t['st']}"
             f" (cả loạt cùng treo {t['ns']}) | cụt byte {t['tr']} | giải mã hỏng {t['bad']}"
             f" | lỗi mạng/HTTP {t['er']} | bỏ cuộc (ô chạm để tải lại) {t['pe']}")
@@ -410,20 +411,28 @@ def build_report(meta_dir, hours=48.0, brief=False):
             f" | chạm ô chưa hiện {t['mt']}"
             f" | mở lại app phải tải lại ảnh dở {t['rs']} | nhường suất cho ảnh trên màn {t['pre']}"
             f" | tải trước chương kế {t['wm']} ảnh")
-        # chạm đúp: tới 27/10 = tải lại ảnh (md), 27–30/10 = phóng 2x (zm), từ 30/10 để iOS
-        # lo (đang véo phóng mà chạm đúp ảnh -> iOS về cỡ gốc): dz chạm đúp lúc đang phóng,
-        # dzo số lần 0.8s sau đã về cỡ gốc, d1 chạm đúp ở cỡ gốc, pz số lần véo phóng to
-        add(f"  PHÓNG TO (iOS lo, từ 30/10): véo phóng to {t['pz']} | chạm đúp lúc đang phóng {t['dz']}"
-            f" -> đã về cỡ gốc {t['dzo']} | chạm đúp ở cỡ gốc {t['d1']}"
+        # chạm đúp: tới 27/10 = tải lại ảnh (md), 27–30/10 = phóng 2x (zm), 30–31/10 để iOS
+        # lo (d1 = chạm đúp ở cỡ gốc, không làm gì), từ 31/10 kiểu app Ảnh: ở cỡ gốc mình phóng
+        # 2x (zi) / thu (zo); đang véo -> dz, iOS tự về cỡ gốc dzo, iOS không về -> ép bằng
+        # viewport nr, ép được nrk; pz = số lần véo phóng to
+        add(f"  PHÓNG TO (kiểu app Ảnh, từ 31/10): chạm đúp phóng 2x {t['zi']} | chạm đúp thu 2x {t['zo']}"
+            f" | véo phóng to {t['pz']} | chạm đúp lúc đang véo {t['dz']} -> iOS tự về cỡ gốc {t['dzo']}"
+            f" | iOS không về, ép bằng viewport {t['nr']} (được {t['nrk']})"
+            + (f" | bản 30/10: chạm đúp ở cỡ gốc (không làm gì) {t['d1']}" if t["d1"] else "")
             + (f" | bản 27/10: chạm đúp phóng 2x {t['zm']}" if t["zm"] else "")
             + (f" | bản cũ: chạm đúp tải lại {t['md']}" if t["md"] else ""))
+        zs = [x for r in im for x in (r.get("zs") or []) if isinstance(x, (int, float))]
+        if zs:
+            bad = [x for x in zs if abs(x - 1) > 0.02]
+            add(f"  cỡ iOS 0.5s sau khi phóng 2x (phải = 1): {len(zs) - len(bad)}/{len(zs)} đúng"
+                + (f" | ⚠ lệch: {', '.join(f'{x}x' for x in bad[:10])} (<1 = iOS tự co trang)" if bad else ""))
         dzf = [x for r in im for x in (r.get("dzf") or []) if isinstance(x, list) and len(x) == 2]
         if dzf:
-            add(f"  ⚠ chạm đúp mà KHÔNG về cỡ gốc {len(dzf)} lần (cỡ lúc chạm -> 0.8s sau): "
+            add(f"  ⚠ chạm đúp mà KHÔNG về cỡ gốc {len(dzf)} lần (cỡ lúc chạm -> cỡ cuối): "
                 + ", ".join(f"{a}x->{b}x" for a, b in dzf[:15]))
         zms = {}
         for r in im:
-            v = (r.get("pz") or 0) + (r.get("dz") or 0) + (r.get("zm") or 0)
+            v = sum(r.get(k) or 0 for k in ("zi", "pz", "dz", "zm"))
             if v:
                 k = unquote(r.get("path") or "").split("/")[2:3]
                 k = k[0] if k else "?"
