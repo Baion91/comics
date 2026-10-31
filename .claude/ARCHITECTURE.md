@@ -806,8 +806,8 @@ cách chạy thật + decode thử ảnh.
   nhẹ ở đáy — `pointer-events:none` để chạm xuyên qua cho handler vùng đọc bật bars +
   ẩn pill; cuộn/chạm-lại → ẩn bars + pill trở lại), **nút chỉnh cỡ ảnh** (stepper −/%/+ header cạnh ⧉, có ô gõ % tay;
   100%=800px, min 1% cap 300%, đổi `#strip{max-width:min(var(--imgw,800px),100%)}`,
-  kẹp theo màn không cuộn ngang, nhớ localStorage, ẩn ≤480px), **chạm đúp ảnh = phóng to 2 lần, chạm đúp
-  lại = về cỡ thường** (27/10 — xem "Chạm đúp phóng to 27/10"). **UI reader bằng
+  kẹp theo màn không cuộn ngang, nhớ localStorage, ẩn ≤480px), **chạm đúp ảnh để iOS lo** (đang véo
+  phóng mà chạm đúp ảnh → về cỡ gốc; 30/10 — xem "Chạm đúp 30/10: trả cho iOS"). **UI reader bằng
   tiếng Anh** (Bookmark/Bookmarked, All Comics, First/Latest Chapter, Prev/Next,
   Newest/Oldest, END OF CHAPTER...); comment code + log terminal giữ tiếng Việt.
   **Trang chủ** 2 mục có header ô-icon kiểu Asura: **Bookmarked** (slider ngang
@@ -1445,7 +1445,7 @@ cách chạy thật + decode thử ảnh.
   ngay; cụt y hệt 2 lần thì nhận (phòng server đổi file). Giải mã hỏng (`onerror` của blob) → cũng reload. (4)
   Vào lại app sau >3s ẩn / `pageshow` bfcache / `online` → `restartAll()` (chặn 800ms vì pageshow+visibility
   bắn liền): huỷ mọi lượt đang dở + tải lại, hồi cả ô `perr`. (5) Tay: chạm ô `ldg`/`perr` = tải ngay ô đó (lấn
-  suất ảnh xa nhất); [BỎ 27/10 — chạm đúp giờ là phóng to] chạm ĐÚP ảnh đã hiện (touch tự bắt <400ms, <12px, `preventDefault` chống zoom, `setBars(!hid)`
+  suất ảnh xa nhất); [BỎ 27/10; `preventDefault` này đã vô tình chặn chạm đúp về cỡ gốc của iOS — xem "Chạm đúp 30/10"] chạm ĐÚP ảnh đã hiện (touch tự bắt <400ms, <12px, `preventDefault` chống zoom, `setBars(!hid)`
   trả lại thanh công cụ lần chạm 1 đã bật; PC `dblclick`) = tải lại riêng ảnh đó bỏ qua cache. Handler bật/tắt
   thanh công cụ bỏ qua `img.ldg`/`img.perr`. (6) Cuộn tới ô chưa có mà 3 suất đều bận ảnh xa >1 màn → `bump()`
   huỷ ảnh xa nhất nhường suất. (7) Chương về đủ + trang đang hiện → sau 1s `GET /api/pages/<D.next>` rồi tải LẦN
@@ -1507,47 +1507,48 @@ cách chạy thật + decode thử ảnh.
   byte đầu → phần trắng là màn khởi động iOS (chưa có `apple-touch-startup-image`); phần của Toony chỉ 0.3s/p90
   0.5s (bấm Home trong app 0.04s) → chưa làm gì (splash tối chỉ đổi màu, không nhanh hơn; phải xoá/thêm lại icon).
   `SW_VERSION` đổi (base.js + reader.js đổi) → PAGE_CACHE iPhone xoá 1 lần sau `/update`.
-- **Chạm đúp phóng to 27/10** (`READER_JS` khối "chạm đúp ảnh = phóng to", CSS `html.zm`, viewport trong `page()`,
-  `diag_report.py` [5]/[10]/[11]). *Vì sao*: diag 25–27/10 — 117/122 lần "chạm đúp tải lại" (bộ nạp 11/10) nằm ở bản
-  Kindle EN (chữ nhỏ) → user chạm đúp để PHÓNG TO (user xác nhận 27/10), trong khi code chặn zoom rồi tải lại ảnh.
-  Soi 27/10: web đọc truyện chỉ để mặc véo 2 ngón (Webtoons `maximum-scale=2`, Asura 5, comix.to tắt zoom), không web
-  nào có chạm đúp riêng; app (Photos, Kindle, Mihon "Double tap to zoom") thì có → làm kiểu app.
-  *Thiết kế*: chạm đúp (touch tự bắt: 2 chạm cách <`DT`=350ms, mỗi chạm <350ms + xê dịch <12px, 2 điểm cách <40px;
-  `preventDefault` lần 2 chặn click) hoặc PC `dblclick` trên `#strip img` → `setZoom(2)`: đo bề rộng cột W0 (và trang
-  đôi Sw) lúc thường, đặt `--zw`=2·W0, `--spz`=2·Sw, `--zl`=max(0, Sw−W0, (clientWidth−2·W0)/2) rồi bật `html.zm`
-  (`#strip{width:var(--zw);max-width:none;margin-left:var(--zl)}`, `.spread{width:var(--spz)}`) → CẢ cột ảnh to gấp
-  đôi, trang rộng hơn màn, cuộn ngang/dọc = cuộn thường của trình duyệt (1 ngón mọi hướng, có quán tính), véo 2 ngón
-  vẫn chạy. Giữ điểm chạm dưới ngón: lấy tỉ lệ (fx,fy) của điểm trong ảnh trước khi đổi, đổi xong `scrollTo` cho điểm
-  đó về đúng toạ độ màn cũ (thu nhỏ: dọc đúng, ngang kẹp 0). Chạm đúp lần nữa → bỏ `html.zm`. `orientationchange` →
-  về cỡ thường (giữ `posY`). Sang chương = trang mới = cỡ thường (không lưu trạng thái zoom). `#strip{touch-action:
-  manipulation}` (tắt zoom chạm đúp của trình duyệt, giữ véo + cuộn) + `user-select:none` (PC dblclick khỏi bôi đen).
-  Viewport MỌI trang thêm `minimum-scale=1, shrink-to-fit=no`: nội dung rộng hơn màn thì WebKit được phép tự "thu nhỏ
-  cho vừa" → phải chặn, không thì phóng xong bị co về như cũ. Đang phóng mà đổi % cỡ ảnh (stepper PC) thì chỉ ăn sau
-  khi thu nhỏ.
-  *Thanh công cụ*: chạm 1 lần TRÊN ẢNH → chờ 350ms mới bật/tắt (chạm thứ 2 tới thì huỷ — là chạm đúp); trước đây bật
-  ngay rồi chạm đúp phải `setBars(!hid)` trả lại (nháy). Chạm ngoài ảnh vẫn bật/tắt ngay; click trong 500ms sau chạm
-  đúp bị bỏ; PC dblclick = click 1 hẹn giờ, click 2 huỷ.
-  *Vị trí đọc*: `mirrorPos`/`sendPos` lưu `posY()` = vị trí quy về cỡ thường (T + (scrollY − T)/2, T = đỉnh `#strip`)
-  → mở lại chương (luôn cỡ thường) vẫn đúng chỗ.
-  *Bỏ*: "chạm đúp ảnh đã hiện = tải lại riêng ảnh đó" (`again()`, đếm `md`) — ảnh hỏng vẫn tự thử lại, ô `perr`/`ldg`
-  vẫn chạm để tải.
-  *Bộ đo cùng đợt*: ① `zm` = số lần phóng to (ev `img`, thay `md`; [11] in "chạm đúp phóng to" + "phóng to theo
-  truyện"; `md` chỉ hiện khi còn bản ghi cũ). ② `rec[]` ("ảnh từng treo/lỗi — từ lúc bắt đầu tải tới khi hiện đủ")
-  TRỪ thời gian không chạy `offMs()` = `hidTot` (app nằm nền, cộng khi hiện lại) + `pzTot` (nhịp chó canh trễ >700ms
-  lúc trang đang hiện = iOS dừng cả app) — diag 27/10 ra "treo 240s" mà 4' là app nằm nền. ③ `diag_report` [5]: khoảng
-  đứng ≥5s (`PAUSE_MS`) tách ra dòng "iOS dừng cả app" (27/10 "đứng luồng 37s" trùng lúc server cũng ngưng nhận poll
-  40s, trang không báo `hidden`), danh sách [5] chỉ còn 350ms–5s. ④ `navRec()` ghi `ios` = "OS trong UA/Version Safari"
-  (vd `18.6/26.0`; iOS 26 có thể giữ cứng `OS 18_6` → phần sau `/` mới đáng tin); [10] in "iOS đã thấy" kèm ngày
-  đầu–cuối → soi chuyện HTML từ cache SW chậm hẳn từ 20/10 có trùng lúc lên iOS mới không.
-  *Test 27/10* (Playwright Chromium giả iPhone 13 có touch + PC 1280, thư viện giả 8 ảnh 800×1200 kẻ lưới): phóng
-  390→780px, điểm chạm giữ y hệt (cùng ảnh, fx/fy trùng), 0 request ảnh mới, thanh công cụ không đổi; vị trí lưu 1721
-  (mong 1720.5); chạm đơn bật thanh sau ~350ms; thu nhỏ lệch dọc 0.1%; 2 chạm cách 450ms không phóng;
-  `orientationchange` về cỡ thường; sang chương 2 cỡ thường; PC dblclick 800→1600 + thu lại, click đơn vẫn bật thanh;
-  trang đôi PC 1229→2458px mép trái 0 (không tràn), iPhone 374→749px; diag `zm=4 md=0 ios=15.0/26.0`; báo cáo trên dữ
-  liệu thật 27/10: [5] 72 lần đứng thật + "iOS dừng cả app 6 lần (max 409s)".
-  *Chưa kiểm trên iPhone thật* (Chromium ≠ WebKit): (a) iOS có tự co trang rộng về vừa màn dù `shrink-to-fit=no`
-  không; (b) thanh công cụ `position:fixed` khi đang cuộn ngang; (c) ngưỡng 350ms có hợp tay user không. `SW_VERSION`
-  đổi → PAGE_CACHE iPhone xoá 1 lần sau `/update`.
+- **Chạm đúp phóng to 27/10 — ĐÃ GỠ 30/10** (bản e896d06; xem mục kế). Đã làm: chạm đúp ảnh (touch tự bắt +
+  `preventDefault`, PC `dblclick`) → nới rộng cả cột ảnh 2x (CSS `html.zm`, `--zw/--zl/--spz`), giữ điểm dưới ngón,
+  vị trí đọc quy về cỡ thường (`posY`), `#strip{touch-action:manipulation;user-select:none}`, viewport thêm
+  `minimum-scale=1, shrink-to-fit=no`. Lý do làm: diag 25–27/10 — 117/122 lần "chạm đúp tải lại" (bộ nạp 11/10) ở bản
+  Kindle EN → hiểu là user muốn PHÓNG TO. Hiểu SAI: user véo 2 ngón để phóng, chạm đúp để VỀ cỡ gốc (kiểu iOS gốc) —
+  chính `preventDefault` của bộ nạp 11/10 rồi `touch-action` 27/10 đã chặn hành vi đó. Bài học: user báo "chạm đúp
+  không được" thì hỏi rõ đang ở cỡ nào / muốn ra cỡ nào trước khi làm.
+  *Còn giữ từ đợt này (bộ đo)*: ② `rec[]` ("ảnh từng treo/lỗi — từ lúc bắt đầu tải tới khi hiện đủ") TRỪ thời gian
+  không chạy `offMs()` = `hidTot` (app nằm nền, cộng khi hiện lại) + `pzTot` (nhịp chó canh trễ >700ms lúc trang đang
+  hiện = iOS dừng cả app) — diag 27/10 ra "treo 240s" mà 4' là app nằm nền. ③ `diag_report` [5]: khoảng đứng ≥5s
+  (`PAUSE_MS`) tách ra dòng "iOS dừng cả app" (27/10 "đứng luồng 37s" trùng lúc server cũng ngưng nhận poll 40s, trang
+  không báo `hidden`), danh sách [5] chỉ còn 350ms–5s. ④ `navRec()` ghi `ios` = "OS trong UA/Version Safari" (UA giữ
+  cứng OS — iOS 27.0.1 ghi `18.7/27.0.1` → phần sau `/` mới đáng tin); [10] in "iOS đã thấy" kèm ngày đầu–cuối.
+- **Chạm đúp 30/10: trả cho iOS** (c342e87; `READER_JS` khối bật/tắt thanh công cụ + bộ đo `DZ`; CSS `#strip`; viewport trong
+  `page()`; `diag_report.py` [11] dòng "PHÓNG TO"). *Vì sao*: user 30/10 "chạm đúp luôn cho về kích thước mặc định
+  full screen của ảnh". WebKit iOS (đọc source 30/10: `WKWebViewIOS.mm` `_allowsDoubleTapGestures` +
+  `_targetContentZoomScaleForRect`, `SmartMagnificationController.mm`, `WKContentViewInteraction.mm`
+  `_handleSmartMagnificationInformationForPotentialTap`): trang `width=device-width` chỉ bật cử chỉ chạm đúp khi cỡ
+  hiện tại KHÁC cỡ gốc; chạm đúp lên ảnh (replaced element → `fitEntireRect`) → cỡ đích = min(vừa ngang, vừa dọc) kẹp
+  ≤1.6 → ảnh trang truyện full ngang = về đúng 1x; ở cỡ gốc chạm đúp không làm gì (mỗi chạm ra 1 click nhanh). Cỡ
+  đích/cỡ hiện tại >0.8 (vd đang phóng ≤1.25x) → iOS coi "không đáng phóng", tắt chạm đúp cho cú đó → 2 click, KHÔNG
+  về cỡ gốc. Trang đôi: đích của 1 nửa = 1.6 → chạm đúp 2 lần mới về 1x. `touch-action:manipulation` / `preventDefault`
+  touchend trên ảnh CHẶN hết → không bao giờ thêm lại.
+  *Thiết kế*: gỡ sạch phóng 2x (CSS `html.zm`, `setZoom`/`dbl`/`posY`, touch/dblclick/orientationchange), `#strip` bỏ
+  `touch-action`/`user-select`, viewport về `width=device-width, initial-scale=1, viewport-fit=cover` (không thêm
+  `maximum-scale`/`user-scalable`). Vị trí đọc lưu `scrollY` như trước 27/10. PC: nhấp đúp không làm gì (dùng stepper).
+  *Thanh công cụ*: chạm 1 lần trên ảnh ở cỡ gốc/phóng nhẹ (`visualViewport.scale` ≤ `ZS`=1.25) → chờ `DT`=350ms, click
+  thứ 2 tới thì huỷ (chạm đúp ở cỡ gốc / nhấp đúp PC không nháy thanh); đang phóng >1.25x → bật/tắt NGAY (iOS đã tự
+  chờ xem có chạm thứ 2; chạm đúp thì iOS nuốt, không ra click). Chạm ngoài ảnh bật/tắt ngay.
+  *Bộ đo `DZ`* (chỉ nghe: listener `passive` trên document + `visualViewport` resize; gửi kèm ev `img` của bộ nạp):
+  `pz` véo phóng >1.1x (đếm lần vượt, về <1.02 mới đếm lại), `dz` chạm đúp ảnh lúc đang phóng (>1.02, cỡ đo ở chạm
+  1), `dzo` số lần trong đó 0.8s sau đã về <1.02, `dzf` = [cỡ lúc chạm, cỡ sau 0.8s] của lần KHÔNG về (≤10/lần gửi),
+  `d1` chạm đúp ảnh ở cỡ gốc. [11] in "PHÓNG TO (iOS lo…)" + ⚠ danh sách `dzf` + "phóng to theo truyện" (pz+dz+zm);
+  `zm`/`md` cũ vẫn in khi còn bản ghi. *Dự phòng nếu diag thấy `dz` mà `dzo`≈0*: đổi tạm meta viewport
+  `maximum-scale=1` rồi trả lại (ép WebKit về 1x); không được mới tính tự viết véo-phóng (lớn, kém mượt — không khuyên).
+  *Test 30/10* (Playwright Chromium giả iPhone 13 + PC 1280, reader thử 8099): viewport đúng, `touch-action` auto ở
+  html/body/#strip/img, không sự kiện chạm/click nào bị `defaultPrevented`; cỡ gốc: chạm 1 lần đổi thanh sau 350ms,
+  chạm đúp không phóng/không cuộn ngang/thanh không đổi, `d1=1`; giả phóng 2x (CDP `setPageScaleFactor`): chạm 1 lần
+  đổi thanh ngay, chạm đúp → `pz=1 dz=1 dzf=[[2,2]]` (Chromium không tự thu về như iOS → đi đúng đường "không về");
+  PC nhấp đúp không đổi gì, nhấp 1 lần đổi thanh; 0 lỗi JS; báo cáo trên dữ liệu thật 30/10 in đúng `zm 10`/`md 38` cũ.
+  *Chưa kiểm trên iPhone thật*: iOS 27.0.1 + 26.6 có về cỡ gốc đúng như source không → soi `dz`/`dzo`/`dzf` ở diag kế.
+  `SW_VERSION` đổi → PAGE_CACHE iPhone xoá 1 lần sau `/update`.
 - **Hồ sơ đọc = 1 JSON CHUNG server-side, không login/cookie/device-id** (05/08): trước đây
   vị trí đọc/chương-đã-đọc để localStorage → **chết theo origin**; user chia sẻ bằng
   cloudflared quick tunnel (`Chia se link doc thu.bat`) đổi URL ngẫu nhiên mỗi lần bật →
