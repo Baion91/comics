@@ -6,7 +6,12 @@ CBZ (= file ZIP chứa ảnh, vd bản rip Kindle/digital): ảnh chép NGUYÊN 
 (sắp tự nhiên theo cả đường dẫn trong ZIP), đánh lại `001.jpg, 002.jpg...` (đuôi theo định
 dạng thật). File không phải ảnh (ComicInfo.xml, .txt...) bỏ qua + báo; trang ngang (trang
 đôi) giữ nguyên 1 ảnh. CBZ chỉ nhận kiểu 1 (thẳng trong folder truyện, không gộp), gốc cất
-vào <folder truyện>/.cbz-goc/.
+vào <folder truyện>/.cbz-goc/. Nhận cả đuôi .cbr; ruột ZIP hay RAR nhận theo CHỮ KÝ đầu file
+(đuôi đặt sai — .cbz ruột RAR, .cbr ruột ZIP — vẫn đọc, chỉ nhắc). RAR: Python chuẩn không đọc
+được -> gọi UnRAR.exe (WinRAR) hoặc 7z.exe (7-Zip) có sẵn trên máy giải CẢ GÓI ra
+downloads/.pdf-tmp/ (cả lúc --dry-run), đọc xong xoá; thiếu cả 2 -> báo cài, không đụng gì.
+Tên trang `cover*`/`front*` xếp lên đầu, `back*`/`rear*` xuống cuối (sắp tên thuần thì bìa
+trước rơi xuống sau trang số và sau bìa sau).
 
 MOBI (.mobi/.azw — truyện tranh Kindle do KindleComicConverter/kindlegen tạo, KHÔNG DRM): ảnh
 trong file chép NGUYÊN TRẠNG theo thứ tự trang của sách. Sách có mục lục (≥ 2 mục) -> mỗi mục
@@ -62,6 +67,7 @@ Cách dùng:
   python pdf_import.py "...\\14 - Ba chàng hiệp sĩ mộng mơ"  # 1 tập bị tách (gộp)
   python pdf_import.py ... --dry-run                     # chỉ kiểm + in kế hoạch, không ghi
   python pdf_import.py "...\\RockMan Series.mobi" --bia 3   # + trang 3 làm bìa (cover.jpg)
+  python pdf_import.py "...\\megamix3english.cbr"            # CBZ/CBR (ZIP hay RAR đều được)
 Hoặc bấm `Nhap PDF.bat` (kéo-thả file/folder vào cũng được).
 
 --bia N (chỉ khi nhập đúng 1 file): chép trang N (đếm từ 1 trong cả file) thành cover.<đuôi>
@@ -82,6 +88,7 @@ import os
 import re
 import shutil
 import struct
+import subprocess
 import sys
 import time
 import unicodedata
@@ -102,9 +109,18 @@ CBZ_ORIG_DIR = ".cbz-goc"   # nơi cất CBZ gốc, trong folder truyện
 MOBI_ORIG_DIR = ".mobi-goc"  # nơi cất MOBI gốc, trong folder truyện
 TMP_DIR = ".pdf-tmp"        # nơi ghi dở, ở gốc downloads/ (reader bỏ qua folder chấm-đầu)
 MOBI_EXTS = (".mobi", ".azw", ".azw3")
-SRC_EXTS = (".pdf", ".cbz") + MOBI_EXTS
+# CBZ/CBR đi chung 1 đường (kho nén chứa ảnh); ruột ZIP hay RAR nhận theo chữ ký, không theo đuôi.
+CBZ_EXTS = (".cbz", ".cbr")
+SRC_EXTS = (".pdf",) + CBZ_EXTS + MOBI_EXTS
 # Ảnh nhận trong CBZ = đuôi reader đọc được (IMG_EXTS của reader_server.py).
 CBZ_IMG_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp", ".avif"}
+# Chữ ký RAR: RAR4 'Rar!\x1a\x07\x00', RAR5 'Rar!\x1a\x07\x01\x00'. ZIP: 'PK'.
+RAR_SIG = b"Rar!\x1a\x07"
+# Tên trang bìa trong CBZ (không đánh số): bìa trước lên đầu, bìa sau xuống cuối. Gặp thật:
+# megamix3english.cbr = 1…113.jpg + back.jpg + cover.jpg -> sắp tên thuần ra 1…113, back, cover.
+# 'coverage'/'background' (chữ cái theo sau) không tính; 'cover1', 'front cover', 'backcover' tính.
+COVER_FRONT_RE = re.compile(r"^(?:cover|front)(?:cover)?(?![a-z])", re.IGNORECASE)
+COVER_BACK_RE = re.compile(r"^(?:back|rear)(?:cover)?(?![a-z])", re.IGNORECASE)
 # Sách MOBI có chữ thật (tiểu thuyết kèm minh hoạ...) không phải truyện tranh — chỉ lấy ảnh là
 # mất chữ. Truyện KCC/kindlegen: text chỉ gồm thẻ ảnh/khung phóng to, 0 ký tự hiển thị.
 MOBI_TEXT_MAX = 2000
@@ -342,48 +358,156 @@ def _flatten_png(data, alpha):
     return buf.getvalue()
 
 
-def cbz_pages(cbz, warns):
-    """[(bytes, (W, H), đuôi)] các trang trong CBZ, sắp tự nhiên theo cả đường dẫn trong ZIP.
-    Bytes chép NGUYÊN TRẠNG; đuôi theo định dạng thật ('.jpeg' -> '.jpg'). File không phải ảnh
-    -> bỏ qua + báo; rác hệ thống (__MACOSX/, ._x, Thumbs.db) -> bỏ im lặng. Không có ảnh / có
-    mật khẩu -> NotSimple."""
-    with zipfile.ZipFile(cbz) as z:
-        imgs, skipped = [], []
-        for info in z.infolist():
-            if info.is_dir():
-                continue
-            parts = info.filename.split("/")
-            base = parts[-1]
-            if parts[0] == "__MACOSX" or base.startswith(".") or base.lower() in SYS_FILES:
-                continue
-            (imgs if Path(base).suffix.lower() in CBZ_IMG_EXTS else skipped).append(info)
-        if not imgs:
-            raise NotSimple("CBZ không có ảnh nào")
-        if any(i.flag_bits & 0x1 for i in imgs):
-            raise NotSimple("CBZ có mật khẩu")
-        imgs.sort(key=lambda i: _natkey(i.filename))
-        dirs = {i.filename.rpartition("/")[0] for i in imgs}
-        if len(dirs) > 1:
-            warns.add(f"ảnh nằm trong {len(dirs)} thư mục con — xếp theo tên thư mục rồi tên file")
-        if skipped:
-            names = [i.filename.rpartition("/")[2] for i in skipped]
-            warns.add("bỏ qua file không phải ảnh: " + ", ".join(names[:5])
-                      + ("…" if len(names) > 5 else ""))
-        pages = []
-        for n, info in enumerate(imgs, 1):
-            data = z.read(info)     # zipfile tự kiểm CRC
-            # Kiểm ngay lúc đọc (rẻ, khác PDF) để --dry-run cũng bắt được ảnh hỏng.
-            verdict, detail = check_image_bytes(data, who=f"{cbz.name}/{info.filename}")
-            if verdict != "ok":
-                raise NotSimple(f"trang {n} ({info.filename}): ảnh lỗi ({verdict}: {detail})")
-            fmt = sniff_format(data)
-            ext = (".jpg" if fmt == "jpeg" else f".{fmt}") if fmt else Path(info.filename).suffix.lower()
-            wh = (0, 0)
-            if Image is not None:
-                with Image.open(io.BytesIO(data)) as im:
-                    wh = im.size
-            pages.append((data, wh, ext))
+def archive_kind(path):
+    """'zip' / 'rar' theo chữ ký đầu file (đuôi .cbz/.cbr do người đóng gói đặt, hay lẫn);
+    None = không phải cả 2 (hoặc file rỗng/cụt)."""
+    with open(path, "rb") as f:
+        head = f.read(8)
+    if head[:2] == b"PK":
+        return "zip"
+    if head.startswith(RAR_SIG):
+        return "rar"
+    return None
+
+
+def unrar_tool():
+    """(kiểu, đường dẫn) công cụ giải nén RAR: 'unrar' (UnRAR.exe của WinRAR / unrar) hay '7z'
+    (7-Zip: 7z/7zz). Biến môi trường UNRAR_TOOL chỉ tay trước; rồi PATH; rồi chỗ cài mặc định
+    trên Windows. None = không có."""
+    env = os.environ.get("UNRAR_TOOL")
+    cands = [env] if env else []
+    cands += [shutil.which(n) for n in ("unrar", "7z", "7zz")]
+    for base in (os.environ.get("ProgramFiles"), os.environ.get("ProgramFiles(x86)"),
+                 os.environ.get("ProgramW6432")):
+        if base:
+            cands += [os.path.join(base, "WinRAR", "UnRAR.exe"),
+                      os.path.join(base, "7-Zip", "7z.exe")]
+    for c in cands:
+        if c and os.path.isfile(c):
+            kind = "7z" if os.path.basename(c).lower().startswith("7z") else "unrar"
+            return kind, c
+    return None
+
+
+def _extract_rar(rar, dest):
+    """Giải CẢ RAR ra thư mục `dest` (tạo mới) bằng UnRAR/7z — 1 lần cho cả gói (giải từng file
+    với RAR solid phải nén lại từ đầu mỗi lần). Không có công cụ / có mật khẩu / hỏng -> NotSimple."""
+    tool = unrar_tool()
+    if tool is None:
+        raise NotSimple("ruột file là RAR — cần WinRAR (UnRAR.exe) hoặc 7-Zip để giải nén; cài 1 "
+                        "trong 2 (hoặc đặt biến môi trường UNRAR_TOOL) rồi chạy lại")
+    kind, exe = tool
+    dest.mkdir(parents=True)
+    if kind == "unrar":
+        # x = giữ đường dẫn con; -y = mọi câu hỏi "yes"; -p- = KHÔNG hỏi mật khẩu; -idq = chỉ in
+        # lỗi; -o+ = ghi đè. Đích phải có dấu \ cuối để unrar hiểu là thư mục.
+        cmd = [exe, "x", "-y", "-p-", "-idq", "-o+", str(rar), str(dest) + os.sep]
+    else:
+        # -p (rỗng) = không hỏi mật khẩu; -bso0/-bsp0 = tắt log + tiến độ (lỗi vẫn ra stderr).
+        cmd = [exe, "x", "-y", "-p", "-bso0", "-bsp0", f"-o{dest}", str(rar)]
+    try:
+        r = subprocess.run(cmd, stdin=subprocess.DEVNULL, capture_output=True, text=True,
+                           errors="replace", timeout=3600)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        raise NotSimple(f"không chạy được {os.path.basename(exe)} ({e})") from None
+    if r.returncode > 1:        # 1 = cảnh báo không nghiêm trọng (unrar lẫn 7z); ảnh vẫn kiểm từng cái
+        out = " ".join((r.stderr + "\n" + r.stdout).split())
+        if r.returncode == 11 or "password" in out.lower():     # unrar: 11 = sai mật khẩu
+            raise NotSimple("RAR có mật khẩu")
+        raise NotSimple(f"giải nén RAR lỗi ({os.path.basename(exe)} mã {r.returncode}: "
+                        f"{out[:200] or 'không rõ'})")
+
+
+def _page_rank(name):
+    """0 = bìa trước ('cover*'/'front*'), 2 = bìa sau ('back*'/'rear*'), 1 = trang thường."""
+    stem = Path(name.rpartition("/")[2]).stem
+    if COVER_FRONT_RE.match(stem):
+        return 0
+    if COVER_BACK_RE.match(stem):
+        return 2
+    return 1
+
+
+def _archive_pages(src, entries, read, warns):
+    """Lõi chung ZIP/RAR: `entries` = [(đường dẫn kiểu 'a/b.jpg', khoá)] mọi file trong kho,
+    `read(khoá)` -> bytes. Trả [(bytes, (W, H), đuôi)] đã sắp."""
+    fmt = src.suffix[1:].upper()
+    imgs, skipped = [], []
+    for name, key in entries:
+        parts = name.split("/")
+        base = parts[-1]
+        if parts[0] == "__MACOSX" or base.startswith(".") or base.lower() in SYS_FILES:
+            continue
+        (imgs if Path(base).suffix.lower() in CBZ_IMG_EXTS else skipped).append((name, key))
+    if not imgs:
+        raise NotSimple(f"{fmt} không có ảnh nào")
+    if any(getattr(key, "flag_bits", 0) & 0x1 for _, key in imgs):     # mục ZIP mã hoá
+        raise NotSimple(f"{fmt} có mật khẩu")
+    imgs.sort(key=lambda e: _natkey(e[0]))
+    ranked = sorted(imgs, key=lambda e: _page_rank(e[0]))      # sort ổn định: giữ thứ tự tên
+    if ranked != imgs:
+        fronts = [e[0].rpartition("/")[2] for e in imgs if _page_rank(e[0]) == 0]
+        backs = [e[0].rpartition("/")[2] for e in imgs if _page_rank(e[0]) == 2]
+        warns.add("bìa theo tên file: " + " — ".join(
+            s for s in ((", ".join(fronts) + " lên đầu") if fronts else "",
+                        (", ".join(backs) + " xuống cuối") if backs else "") if s))
+        imgs = ranked
+    dirs = {name.rpartition("/")[0] for name, _ in imgs}
+    if len(dirs) > 1:
+        warns.add(f"ảnh nằm trong {len(dirs)} thư mục con — xếp theo tên thư mục rồi tên file")
+    if skipped:
+        names = [name.rpartition("/")[2] for name, _ in skipped]
+        warns.add("bỏ qua file không phải ảnh: " + ", ".join(names[:5])
+                  + ("…" if len(names) > 5 else ""))
+    pages = []
+    for n, (name, key) in enumerate(imgs, 1):
+        data = read(key)        # ZIP: zipfile tự kiểm CRC; RAR: unrar đã kiểm lúc giải
+        # Kiểm ngay lúc đọc (rẻ, khác PDF) để --dry-run cũng bắt được ảnh hỏng.
+        verdict, detail = check_image_bytes(data, who=f"{src.name}/{name}")
+        if verdict != "ok":
+            raise NotSimple(f"trang {n} ({name}): ảnh lỗi ({verdict}: {detail})")
+        fmt_img = sniff_format(data)
+        ext = ((".jpg" if fmt_img == "jpeg" else f".{fmt_img}") if fmt_img
+               else Path(name).suffix.lower())
+        wh = (0, 0)
+        if Image is not None:
+            with Image.open(io.BytesIO(data)) as im:
+                wh = im.size
+        pages.append((data, wh, ext))
     return pages
+
+
+def cbz_pages(cbz, warns, tmp_root):
+    """[(bytes, (W, H), đuôi)] các trang trong CBZ/CBR — ruột ZIP hay RAR theo chữ ký, sắp tự
+    nhiên theo cả đường dẫn trong kho ('cover*'/'front*' lên đầu, 'back*'/'rear*' xuống cuối).
+    Bytes chép NGUYÊN TRẠNG; đuôi theo định dạng thật ('.jpeg' -> '.jpg'). File không phải ảnh
+    -> bỏ qua + báo; rác hệ thống (__MACOSX/, ._x, Thumbs.db) -> bỏ im lặng. RAR: giải cả gói
+    ra `tmp_root`/<tên> (giải nén)/ rồi xoá sau khi đọc. Không có ảnh / có mật khẩu / không phải
+    ZIP-RAR / thiếu công cụ RAR -> NotSimple."""
+    kind = archive_kind(cbz)
+    ext = cbz.suffix.lower()
+    if kind is None:
+        raise NotSimple("ruột file không phải ZIP hay RAR (đầu file không có chữ ký nào)")
+    if (kind == "rar") != (ext == ".cbr"):
+        warns.add(f"đuôi {ext} nhưng ruột là {kind.upper()} — vẫn đọc bình thường")
+    if kind == "zip":
+        with zipfile.ZipFile(cbz) as z:
+            infos = [(i.filename, i) for i in z.infolist() if not i.is_dir()]
+            return _archive_pages(cbz, infos, z.read, warns)
+    work = tmp_root / f"{cbz.name} (giải nén)"
+    if work.exists():
+        shutil.rmtree(work)         # bản dở của lần chạy trước bị ngắt
+    try:
+        _extract_rar(cbz, work)
+        entries = [((Path(r) / f).relative_to(work).as_posix(), Path(r) / f)
+                   for r, _, files in os.walk(work) for f in files]
+        return _archive_pages(cbz, entries, Path.read_bytes, warns)
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+        try:
+            tmp_root.rmdir()        # chỉ xoá khi rỗng
+        except OSError:
+            pass
 
 
 # ---- MOBI ----
@@ -671,7 +795,7 @@ def _key(p):
 
 
 def find_sources(targets):
-    """Danh sách PDF/CBZ/MOBI từ đối số (file hoặc folder — tìm cả folder con, bỏ folder
+    """Danh sách PDF/CBZ/CBR/MOBI từ đối số (file hoặc folder — tìm cả folder con, bỏ folder
     chấm-đầu như .pdf-goc). Không đối số = cả downloads/."""
     out = []
     for t in targets or [str(DOWNLOADS)]:
@@ -680,7 +804,7 @@ def find_sources(targets):
             if p.suffix.lower() in SRC_EXTS:
                 out.append(p)
             else:
-                print(f"  ! Bỏ qua (không phải PDF/CBZ/MOBI): {p}")
+                print(f"  ! Bỏ qua (không phải PDF/CBZ/CBR/MOBI): {p}")
         elif p.is_dir():
             for root, dirs, files in os.walk(p):
                 dirs[:] = [x for x in dirs if not x.startswith(".")]
@@ -759,12 +883,13 @@ class Job:
     def __init__(self, items, name, src, merged, outs=None, recs=None, warns=()):
         self.items, self.name, self.src, self.merged = items, name, src, merged
         ext = src.suffix.lower()
-        self.kind = "pdf" if merged or ext == ".pdf" else "cbz" if ext == ".cbz" else "mobi"
-        self.raw = self.kind != "pdf"     # ảnh chép nguyên trạng từ file (CBZ/MOBI)
+        self.kind = "pdf" if merged or ext == ".pdf" else "cbz" if ext in CBZ_EXTS else "mobi"
+        self.fmt = ext[1:].upper()        # 'CBZ'/'CBR'/'MOBI'... (chữ in ra; .cbr vẫn kind 'cbz')
+        self.raw = self.kind != "pdf"     # ảnh chép nguyên trạng từ file (CBZ/CBR/MOBI)
         self.outs = outs or [(name, 0)]
         self.recs, self.warns = recs, set(warns)
         self.orig_dir = {"pdf": ORIG_DIR, "cbz": CBZ_ORIG_DIR, "mobi": MOBI_ORIG_DIR}[self.kind]
-        self.what = "folder PDF gốc" if merged else f"{self.kind.upper()} gốc"
+        self.what = "folder PDF gốc" if merged else f"{self.fmt} gốc"
         self.series = src.parent
         self.dests = [self.series / nm for nm, _ in self.outs]
         self.where = f"{self.series.name}\\{src.name}" + ("\\" if merged else "")
@@ -785,7 +910,7 @@ def _fail(where, why, hint=None, nested=False):
 
 
 def plan_jobs(srcs):
-    """Chia PDF/CBZ thành các tập theo bố cục (xem đầu file). Lỗi bố cục -> in ra, không lập
+    """Chia PDF/CBZ/CBR/MOBI thành các tập theo bố cục (xem đầu file). Lỗi bố cục -> in ra, không lập
     tập. Trả (jobs, số nguồn bị từ chối)."""
     jobs, bad, folders = [], 0, {}
     for pdf in srcs:
@@ -1018,13 +1143,16 @@ def import_job(job, dry_run, cover=None):
         return _fail(job.where, why, hint, nested=True)
 
     warns, pages, counts = set(job.warns), [], []
+    # Chỗ ghi dở: downloads/.pdf-tmp/ (reader không quét); nguồn ngoài downloads -> cạnh nguồn.
+    # RAR cũng giải nén tạm vào đây (cả lúc dry-run).
+    tmp_root = DOWNLOADS / TMP_DIR if _under(job.src, DOWNLOADS) else job.series / TMP_DIR
     if job.kind == "cbz":
         try:
-            pages = cbz_pages(job.src, warns)
+            pages = cbz_pages(job.src, warns, tmp_root)
         except NotSimple as e:
             return fail(str(e), "chưa tách được (không đụng gì)")
         except Exception as e:      # ZIP hỏng / sai CRC / không đọc được file
-            return fail(f"không đọc được CBZ ({e.__class__.__name__}: {e})")
+            return fail(f"không đọc được {job.fmt} ({e.__class__.__name__}: {e})")
     elif job.kind == "mobi":
         try:
             pages = mobi_pages(job.src, job.recs)
@@ -1109,9 +1237,8 @@ def import_job(job, dry_run, cover=None):
             print(_cover(job.series, cover, pages[cover - 1], dry_run=True))
         return True
 
-    # Ghi vào downloads/.pdf-tmp/ (reader không quét), kiểm đủ TẤT CẢ chương rồi mới đổi tên
-    # sang chỗ thật -> reader không bao giờ thấy chương dở / nguồn mới nhập một nửa.
-    tmp_root = DOWNLOADS / TMP_DIR if _under(job.src, DOWNLOADS) else job.series / TMP_DIR
+    # Ghi vào tmp_root, kiểm đủ TẤT CẢ chương rồi mới đổi tên sang chỗ thật -> reader không
+    # bao giờ thấy chương dở / nguồn mới nhập một nửa.
     tmps, moved = [], 0
     try:
         for name, pgs, _, done in plan:
@@ -1163,11 +1290,11 @@ def import_job(job, dry_run, cover=None):
 
 
 def main():
-    ap = argparse.ArgumentParser(description="Tách PDF (mỗi trang 1 ảnh JPEG) / CBZ / MOBI thành "
+    ap = argparse.ArgumentParser(description="Tách PDF (mỗi trang 1 ảnh JPEG) / CBZ / CBR / MOBI thành "
                                              "thư mục chương cho reader. PDF trong folder con "
                                              "của truyện = 1 tập bị tách, gộp lại.")
     ap.add_argument("targets", nargs="*",
-                    help="file PDF/CBZ/MOBI / folder (mặc định: cả downloads/)")
+                    help="file PDF/CBZ/CBR/MOBI / folder (mặc định: cả downloads/)")
     ap.add_argument("--dry-run", action="store_true", help="chỉ kiểm + in kế hoạch, không ghi gì")
     ap.add_argument("--bia", type=int, metavar="N",
                     help="chép trang N (đếm từ 1 trong cả file) thành cover.* trong folder "
@@ -1176,7 +1303,7 @@ def main():
 
     srcs = find_sources(args.targets)
     if not srcs:
-        print("Không thấy file PDF/CBZ/MOBI nào.")
+        print("Không thấy file PDF/CBZ/CBR/MOBI nào.")
         return 2
     if (any(p.suffix.lower() == ".pdf" for p in srcs)
             and importlib.util.find_spec("pypdf") is None):

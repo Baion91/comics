@@ -1,6 +1,6 @@
 @echo off
 chcp 65001 >nul
-title Nhap truyen PDF / CBZ / MOBI vao thu vien
+title Nhap truyen PDF / CBZ / CBR / MOBI vao thu vien
 cd /d "%~dp0"
 
 rem Keo-tha file/folder vao file .bat nay = dung duong dan do luon.
@@ -9,23 +9,25 @@ if not "%target%"=="" goto :preview
 
 :menu
 echo ============================================================
-echo  NHAP TRUYEN PDF / CBZ / MOBI  (moi tap -^> 1 thu muc "Tap NN" anh goc)
-echo  - PDF/CBZ/MOBI dat THANG trong folder truyen = 1 file 1 tap, vd:
+echo  NHAP TRUYEN PDF / CBZ / CBR / MOBI  (moi tap -^> 1 thu muc "Tap NN" anh goc)
+echo  - PDF/CBZ/CBR/MOBI dat THANG trong folder truyen = 1 file 1 tap, vd:
 echo      downloads\Doraemon truyen dai\Long 1 LITE.pdf
 echo      downloads\Doraemon Kindle EN\Doraemon - Kindle Edition v001 (2013).cbz
 echo    So tap lay tu ten file (Tap/Vol/Chuong/Chapter... hoac so dau tien).
 echo    MOBI co muc luc (vd downloads\Rockman 8\RockMan Series.mobi) -^> moi muc
 echo    1 thu muc "Chapter NN". MOBI co DRM / chi KF8 (.azw3) -^> tu choi.
+echo    CBZ/CBR: ruot ZIP hay RAR deu doc duoc (dat sai duoi van nhan). RAR can co
+echo    WinRAR hoac 7-Zip tren may (tool tu tim); thieu thi bao, khong dung gi.
 echo  - 1 tap bi tach nhieu file PDF: bo chung vao 1 folder con cua truyen, vd:
 echo      downloads\Doraemon truyen dai\14 - Ba chang hiep si mong mo\*.pdf
 echo    -^> GOP thanh 1 tap. So tap lay tu ten folder, phan xep theo so trong ten file.
 echo  File goc duoc cat vao ^<folder truyen^>\.pdf-goc\ / .cbz-goc\ / .mobi-goc\
 echo  (doc thu on thi tu xoa). Chon 1 FILE thi duoc hoi them trang lam bia.
-echo  Enter de trong = tim PDF/CBZ/MOBI trong ca thu vien downloads\
+echo  Enter de trong = tim PDF/CBZ/CBR/MOBI trong ca thu vien downloads\
 echo ============================================================
 echo.
 set "target="
-set /p target="Folder / file PDF/CBZ/MOBI (Enter = tat ca): "
+set /p target="Folder / file PDF/CBZ/CBR/MOBI (Enter = tat ca): "
 
 :preview
 echo.
@@ -63,7 +65,7 @@ python "%~dp0pdf_import.py"
 echo.
 echo ------------------------------------------------------------
 set "again="
-set /p again="Nhap PDF/CBZ/MOBI khac? (y/N): "
+set /p again="Nhap PDF/CBZ/CBR/MOBI khac? (y/N): "
 if /i "%again%"=="y" (
   echo.
   goto :menu

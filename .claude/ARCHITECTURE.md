@@ -648,7 +648,7 @@ cách chạy thật + decode thử ảnh.
   (vòng lặp hỏi thư mục/--fix/--black → chạy).
 - `convert_webp.py` — chuyển PNG→WebP hàng loạt, xuất cây mới `<tên>_webp`,
   không đụng cây gốc. Tách riêng khỏi asura_downloader vì Asura đã webp sẵn.
-- `pdf_import.py` + `Nhap PDF.bat` (07/10/2026, gộp + SMask 08/10, vừa khổ có lề 12/10, CBZ 15/10) — **nhập truyện PDF/CBZ**: mỗi PDF đặt
+- `pdf_import.py` + `Nhap PDF.bat` (07/10/2026, gộp + SMask 08/10, vừa khổ có lề 12/10, CBZ 15/10, MOBI 30/10, CBR/RAR 01/11) — **nhập truyện PDF/CBZ/CBR/MOBI**: mỗi PDF đặt
   THẲNG trong folder truyện (hoặc 1 folder con chứa các PDF bị tách của 1 tập → gộp) → thư mục chương
   `Tập NN` (`001.jpg…`), PDF gốc → `<truyện>/.pdf-goc/`. *Vì sao tách chứ không
   cho reader đọc PDF*: reader + check_library + kho kích thước + ghép trang đôi + chữ ký thư viện đều
@@ -763,6 +763,33 @@ cách chạy thật + decode thử ảnh.
   không ảnh, tên không số, CBZ ngay downloads/ / trong folder con → từ chối; PDF (bản sao Tập 18 phần
   121) chạy y cũ. `check_library` báo NHẦM "tráo ô" trang 008 của Kindle v001 (trang thường, khung kẻ
   thẳng hàng — heuristic comix) → `check-ignore.txt`.
+  **CBR / RAR (01/11)** — user có `Dragon Ball - Colored v01 (Tracksuit + HC).cbz` (425MB, tool báo
+  `BadZipFile`) + `megamix3english.cbr` (tool từ chối từ đuôi): soi ruột thì **.cbz là RAR 4, .cbr là ZIP**
+  (đuôi do người đóng gói đặt, lẫn rất thường). Sửa: `CBZ_EXTS = (.cbz, .cbr)` đi chung `Job.kind == "cbz"`
+  (`Job.fmt` = chữ in ra 'CBZ'/'CBR', gốc vẫn → `.cbz-goc/`); `archive_kind()` nhận ZIP/RAR theo chữ ký
+  (`PK` / `RAR_SIG = Rar!\x1a\x07`, cả RAR4 lẫn RAR5), đuôi lệch ruột → chỉ `warns`; không chữ ký nào →
+  `NotSimple`. `cbz_pages(cbz, warns, tmp_root)` tách lõi chung `_archive_pages(src, entries, read, warns)`
+  (lọc rác, sắp, kiểm ảnh, đuôi theo `sniff_format`) — ZIP đưa `ZipInfo` + `z.read`, RAR đưa `Path` +
+  `Path.read_bytes` sau khi `_extract_rar()` giải CẢ GÓI ra `tmp_root/<tên> (giải nén)/` (xoá ở `finally`,
+  cả lúc `--dry-run` — vì vậy `tmp_root` tính ở ĐẦU `import_job`). *Vì sao giải cả gói bằng công cụ
+  ngoài*: Python chuẩn không đọc RAR; gói pip `rarfile` cũng chỉ gọi unrar/7z bên dưới (thêm thư viện mà
+  không bớt phụ thuộc); giải từng file với RAR solid phải nén lại từ đầu mỗi lần. `unrar_tool()`: env
+  `UNRAR_TOOL` → PATH (`unrar`, `7z`, `7zz`) → `%ProgramFiles%\WinRAR\UnRAR.exe` / `7-Zip\7z.exe` (cả
+  x86/W6432); unrar: `x -y -p- -idq -o+ <rar> <đích>\` (đích PHẢI có `\` cuối), 7z: `x -y -p -bso0 -bsp0
+  -o<đích>`; mã thoát > 1 = lỗi (1 = cảnh báo, ảnh vẫn kiểm từng cái), 11 hoặc chữ "password" → "RAR có
+  mật khẩu" (`-p-`/`-p` rỗng = không bao giờ hỏi, stdin DEVNULL). Thiếu công cụ → `NotSimple` "cần WinRAR
+  hoặc 7-Zip". Thêm quy tắc tên trang `_page_rank`: `COVER_FRONT_RE` (`cover*`/`front*`) lên đầu,
+  `COVER_BACK_RE` (`back*`/`rear*`) xuống cuối, sort ổn định sau `_natkey`, chỉ `warns` khi thứ tự có đổi
+  ('coverage'/'background' không tính — chữ cái theo sau). *Test 01/11 (PC dev)*: DB v01 (.cbz ruột RAR4,
+  1 thư mục con, 206 JPEG + 15 PNG 1560×2400) dry-run ✓ 221 trang 449MB 12s, không sót `.pdf-tmp`;
+  megamix (.cbr ruột ZIP, `1…113.jpg + back + cover`, 111 trang ngang) ✓ 115 trang, cover lên đầu;
+  RAR giả tạo bằng `Rar.exe` 6.11: RAR4, RAR5 solid → ✓ đúng thứ tự `cover, 1, 2, 10, sub/background 3,
+  sub/back` (nhập thật kiểm pixel + `--bia 1`, gốc → `.cbz-goc/`, chạy lại → "đã tách từ trước" + ` (2)`);
+  `-p`/`-hp` → "RAR có mật khẩu"; chỉ ComicInfo.xml → "CBR không có ảnh nào"; cắt nửa file → "giải nén
+  RAR lỗi (UnRAR.exe mã 3: … Unexpected end of archive)"; file rác đuôi .cbz → "không phải ZIP hay RAR";
+  ZIP đuôi .cbr ✓; không công cụ (xoá PATH + ProgramFiles) → báo cài; hồi quy Kindle v001 (ZIP) nhập lại
+  giống từng byte. CHƯA thử nhánh 7-Zip thật (máy dev không cài 7-Zip) — chỉ dựng lệnh theo tài liệu 7z.
+  Chưa nhập thật 2 file trong `downloads/Check convert/` (chờ user quyết tên folder truyện / số tập).
   **MOBI (30/10)** — user có `RockMan Series.mobi` (KindleComicConverter 5.5.2, 220MB) → thêm vào CHÍNH
   tool này như CBZ. Truyện KCC/kindlegen = sách bố cục cố định: mỗi trang 1 `<img recindex="NNNNN">`
   trong text, ảnh = record `first_img + NNNNN - 1` (JPEG nguyên bytes). File `.mobi` của KCC là bản LAI
@@ -1639,6 +1666,6 @@ python check_library.py [downloads\<Tên>] [--fix] [--recheck] [--workers N] [--
 python asura_downloader.py <URL|slug> ...           # shim cũ, vẫn chạy (mặc định Asura)
 # hoặc double-click "Tai truyen.bat" trong folder rồi dán link
 python convert_webp.py "<folder>" [--quality 90] [--jpg-too]
-python pdf_import.py ["downloads\<Tên>" | "<file>.pdf|.cbz" | "<truyện>\<folder các phần>"] [--dry-run]   # PDF/CBZ -> "Tập NN"; folder con = gộp PDF (hoặc Nhap PDF.bat)
+python pdf_import.py ["downloads\<Tên>" | "<file>.pdf|.cbz|.cbr|.mobi" | "<truyện>\<folder các phần>"] [--dry-run] [--bia N]   # PDF/CBZ/CBR/MOBI -> "Tập NN"; folder con = gộp PDF (hoặc Nhap PDF.bat)
 python reader_server.py [--port 8080]   # thường bật bằng shortcut "Toony"
 ```

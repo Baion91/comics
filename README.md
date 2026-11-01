@@ -10,7 +10,7 @@ Các script trong thư mục này, mỗi cái một việc:
 | `Kiem tra truyen.bat` | Bấm để kiểm tra: chọn thư mục (chạy check_library) |
 | `asura_downloader.py` | (cũ, vẫn chạy) lối tắt chỉ-Asura của comic_downloader |
 | `convert_webp.py` | Chuyển PNG→WebP **và** re-nén WebP nặng (comix.to) về q85 — có chế độ nén tại chỗ |
-| `pdf_import.py` / `Nhap PDF.bat` | **Nhập truyện PDF / CBZ / MOBI**: mỗi file PDF hoặc CBZ (hoặc 1 folder các PDF bị tách của 1 tập → gộp) → 1 thư mục chương `Tập NN` (ảnh gốc) để reader đọc; MOBI có mục lục → mỗi mục 1 `Chapter NN` |
+| `pdf_import.py` / `Nhap PDF.bat` | **Nhập truyện PDF / CBZ / CBR / MOBI**: mỗi file PDF hoặc CBZ/CBR (hoặc 1 folder các PDF bị tách của 1 tập → gộp) → 1 thư mục chương `Tập NN` (ảnh gốc) để reader đọc; MOBI có mục lục → mỗi mục 1 `Chapter NN` |
 | `realesrgan-.../lam-net.bat` | **Làm nét ảnh scan** bằng Real-ESRGAN (AI upscale 2x) |
 | `reader_server.py` | Web đọc truyện kiểu Asura, đọc từ PC lẫn điện thoại |
 
@@ -384,9 +384,9 @@ python convert_webp.py "..." --in-place      :: NÉN WebP TẠI CHỖ (sửa th�
 - **Chạy tay trên server**: bấm **`convert_webp.bat`** → để mức **85** → trả lời **`y`** ở dòng
   *"Nen TAI CHO (…comix cu)?"* để nén tại chỗ (hoặc `N` rồi chọn *"Re-nen ca WebP?"* nếu muốn ra cây `_webp`).
 
-## Nhập truyện PDF / CBZ / MOBI — `pdf_import.py` (hoặc bấm `Nhap PDF.bat`)
+## Nhập truyện PDF / CBZ / CBR / MOBI — `pdf_import.py` (hoặc bấm `Nhap PDF.bat`)
 
-Reader chỉ đọc "chương = thư mục ảnh", nên truyện dạng **PDF**, **CBZ** hoặc **MOBI** phải tách ra 1 lần.
+Reader chỉ đọc "chương = thư mục ảnh", nên truyện dạng **PDF**, **CBZ/CBR** hoặc **MOBI** phải tách ra 1 lần.
 
 1. Đặt PDF theo 1 trong 2 kiểu (tool tự nhận theo vị trí, không cần chọn chế độ):
    - **1 file = 1 tập**: PDF **thẳng trong folder truyện** — `downloads\Doraemon truyện dài\Long 1 LITE.pdf`.
@@ -436,12 +436,17 @@ python pdf_import.py "...\RockMan Series.mobi" --bia 3  :: + chép trang 3 thàn
   mở xem không cần mật khẩu; thiếu thì riêng các tập đó báo lỗi kèm lệnh cài
   (`python -m pip install cryptography`). PDF đòi mật khẩu mới mở được → báo "có mật khẩu", bỏ qua.
   Muốn đọc trên server thì chép **thư mục đã tách** (không cần chép PDF) vào `downloads` của server.
-- **CBZ** (file ZIP chứa ảnh, vd bản rip Kindle/digital): chỉ kiểu **1 file = 1 tập**, đặt thẳng trong
+- **CBZ / CBR** (kho nén chứa ảnh, vd bản rip Kindle/digital): chỉ kiểu **1 file = 1 tập**, đặt thẳng trong
   folder truyện — `downloads\Doraemon Kindle EN\Doraemon - Kindle Edition v001 (2013) (Digital).cbz` →
-  `Tập 01\001.jpg … 036.jpg`. Ảnh chép **nguyên bytes** (không nén lại), xếp theo tên file trong CBZ,
-  đánh lại số `001…`. File không phải ảnh (`ComicInfo.xml`, `.txt`…) bỏ qua + báo; **trang đôi** (ảnh
-  ngang) giữ nguyên 1 ảnh + báo số trang. Ảnh hỏng → bước kiểm tra báo đúng trang, không đụng gì. CBZ
-  gốc cất vào `<folder truyện>\.cbz-goc\`. Không cần `pypdf`.
+  `Tập 01\001.jpg … 036.jpg`. Ruột **ZIP hay RAR** nhận theo chữ ký đầu file, **không theo đuôi** (`.cbz`
+  ruột RAR hay `.cbr` ruột ZIP đều đọc được, chỉ nhắc — người đóng gói hay đặt lẫn). **RAR** cần **WinRAR**
+  (`UnRAR.exe`) hoặc **7-Zip** có trên máy (tool tự tìm ở chỗ cài mặc định / PATH; cài chỗ khác thì đặt
+  biến môi trường `UNRAR_TOOL` trỏ tới file exe) — giải cả gói ra `downloads\.pdf-tmp\` rồi xoá, cả lúc
+  kiểm tra; thiếu cả 2 thì báo cài, không đụng gì. Ảnh chép **nguyên bytes** (không nén lại), xếp theo tên
+  file trong kho (`cover*`/`front*` lên đầu, `back*`/`rear*` xuống cuối), đánh lại số `001…`. File không
+  phải ảnh (`ComicInfo.xml`, `.txt`…) bỏ qua + báo; **trang đôi** (ảnh ngang) giữ nguyên 1 ảnh + báo số
+  trang. Ảnh hỏng / kho có mật khẩu / không phải ZIP-RAR → bước kiểm tra báo rõ, không đụng gì. File gốc
+  cất vào `<folder truyện>\.cbz-goc\`. Không cần `pypdf`.
 - **MOBI** (`.mobi`/`.azw` — truyện tranh Kindle do KindleComicConverter/kindlegen tạo): đặt thẳng trong
   folder truyện, vd `downloads\Rockman 8\RockMan Series.mobi`. Ảnh JPEG trong file chép **nguyên bytes**
   theo thứ tự trang của sách. Sách có **mục lục** (≥ 2 mục) → mỗi mục 1 thư mục `Chapter NN` (số lấy từ
