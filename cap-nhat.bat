@@ -29,7 +29,7 @@ if errorlevel 1 (
 )
 
 echo.
-echo Dang cai/cap nhat thu vien Python (requests, Pillow, Playwright)...
+echo Dang cai/cap nhat thu vien Python (requests, Pillow, Playwright, numpy, OpenCV)...
 python -m pip install -r requirements.txt
 if errorlevel 1 echo !!! pip install loi - tool tai co the thieu thu vien (van chay tiep).
 rem Chromium de TRONG project (.reader-meta\pw-browsers) - KHONG dung AppData

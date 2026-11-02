@@ -911,8 +911,10 @@ def pack_tree(root: Path):
     if not root.is_dir():
         print(f"Không tìm thấy thư mục: {root}", file=sys.stderr)
         sys.exit(1)
+    # bỏ folder chấm-đầu (.lam-sach = bản gốc/ảnh soát của lam_sach_scan...): không nén thành .cbz
     targets = [d for d in [root, *sorted(root.rglob("*"))]
-               if d.is_dir() and list_images(d)]
+               if d.is_dir() and list_images(d)
+               and not any(p.startswith(".") for p in d.relative_to(root).parts)]
     if not targets:
         print("Không tìm thấy thư mục ảnh nào bên trong.", file=sys.stderr)
         sys.exit(1)
@@ -1124,6 +1126,15 @@ def run(provider, args):
             prefix = f"[{idx}/{total}] {label}"  # vị trí chương / tổng số sẽ tải
             folder = _merge_folder(out_root, c, merge)  # merge: ép 'Chapter N' để khớp folder cũ
             folder.mkdir(exist_ok=True)
+
+            # Chương đã làm sạch bằng lam_sach_scan (ảnh đã tách trang + đánh số lại) -> BỎ QUA
+            # kể cả --recheck: quét lại sẽ thấy "thiếu" ảnh tên gốc và tải chèn vào giữa bản sạch.
+            if (folder / ".lam-sach.json").exists():
+                print(f"{prefix} — đã làm sạch (lam_sach_scan), bỏ qua kể cả --recheck")
+                n_skipped += 1
+                if args.cbz:
+                    make_cbz(folder, skip_existing=True)
+                continue
 
             # Chương đã đánh dấu .done từ lần trước -> BỎ QUA, không gọi mạng lấy
             # danh sách ảnh (giúp chạy lại hàng đợi rất nhanh). Cờ --recheck để quét lại.

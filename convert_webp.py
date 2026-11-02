@@ -10,6 +10,8 @@ Kết quả xuất ra thư mục mới <tên>_webp, GIỮ NGUYÊN thư mục g�
             thì thêm --webp-too — dùng cho ảnh comix.to nén nhẹ tay, re-encode
             xuống q85 nhẹ đi ~nửa mà mắt thường không thấy khác)
   - File khác (txt, json, cbz...) -> copy nguyên trạng
+  - Folder chấm-đầu (.lam-sach = bản gốc + ảnh soát của lam_sach_scan, .pdf-goc...) -> BỎ QUA
+    (cả 2 chế độ); file chấm-đầu (.done, .lam-sach.json) vẫn chép như thường
 
 CHỐT TIẾT KIỆM (chống nén-chồng vô ích): khi RE-NÉN một WebP, chỉ thay bằng bản
 nén nếu nó tiết kiệm >= --min-save % (mặc định 10). Ảnh ĐÃ tối ưu (vd đã q85) nén
@@ -47,6 +49,11 @@ for _stream in (sys.stdout, sys.stderr):
 
 MIN_SAVE_DEFAULT = 10   # % — chỉ THAY 1 webp bằng bản nén lại khi tiết kiệm >= mức này;
                         # dưới ngưỡng = "đã tối ưu" -> giữ nguyên (khỏi suy hao vô ích).
+
+
+def in_dot_dir(p: Path, root: Path) -> bool:
+    """File nằm trong folder chấm-đầu (đồ của tool, không phải chương) -> bỏ qua."""
+    return any(part.startswith(".") for part in p.relative_to(root).parts[:-1])
 
 
 def convert_one(src: Path, dst: Path, quality: int) -> tuple[bool, int]:
@@ -102,7 +109,7 @@ def convert_tree(root: Path, quality: int, jpg_too: bool, webp_too: bool,
     conv_exts = ({".png"} | ({".jpg", ".jpeg"} if jpg_too else set())
                  | ({".webp"} if webp_too else set()))
 
-    files = [p for p in root.rglob("*") if p.is_file()]
+    files = [p for p in root.rglob("*") if p.is_file() and not in_dot_dir(p, root)]
     print(f"Nguồn : {root.resolve()} ({len(files)} file)")
     kinds = "PNG" + ("+JPG" if jpg_too else "") + ("+WebP" if webp_too else "")
     print(f"Đích  : {dest_root.resolve()} (q{quality}, {kinds}, "
@@ -180,7 +187,8 @@ def recompress_in_place(root: Path, quality: int, min_save: int, workers: int):
     if not root.is_dir():
         print(f"Không tìm thấy thư mục: {root}", file=sys.stderr)
         sys.exit(1)
-    files = [p for p in root.rglob("*") if p.is_file() and p.suffix.lower() == ".webp"]
+    files = [p for p in root.rglob("*")
+             if p.is_file() and p.suffix.lower() == ".webp" and not in_dot_dir(p, root)]
     print(f"Nén TẠI CHỖ (sửa thẳng folder gốc): {root.resolve()}")
     print(f"  {len(files)} ảnh .webp | q{quality} | tiết kiệm tối thiểu {min_save}% | "
           f"{workers} luồng\n")

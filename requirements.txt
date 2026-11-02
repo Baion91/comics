@@ -21,3 +21,8 @@ pypdf
 # cryptography: pypdf can de giai ma PDF ma hoa AES (vd DoremonVoz Vol.29-36: Acrobat khoa
 # cam in/chep, mo khong can mat khau). Thieu thi rieng cac tap do bao loi, tap khac van chay.
 cryptography
+# numpy + opencv-python-headless: CHI cho lam_sach_scan.py (lam sach anh scan: tach trang doi,
+# don gay, lam trang, lam net). Ban "headless" = khong kem giao dien (nhe, khong dung Qt).
+# Thieu thi tool bao lenh cai, tool khac van chay.
+numpy
+opencv-python-headless

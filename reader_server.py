@@ -160,10 +160,11 @@ def list_images_mt(path):
 
 
 def build_series(path, name):
-    """Nhận diện 1 folder truyện: phẳng (Chương/ảnh) hoặc 2 tầng (Arc/Chương/ảnh)."""
+    """Nhận diện 1 folder truyện: phẳng (Chương/ảnh) hoặc 2 tầng (Arc/Chương/ảnh).
+    Folder chấm-đầu là đồ của tool (.lam-sach = bản gốc + ảnh soát của lam_sach_scan, .pdf-goc...) -> bỏ qua."""
     flat, arc_dirs = [], []
     try:
-        subs = [d for d in os.scandir(path) if d.is_dir()]
+        subs = [d for d in os.scandir(path) if d.is_dir() and not d.name.startswith(".")]
     except OSError:
         return None
     for d in subs:
@@ -172,7 +173,7 @@ def build_series(path, name):
         else:
             try:
                 chs = [c.name for c in os.scandir(d.path)
-                       if c.is_dir() and dir_has_image(c.path)]
+                       if c.is_dir() and not c.name.startswith(".") and dir_has_image(c.path)]
             except OSError:
                 continue
             if chs:

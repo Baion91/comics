@@ -11,6 +11,7 @@ Các script trong thư mục này, mỗi cái một việc:
 | `asura_downloader.py` | (cũ, vẫn chạy) lối tắt chỉ-Asura của comic_downloader |
 | `convert_webp.py` | Chuyển PNG→WebP **và** re-nén WebP nặng (comix.to) về q85 — có chế độ nén tại chỗ |
 | `pdf_import.py` / `Nhap PDF.bat` | **Nhập truyện PDF / CBZ / CBR / MOBI**: mỗi file PDF hoặc CBZ/CBR (hoặc 1 folder các PDF bị tách của 1 tập → gộp) → 1 thư mục chương `Tập NN` (ảnh gốc) để reader đọc; MOBI có mục lục → mỗi mục 1 `Chapter NN` |
+| `lam_sach_scan.py` / `Lam sach scan.bat` | **Làm sạch ảnh scan sách**: tách trang đôi, dọn gáy, làm trắng nền, dọn vùng xám, làm nét nhẹ, phóng AI 2x trang nhỏ — sửa tại chỗ, bản gốc cất riêng |
 | `realesrgan-.../lam-net.bat` | **Làm nét ảnh scan** bằng Real-ESRGAN (AI upscale 2x) |
 | `reader_server.py` | Web đọc truyện kiểu Asura, đọc từ PC lẫn điện thoại |
 
@@ -459,6 +460,90 @@ python pdf_import.py "...\RockMan Series.mobi" --bia 3  :: + chép trang 3 thàn
 - **Bìa** `--bia N` (chỉ khi nhập đúng 1 file; `Nhap PDF.bat` hỏi khi kéo-thả 1 file): chép trang N (đếm
   từ 1 trong cả file) thành `cover.jpg` trong folder truyện — reader ưu tiên file `cover.*`. Dùng khi
   trang đầu không phải bìa (vd trang credit nhóm dịch). Đã có `cover.*` khác → không ghi đè.
+
+## Làm sạch ảnh scan — `lam_sach_scan.py` (hoặc bấm `Lam sach scan.bat`)
+
+Cho truyện **scan sách** (mỗi ảnh = 2 trang mở, giấy ngả vàng, bóng gáy giữa), vd `downloads\Mega Man World`.
+Lấy riêng chặng chuẩn bị ảnh của pipeline dịch Rockman (`rockman-en\scripts\prep.py`, bỏ xoay/phóng):
+
+1. **Tách trang đôi** theo đường gáy (dò cả gáy nghiêng), trang phải trước (manga).
+2. **Dọn gáy**: bỏ khe giữa hai lá / vạch mép giấy, làm sáng dải bóng sát gáy, tô trắng vệt ố/keo ở lề trong.
+3. **Làm trắng nền**: đường cong đơn điệu từng điểm theo màu giấy cục bộ — giữ điểm đen, không lọc, nét và
+   chấm tram giữ nguyên vị trí. Có **cổng an toàn**: trang đo không chắc → chỉ tách, giữ nền gốc (có báo).
+4. **Dọn vùng xám**: vệt mép giấy / bóng máy scan / chấm bụi ở lề và khe giữa khung — không đụng tranh tràn lề.
+5. **Làm nét nhẹ** (unsharp mask tự chỉnh theo độ nét đo được, không tạo viền sáng quanh nét).
+6. **Phóng AI 2x trang thấp** (trang sau tách cao < 1400 px): bằng Real-ESRGAN `realesr-animevideov3` — cùng
+   exe + model với `lam-net.bat`, có sẵn trong repo, cần GPU. Vì sao: bản scan tải về hay rất nhỏ (Mega Man World
+   tờ 900×641 → trang ~450 px; điện thoại phải kéo to ~2,6 lần nên nhoè); làm nét thường không cứu được, phóng
+   AI cho nét + chữ sắc hẳn. Mảng **tram** (chấm xám) mịn thành **xám phẳng**.
+
+```bat
+python lam_sach_scan.py "downloads\Mega Man World" --dry-run   :: chỉ kiểm + in kế hoạch, không ghi gì
+python lam_sach_scan.py "downloads\Mega Man World" --thu 6     :: làm thử 6 ảnh -> .lam-sach\soat\thu\ (GOC | SAU)
+python lam_sach_scan.py "downloads\Mega Man World"             :: làm thật (chương đã làm thì bỏ qua)
+python lam_sach_scan.py "...\Chapter 1 - World 1" --lam-lai    :: làm lại từ bản gốc (sau khi sửa cấu hình)
+python lam_sach_scan.py "...\Chapter 1 - World 1" --tra-goc    :: trả bản gốc về chỗ, bỏ bản đã làm sạch
+python lam_sach_scan.py "downloads\Mega Man World" --khong-phong  :: không phóng AI (giữ cỡ gốc)
+```
+
+`Lam sach scan.bat`: kéo-thả folder truyện/chương vào (hoặc dán đường dẫn) → bảng kiểm tra → `y` làm thật /
+`t` làm thử 6 ảnh / `l` làm lại / `g` trả gốc / `k` làm thật nhưng không phóng AI.
+
+- **Kết quả**: ảnh đánh số lại `001…N` (tờ đôi → 2 trang), ảnh **xám**; nguồn PNG → PNG, nguồn JPG/WebP →
+  JPEG q92. Làm sạch ở **cỡ gốc**; trang cao < 1400 px thì **phóng AI 2x** ở bước cuối (trang đủ lớn giữ cỡ).
+  Ảnh trong reader có `?v=` theo giờ sửa nên máy đọc tự lấy ảnh mới. Cỡ trang nào cũng được: hằng số đo ở
+  300 dpi (trang cao 2020 px) tự co theo chiều cao trang.
+- **Phóng AI**: 1 lần gọi exe cho cả chương, ~1 giây / trang (Mega Man World chương 1: 35 trang, cả chương
+  19 → 49 giây); dung lượng ~2,5 lần (chương 1: 12 → 30 MB). Bảng kiểm tra báo số trang sẽ phóng; báo cáo cuối
+  chương ghi `phóng AI 2x: 35/35 trang`. **Không phóng được** (máy không GPU / thiếu exe / exe lỗi) → trang
+  giữ cỡ gốc + báo `! KHÔNG phóng AI được`, chương vẫn xong; sửa xong chạy lại `--lam-lai`. Tắt hẳn:
+  `--khong-phong` hoặc `"phong": false` trong cấu hình. Exe Real-ESRGAN **sập khi đường dẫn có dấu tiếng
+  Việt** → tool đưa ảnh qua thư mục tạm không dấu (thư mục tạm của Windows, không được thì `.reader-meta`),
+  tên ảnh đánh số. Exe để chỗ khác: đặt biến môi trường `LAM_SACH_ESRGAN` trỏ tới file `.exe` (thư mục
+  `models` nằm cạnh exe).
+- **Chép nguyên, không đụng**: ảnh **màu** (bìa/trang màu), ảnh động, ảnh nhỏ (cao < 500 px), dải dọc
+  webtoon / băng ngang. Ảnh ngang không thấy gáy → làm như 1 trang (không tách).
+- **Tờ tranh liền gáy** (1 tranh vắt qua 2 trang) — mặc định **tách**, trừ:
+  - tranh vắt qua gáy **rõ** (nét sát gáy cả hai bên trên > 30% số dòng) → **tự giữ 1 ảnh** (báo "tờ TỰ GIỮ
+    NGUYÊN"; giữ sai thì ghi vào `tach`);
+  - **nghi** liền gáy (nhiều dòng có nét quanh gáy) → vẫn tách, báo "tờ NGHI". Đọc thấy liền thật thì bấm
+    **Join 2 pages** trong reader (ghép lúc hiển thị, không sửa ảnh), hoặc ghi vào `giu_nguyen` rồi `--lam-lai`.
+  - Soát nhanh: `<truyện>\.lam-sach\soat\<chương> - gay.jpg` — thu nhỏ mọi tờ đôi, vạch **đỏ** = chỗ cắt,
+    **xanh** = giữ, viền **cam** = NGHI.
+- **Cấu hình** `<truyện>\.lam-sach\cau-hinh.json` (tự tạo lần làm đầu), mỗi mục `{"tên chương": ["tên ảnh gốc", ...]}`
+  (chương có arc: `"Arc/Chương"`; `"*"` = mọi chương; tên ảnh có/không đuôi):
+
+  ```json
+  { "doc": "phai-truoc", "phong": true,
+    "giu_nguyen": {"Chapter 1 - World 1": ["016"]},
+    "khong_ghep": {}, "tach": {}, "bo_qua": {} }
+  ```
+  `doc`: `phai-truoc` (manga) / `trai-truoc` (truyện đọc trái → phải, hoặc `--trai-truoc`). `phong`: `true`
+  (mặc định — file cấu hình cũ thiếu mục này cũng là bật) / `false` = không phóng AI. `giu_nguyen` = giữ
+  1 ảnh, bỏ khe gáy khi đo chắc rồi ghép sát; `khong_ghep` = giữ 1 ảnh, để y phần gáy; `tach` = ép tách;
+  `bo_qua` = chép nguyên. Sửa xong chạy `--lam-lai` chương đó.
+- **Đồ của tool gom vào 1 folder** `<truyện>\.lam-sach\`: `cau-hinh.json` (cấu hình), `goc\` (bản gốc),
+  `soat\` (ảnh soát), `tmp\` (chỉ có lúc đang chạy, xong tự xoá). Folder chấm-đầu → **reader, check_library,
+  `convert_webp.py`, `--pack` đều bỏ qua** (reader trước 02/11 không bỏ qua folder chấm-đầu BÊN TRONG truyện →
+  hiện nhầm bản gốc / ảnh soát thành chương; đã sửa, cần bật lại reader). Truyện làm bằng bản đầu (rải
+  `.goc-lam-sach`, `.lam-sach-soat`, `.lam-sach-tmp`, `.lam-sach.json` ra folder truyện) → lần chạy thật tiếp
+  theo **tự gom** về `.lam-sach\` (in "đã gom …").
+- **An toàn**: ghi chương vào `.lam-sach\tmp\`, đọc lại kiểm từng ảnh ra, rồi mới đổi tên → reader không bao giờ
+  thấy chương dở. **Bản gốc cả chương** cất vào `.lam-sach\goc\<chương>`; `--tra-goc` trả lại **đúng từng
+  byte** (trả hết thì `goc\` rỗng tự xoá). Đọc ổn rồi thì tự tay xoá `.lam-sach\goc` để lấy lại dung lượng
+  (mất đường hoàn tác). Bị ngắt giữa chừng (tắt máy, Ctrl+C) → chạy lại
+  lệnh bất kỳ (trừ `--dry-run`/`--thu`) tự làm nốt / trả lại. Hai cửa sổ cùng làm 1 truyện → cửa sổ sau bị
+  từ chối. Chương có ảnh `.bad` / folder con → báo LỖI, không đụng.
+- Dấu `.lam-sach.json` trong chương = đã làm sạch: **tool tải bỏ qua chương này kể cả `--recheck`** (không tải
+  đè ảnh gốc lên, không tính thiếu trang vì số trang đã đổi).
+- Ghép tay **Join** trong reader nhớ theo tên ảnh → làm sạch đổi tên ảnh nên cặp cũ mất tác dụng; bảng kiểm tra
+  báo số cặp sẽ mất.
+- **Server**: cần `numpy` + `opencv-python-headless` (có trong `requirements.txt`) → lần đầu chạy
+  **`cap-nhat.bat`** trên server (`/update` qua bot **không** cài thư viện); thiếu thì tool báo lệnh cài.
+  Chạy 1 tiến trình, OpenCV 2 luồng, **ưu tiên thấp** → reader vẫn mượt. Tốc độ ~1 giây / megapixel (Mega Man
+  World: 38 ảnh 900×637 → 74 trang trong 45 giây, chưa tính phóng AI). Phóng AI cần GPU chạy được Vulkan (exe
+  + model đã nằm trong git, kéo code là có). Lệnh bot `/lamsach`: chưa có.
+- Lưu ý: tờ giữ 1 ảnh có thể còn vệt nếp gáy xám nhạt ở ảnh độ phân giải thấp.
 
 ## Làm nét ảnh scan — Real-ESRGAN (`realesrgan-ncnn-vulkan-v0.2.0-windows\lam-net.bat`)
 
