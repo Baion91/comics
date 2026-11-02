@@ -680,7 +680,7 @@ cách chạy thật + decode thử ảnh.
   phần thập phân (user chốt "Tập 01"/"Tập 07"); không số / trùng số trong 1 folder / PDF nằm ngay
   `downloads/` → báo, bỏ qua. **Ghi**: `downloads/.pdf-tmp/<truyện> - Tập NN/` (gốc downloads chấm-đầu =
   `_scan_library` bỏ qua; KHÔNG đặt tmp trong folder truyện vì `build_series` không lọc thư mục con
-  chấm-đầu → thư mục tạm có ảnh sẽ hiện thành chương/arc) → đủ trang → `os.rename` sang chỗ thật
+  chấm-đầu [02/11: ĐÃ lọc] → thư mục tạm có ảnh sẽ hiện thành chương/arc) → đủ trang → `os.rename` sang chỗ thật
   (khác ổ thì `shutil.move`) → cất PDF (trùng tên thêm ` (2)`). `Tập NN` đã có: giống từng byte PDF →
   chỉ cất PDF (ca ngắt giữa đổi tên và cất); khác → bỏ qua. `.pdf-goc` trong folder truyện: `build_series`
   thấy nó là thư mục không ảnh, không thư mục con có ảnh → bỏ qua; check_library bỏ chấm-đầu. Exit 0/1
@@ -817,6 +817,15 @@ cách chạy thật + decode thử ảnh.
   không số/không phải mobi) → từ chối đúng. *Gotcha thử bat*: đưa câu trả lời bằng redirect/pipe vào
   `Nhap PDF.bat` thì `set /p` đọc RỖNG vì `chcp 65001` (pipe thì còn dính khoảng trắng + nuốt cả bộ
   đệm) — thử logic bat thì bỏ dòng `chcp` ở bản sao rồi redirect file; không phải lỗi bat.
+- `lam_sach_scan.py` + `Lam sach scan.bat` (02/11/2026) — **làm sạch ảnh scan sách TẠI CHỖ**: tờ đôi → 2 trang (phải trước; `doc: trai-truoc` đảo), dọn gáy, làm trắng (đường cong đơn điệu + cổng an toàn), dọn vùng xám (lề / khe khung), làm nét USM tự chỉnh. Thuật toán = chặng (a) Rockman (`D:\claude-code\rockman-en\scripts\prep.py`, KHÔNG sửa prep; bỏ xoay/phóng), port + tổng quát hoá:
+  - **Thang `Thang(u)`, u = cao trang / 2020** (trang Rockman 300 dpi): hằng số HÌNH HỌC × u (có sàn), hằng số NHIỄU (diện tích chấm 40/150/25 px, bán kính USM, đích độ nét) giữ theo điểm ảnh; KHÔNG phóng ảnh. Vì: phóng lên 300 dpi rồi thu lại xoá nét mảnh sát gáy + làm nhạt số trang (thử trên Mega Man World). **u = 1 → ra y hệt prep.py từng điểm** (kiểm hồi quy 02/11) — sửa thuật toán thì giữ điều này hoặc ghi lý do.
+  - Dò màu riêng (prep coi ~2/3 trang giấy ngà là màu vì nhiễu JPEG): trung bình khối H/128, chroma > 25 sau cân trắng theo giấy, vùng liền ≥ 6 khối, ngưỡng 0,02 → ảnh màu chép nguyên.
+  - Tờ liền gáy: mặc định TÁCH; `cross > 0.3` (nét sát gáy cả 2 bên) → tự giữ 1 ảnh (0/162 nhầm trên nhãn Rockman, bắt 4/28); `clean < 0.85` → cờ NGHI (bắt 28/28 nhãn + MMW c1/016 nhưng nhầm 70/162 → chỉ báo, không giữ). Sửa tay: reader **Join 2 pages** (spreads.json) hoặc `<truyện>/.lam-sach/cau-hinh.json` (`giu_nguyen` / `khong_ghep` / `tach` / `bo_qua`, `"*"` = mọi chương) + `--lam-lai`.
+  - **Một folder đồ của tool** `<truyện>/.lam-sach/` (`WORK_DIR`: `cau-hinh.json`, `goc/`, `soat/`, `tmp/` — tmp xoá khi chỉ còn thư mục rỗng, `goc/` rỗng sau `--tra-goc` tự bỏ). Bản đầu 02/11 rải `.goc-lam-sach` / `.lam-sach-soat` / `.lam-sach-tmp` / `.lam-sach.json` ra folder truyện → `migrate_legacy()` gom ở lần chạy thật (sau khoá, TRƯỚC recover — dở dang trong tmp cũ được làm nốt); `--dry-run`/`--thu` đọc chỗ cũ qua `tool_path()`, không ghi. Marker chương giữ tên `.lam-sach.json` (comics_core đọc). VÌ SAO 1 folder: user thấy rác, và `build_series` (trước 02/11) không lọc chấm-đầu trong truyện nên ảnh soát/bản gốc hiện thành chương.
+  - An toàn kiểu pdf_import: ghi `<truyện>/.lam-sach/tmp/<chương>` → đọc lại kiểm → `os.replace`; gốc cả chương → `<truyện>/.lam-sach/goc/<chương>`; dấu `<chương>/.lam-sach.json` (`hoan_tat` + từng ảnh: kind/decision/seam/whiten…). `recover()` đầu mỗi lần chạy có ghi: chương mới có `hoan_tat` mà chỗ đang trống → đưa vào; `_cu/` (bản sạch cũ khi `--lam-lai`/`--tra-goc`) xét SAU bản mới; liệt kê chương SAU recover. Khoá `.lam-sach/tmp/lock.json` (chỉ chặn khi PID còn sống). Ưu tiên BELOW_NORMAL, `cv2.setNumThreads(2)`.
+  - **Phóng AI (02/11, VERSION 2)**: trang ra cao < `PHONG_H`=1400 px → Real-ESRGAN `realesr-animevideov3` 2x (exe + model của `realesrgan-ncnn-vulkan-v0.2.0-windows/`, đã trong git) ở BƯỚC CUỐI, sau làm sạch cỡ gốc (giữ nguyên hồi quy u=1). Trang chờ phóng ghi PNG vào thư mục tạm (không giữ cả chương trong RAM, nguồn JPG khỏi nén 2 lần), 1 lần gọi exe/chương, đọc lại kiểm đúng cỡ 2x → `convert('L')` → ghi theo quy tắc cũ; ảnh nào hỏng → cỡ gốc. Exe sập với đường dẫn có dấu → thư mục tạm ASCII (`tempfile` hoặc `.reader-meta`), tên số. Không GPU / thiếu exe → giữ cỡ gốc + báo, chương vẫn xong. Marker: `phong` (dict model/scale/nguong/cho/n/loi, hoặc true/false), từng trang `phong: 2`. Tắt: `--khong-phong` / `"phong": false`; `LAM_SACH_ESRGAN` = đường dẫn exe khác. VÌ SAO: bản scan tải về hay chỉ 450–700 px/trang → điện thoại kéo to 1,7–2,6x nhoè, USM cổ điển đã chạm đích; so 4 cách ở cỡ màn iPhone, làm-sạch-rồi-AI nét + chữ tốt nhất (đổi lại tram thành xám phẳng).
+  - `comics_core.run()`: chương có `.lam-sach.json` → bỏ qua kể cả `--recheck` (không tải đè ảnh gốc, không báo thiếu trang vì số trang đổi).
+  - Thư viện: `numpy` + `opencv-python-headless` (requirements; `/update` không chạy pip → lần đầu `cap-nhat.bat`).
 - `reader_server.py` — web reader kiểu Asura (HTML sinh trong Python stdlib; CSS/JS
   từ 21/08 tách ra file tĩnh versioned `/static/*` + có Service Worker `/sw.js`, xem
   mục "Tài nguyên tĩnh + Service Worker"; không dependency ngoài Pillow tùy chọn), port mặc định **8080**, user
@@ -1679,5 +1688,6 @@ python asura_downloader.py <URL|slug> ...           # shim cũ, vẫn chạy (m�
 # hoặc double-click "Tai truyen.bat" trong folder rồi dán link
 python convert_webp.py "<folder>" [--quality 90] [--jpg-too]
 python pdf_import.py ["downloads\<Tên>" | "<file>.pdf|.cbz|.cbr|.mobi" | "<truyện>\<folder các phần>"] [--dry-run] [--bia N]   # PDF/CBZ/CBR/MOBI -> "Tập NN"; folder con = gộp PDF (hoặc Nhap PDF.bat)
+python lam_sach_scan.py "downloads\<Tên>" [--dry-run | --thu N | --lam-lai | --tra-goc] [--trai-truoc] [--khong-phong]   # làm sạch scan sách tại chỗ (hoặc Lam sach scan.bat)
 python reader_server.py [--port 8080]   # thường bật bằng shortcut "Toony"
 ```
