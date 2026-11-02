@@ -125,11 +125,9 @@ def check_one(entry):
         return res
 
     try:
-        # Referer đặt theo site (giống core.run) — vài CDN/API đòi. Reset sau mỗi truyện.
-        if getattr(provider, "referer", None):
-            core.session.headers["Referer"] = provider.referer
-        else:
-            core.session.headers.pop("Referer", None)
+        # Referer + User-Agent đặt theo site (giống core.run) — vài CDN/API đòi. Đặt lại
+        # mỗi truyện để header site trước không dính sang.
+        core.apply_site_headers(provider)
         # Checker KHÔNG mở Chromium (giữ nhẹ + không treo lượt dò 3h sáng): provider có
         # tầng trình duyệt (qqcomvn) bị Cloudflare chặn -> ném Challenged -> status 'browser'
         # bên dưới; job tải (được mở Chromium) mới là nơi vượt challenge.

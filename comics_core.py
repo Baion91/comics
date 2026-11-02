@@ -646,6 +646,26 @@ def _retry_after(resp) -> float | None:
     return float(ra) if ra.replace(".", "", 1).isdigit() else None
 
 
+def _mangadex_challenge(r, *args, **kwargs):
+    """Móc response của `session`: chặn NGAY cú 302 sang trang xác minh của MangaDex.
+
+    Từ 11/2026 api/uploads.mangadex.org đẩy request mang UA TRÌNH DUYỆT sang
+    `mangadex.org/edge/challenge` (thử thách JS; quy định API cấm UA giả). requests tự đi
+    theo 302 -> đụng `mangadex.org` bị nhà mạng chặn SNI -> SSLEOFError khó hiểu + thử lại
+    3 lần vô ích. Móc chạy trên TỪNG chặng (cả cú 302 đầu) nên ném trước khi đi theo.
+    Ném Blocked chứ KHÔNG Challenged: Challenged = 'mở Chromium là qua' (check_updates sẽ
+    enqueue mỗi ngày), còn ở đây cách chữa là sửa UA (`MangaDexProvider.user_agent`)."""
+    if (r.is_redirect and "mangadex" in r.url
+            and "/edge/challenge" in r.headers.get("Location", "")):
+        r.close()
+        raise Blocked(f"MangaDex đòi xác minh trình duyệt (302 -> /edge/challenge) tại {r.url}"
+                      f" — UA '{r.request.headers.get('User-Agent')}' bị coi là trình duyệt "
+                      "giả; kiểm MangaDexProvider.user_agent / override 'user_agent'.")
+
+
+session.hooks["response"].append(_mangadex_challenge)
+
+
 def _request(url: str, retries: int = 3):
     """GET qua van điều tốc, xử lý 429/403/503 chung. Trả Response hoặc None."""
     for attempt in range(retries + 2):
@@ -1012,14 +1032,24 @@ def _print_merge_plan(chapters, out_root: Path, base_title: str, args, merge: bo
     print("PLAN_JSON:" + json.dumps(plan, ensure_ascii=False))
 
 
-def run(provider, args):
-    """Vòng lặp tải chung cho mọi site. `provider` cấp phần khác biệt của site."""
-    reap_decode_crash()   # phiên trước chết giữa lúc giải mã? ghi lại ảnh thủ phạm rồi dọn cờ
-    # Referer đặt theo từng site (Asura cần asuracomic.net; Raven không cần)
+def apply_site_headers(provider):
+    """Đặt header theo site lên `session` DÙNG CHUNG. Gọi mỗi khi đổi provider: core.run,
+    và check_updates (dò nhiều site trong 1 tiến trình -> phải đặt LẠI cả hai, không để
+    header site trước dính sang site sau).
+      - Referer: CDN vài site đòi (Asura, MangaDex @Home...); site không khai -> bỏ.
+      - User-Agent: mặc định UA Chrome; provider khai `user_agent` thì dùng UA đó (MangaDex
+        cấm UA giả trình duyệt — xem `_mangadex_challenge`)."""
     if getattr(provider, "referer", None):
         session.headers["Referer"] = provider.referer
     else:
         session.headers.pop("Referer", None)
+    session.headers["User-Agent"] = getattr(provider, "user_agent", None) or UA
+
+
+def run(provider, args):
+    """Vòng lặp tải chung cho mọi site. `provider` cấp phần khác biệt của site."""
+    reap_decode_crash()   # phiên trước chết giữa lúc giải mã? ghi lại ảnh thủ phạm rồi dọn cờ
+    apply_site_headers(provider)
 
     slug = provider.series_slug(args.series)
     to_webp = bool(getattr(provider, "png_to_webp", False))   # móc PNG->WebP lúc tải

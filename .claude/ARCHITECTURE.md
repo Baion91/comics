@@ -1139,6 +1139,18 @@ cách chạy thật + decode thử ảnh.
   `MangaDexProvider.referer="https://mangadex.org/"` (khác Asura/Raven `referer=None`).
   Chỉ cần Referer, KHÔNG cần Origin. (Chẩn ra 07/08: batch tải nguội 404 hàng loạt trong
   khi ảnh test lẻ 200 vì đã warm cache.)
+- **MangaDex CẤM UA giả trình duyệt** (sự cố 02/11/2026): `api.` + `uploads.mangadex.org`
+  trả **302 → `mangadex.org/edge/challenge?src=<base64 path>`** cho mọi request mang UA
+  Chrome (`core.UA`); UA khác (tên app, UA mặc định requests) → 200. Ảnh @Home
+  `*.mangadex.network` không kén UA. requests tự theo 302 → `mangadex.org` bị nhà mạng
+  **chặn SNI** (cùng IP 45.129.229.1: SNI `api.` bắt tay OK, SNI `mangadex.org` →
+  `SSLEOFError UNEXPECTED_EOF_WHILE_READING`) → lỗi SSL khó hiểu. Sửa: provider khai
+  `user_agent = "Toony/1.0 (personal manga reader)"`, `core.apply_site_headers(provider)`
+  đặt Referer + UA theo site (dùng ở `core.run` VÀ `check_updates` — dò nhiều site 1 tiến
+  trình nên phải đặt lại mỗi truyện); override `"user_agent"` sửa tay trong file override
+  (null = UA Chrome). Móc response `_mangadex_challenge` trên `session` ném **`Blocked`**
+  (không phải `Challenged` — Chromium không chữa được, check_updates sẽ enqueue vô ích)
+  ngay tại cú 302, không retry, thông điệp chỉ thẳng UA.
 - **Dùng API JSON thay vì parse HTML** (Asura): trả URL ảnh đúng thứ tự trang;
   bắt buộc vì chương mới đặt tên ảnh hash ngẫu nhiên, không đoán được URL.
 - **PoliteGate + cầu dao 429** (sự cố 16/07/2026: 5 luồng không nghỉ → CDN chặn

@@ -6,6 +6,7 @@ Mỗi provider phải cung cấp đúng "hợp đồng" sau (engine chỉ cần 
     name            : str            - tên ngắn, để in log và cho cờ --site
     domains         : list[str]      - các domain site phụ trách (khớp URL người dùng dán)
     referer         : str | None     - Referer gửi kèm nếu CDN đòi (None = không gửi)
+    user_agent      : str (tùy chọn) - UA riêng của site; không khai = UA Chrome (core.UA)
     series_slug(url_or_text) -> str          - tách slug/id truyện từ URL
     title_from_slug(slug)    -> str          - tên hiển thị (đặt tên folder)
     list_chapters(slug)      -> [Chapter(number, title, ref), ...]
@@ -280,6 +281,10 @@ class MangaDexProvider:
     # CDN @Home đòi Referer mangadex.org: ảnh NGUỘI (chưa cache Cloudflare) mà thiếu
     # header này trả 404. Đặt ở đây -> core.run gắn vào session cho mọi request.
     referer = "https://mangadex.org/"
+    # UA THẬT của app, KHÔNG giả Chrome: quy định API cấm UA giả, và từ 11/2026 api/uploads
+    # đẩy UA trình duyệt sang mangadex.org/edge/challenge (bị nhà mạng chặn SNI -> SSLEOFError).
+    # core.apply_site_headers gắn vào session; ảnh @Home (*.mangadex.network) không kén UA.
+    user_agent = "Toony/1.0 (personal manga reader)"
 
     def _split(self, slug: str):
         """'{uuid}@vi' -> (uuid, 'vi'); UUID trần -> (uuid, LANG)."""
@@ -3082,9 +3087,11 @@ def load_overrides() -> dict:
 
 
 def _apply_overrides(providers):
-    """Áp override lên INSTANCE trước khi dựng REGISTRY: nối domain, đổi BASE/referer.
+    """Áp override lên INSTANCE trước khi dựng REGISTRY: nối domain, đổi BASE/referer/UA.
     Cho phép đổi domain khi site xoay tên miền mà KHÔNG phải sửa code + push + /update.
-    Định dạng: { "<name>": {"domains_add":[...], "base":"https://...", "referer":"..."} }.
+    Định dạng: { "<name>": {"domains_add":[...], "base":"https://...", "referer":"...",
+    "user_agent":"..."} }. `user_agent` chỉ sửa tay trong file (bot chưa có lệnh; UA có dấu
+    cách); null = về UA Chrome mặc định.
     LƯU Ý: chỉ thêm domain là ĐỦ để nhận URL; site chống-hotlink (TruyenQQ/Zet) còn cần
     set 'base'+'referer' sang domain mới thì ảnh mới tải được (CDN kiểm referer theo domain)."""
     cfg = load_overrides()
@@ -3096,6 +3103,8 @@ def _apply_overrides(providers):
             p.BASE = o["base"]
         if "referer" in o:                 # cho phép referer: null (bỏ referer)
             p.referer = o["referer"] or None
+        if "user_agent" in o:              # null -> UA Chrome mặc định (core.UA)
+            p.user_agent = o["user_agent"] or None
         add = [d.lower() for d in (o.get("domains_add") or []) if d]
         if add:
             p.domains = list(dict.fromkeys([*p.domains, *add]))
