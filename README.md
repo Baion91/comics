@@ -11,7 +11,7 @@ Các script trong thư mục này, mỗi cái một việc:
 | `asura_downloader.py` | (cũ, vẫn chạy) lối tắt chỉ-Asura của comic_downloader |
 | `convert_webp.py` | Chuyển PNG→WebP **và** re-nén WebP nặng (comix.to) về q85 — có chế độ nén tại chỗ |
 | `pdf_import.py` / `Nhap PDF.bat` | **Nhập truyện PDF / CBZ / CBR / MOBI**: mỗi file PDF hoặc CBZ/CBR (hoặc 1 folder các PDF bị tách của 1 tập → gộp) → 1 thư mục chương `Tập NN` (ảnh gốc) để reader đọc; MOBI có mục lục → mỗi mục 1 `Chapter NN` |
-| `lam_sach_scan.py` / `Lam sach scan.bat` | **Làm sạch ảnh scan sách**: tách trang đôi, dọn gáy, làm trắng nền, dọn vùng xám, làm nét nhẹ, phóng AI 2x trang nhỏ — sửa tại chỗ, bản gốc cất riêng |
+| `lam_sach_scan.py` / `Lam sach scan.bat` | **Làm sạch ảnh scan sách**: tách trang đôi, dọn gáy, làm trắng nền, dọn vùng xám, làm nét nhẹ, phóng AI 2x trang nhỏ, đổi chữ lệch font (`doi_font.py`) — sửa tại chỗ, bản gốc cất riêng |
 | `realesrgan-.../lam-net.bat` | **Làm nét ảnh scan** bằng Real-ESRGAN (AI upscale 2x) |
 | `reader_server.py` | Web đọc truyện kiểu Asura, đọc từ PC lẫn điện thoại |
 
@@ -484,10 +484,13 @@ python lam_sach_scan.py "downloads\Mega Man World"             :: làm thật (c
 python lam_sach_scan.py "...\Chapter 1 - World 1" --lam-lai    :: làm lại từ bản gốc (sau khi sửa cấu hình)
 python lam_sach_scan.py "...\Chapter 1 - World 1" --tra-goc    :: trả bản gốc về chỗ, bỏ bản đã làm sạch
 python lam_sach_scan.py "downloads\Mega Man World" --khong-phong  :: không phóng AI (giữ cỡ gốc)
+python lam_sach_scan.py "downloads\Mega Man World" --soat-font    :: dò chữ lệch font -> .lam-sach\soat\doi-font\ (thư viện y nguyên)
+python lam_sach_scan.py "downloads\Mega Man World" --doi-font     :: đổi chữ lệch font sang font truyện
 ```
 
 `Lam sach scan.bat`: kéo-thả folder truyện/chương vào (hoặc dán đường dẫn) → bảng kiểm tra → `y` làm thật /
-`t` làm thử 6 ảnh / `l` làm lại / `g` trả gốc / `k` làm thật nhưng không phóng AI.
+`t` làm thử 6 ảnh / `l` làm lại / `g` trả gốc / `k` làm thật nhưng không phóng AI / `x` soát chữ lệch font /
+`f` đổi chữ lệch font.
 
 - **Kết quả**: ảnh đánh số lại `001…N` (tờ đôi → 2 trang), ảnh **xám**; nguồn PNG → PNG, nguồn JPG/WebP →
   JPEG q92. Làm sạch ở **cỡ gốc**; trang cao < 1400 px thì **phóng AI 2x** ở bước cuối (trang đủ lớn giữ cỡ).
@@ -544,6 +547,47 @@ python lam_sach_scan.py "downloads\Mega Man World" --khong-phong  :: không phó
   World: 38 ảnh 900×637 → 74 trang trong 45 giây, chưa tính phóng AI). Phóng AI cần GPU chạy được Vulkan (exe
   + model đã nằm trong git, kéo code là có). Lệnh bot `/lamsach`: chưa có.
 - Lưu ý: tờ giữ 1 ảnh có thể còn vệt nếp gáy xám nhạt ở ảnh độ phân giải thấp.
+
+### Đổi chữ lệch font (`--soat-font` / `--doi-font`, lõi `doi_font.py`)
+
+Bản dịch hay có vài chỗ nhóm dịch gõ bằng **font hệ thống** thay vì font truyện tranh — Mega Man World: tên
+robot / tên chiêu / tiếng hét / ghi chú tiếng động gõ **Calibri Bold** giữa các bóng **CC Wild Words Roman**
+(61 dòng ở 22 trang của 2 chương). Tool tìm các dòng đó, xoá đúng nét chữ cũ rồi in lại bằng font truyện.
+
+- **Không cần OCR**: font lệch là font đã biết → so từng mảnh mực trên nền trắng với khuôn ký tự Calibri Bold
+  (A–Z, 0–9, `!`, `?`), rồi **tự kiểm**: in lại từ vừa đọc bằng Calibri, so nét với ảnh. Chữ Calibri thật khớp
+  0,98–1,00; chữ font truyện / nét vẽ ≤ 0,974 → không nhầm (đo trên 74 trang MMW: 61/61 dòng đúng).
+- **In lại**: chữ hoa cao bằng chữ cũ, cùng chân chữ, cùng tâm ngang; dịch trong chỗ trống hoặc co tối đa 15 %
+  nếu tràn. Chỗ xoá tô bằng màu giấy tại chỗ (kể cả quầng sáng quanh nét cũ) → không thành mảng trắng.
+- **TỰ** (đổi luôn): khớp ≥ 0,98, không còn dấu chưa đọc được quanh dòng, không sát viền / nét vẽ, không chạm mép
+  trang, vừa chỗ trống. Còn lại là **SOÁT** — chỉ đổi khi duyệt. MMW: 54 dòng TỰ, 7 dòng SOÁT (BOOMERAN|G dính
+  viền bóng, `*EFECTO:` có dấu `*` `:` chưa đọc, ghi chú tiếng động bị cắt mép trang...).
+- **Quy trình**: `--soat-font` (bat: `x`) → xem `<truyện>\.lam-sach\soat\doi-font\<chương>\`: ảnh trước|sau
+  từng trang (bên trước: khung **xanh** = đổi, **cam** = cần soát, **xám** = bỏ; bên sau = xem trước như khi duyệt
+  hết) + `danh-sach.txt` (mỗi dòng 1 khoá `"<ảnh>:<chữ đọc được>"`, trùng chữ trong trang thì thêm `#k`) →
+  ghi duyệt / sửa / bỏ vào cấu hình → `--doi-font` (bat: `f`). Chương **đã làm sạch** đổi **tại chỗ** (chỉ ghi
+  đè trang có dòng được đổi, ghi file tạm rồi đổi tên); chương làm sạch trong cùng lần chạy đổi ở bước cuối mỗi
+  trang (sau phóng AI). Chạy lại không đổi lại dòng đã đổi. Ghi nhận vào dấu `.lam-sach.json` mục `doi_font`.
+- **Cấu hình** (`cau-hinh.json`, mục `doi_font`, thiếu mục nào thì lấy mặc định):
+
+  ```json
+  "doi_font": {"bat": false, "nguon": "Calibri Bold", "font": "CC Wild Words Roman",
+               "duyet": {"Chapter 1 - World 1": ["033:BOOMERAN"]},
+               "sua":   {"Chapter 2 - World 2": {"028:EFECTO": "*SFX:"}},
+               "bo":    {"Chapter 2 - World 2": ["022:ZUDAS", "021:SHU"]}}
+  ```
+  `duyet` = đổi đúng như ảnh xem trước; `sua` = đổi thành chữ ghi ở đây (dấu chưa đọc được quanh dòng bị xoá
+  cùng → ghi đủ cả dấu); `bo` = giữ chữ cũ. `bat: true` = mỗi lần làm sạch truyện này đổi luôn (không cần
+  `--doi-font`). `nguon` / `font` = tên font như Windows hiện, tên file hoặc đường dẫn file font.
+- **Bỏ đổi font**: không có bản lưu riêng — `--lam-lai` chương đó (làm sạch lại từ bản gốc, `bat` = false).
+  `--tra-goc` vẫn trả đúng bản scan gốc.
+- **Không bắt**: chữ đè lên tranh / tram (cần nền trắng), dòng < 3 ký tự, chữ thường, chữ hoa < 12 px, font lạ
+  khác font `nguon`. Ký tự cuối dính viền bóng: tool đoán (đúng G của BOOMERANG) nhưng xoá có thể làm **đứt
+  một đoạn viền** → để SOÁT, xem ảnh rồi mới duyệt.
+- **Font**: Calibri có sẵn trên Windows; **CC Wild Words phải cài trên máy chạy** (cả server). Thiếu font →
+  `--soat-font` / `--doi-font` báo lỗi; `bat: true` thì vẫn làm sạch, chỉ bỏ đổi font + báo. File font **không**
+  đưa lên repo (repo Public, font có giấy phép riêng).
+- Tốc độ ~1 giây / trang (MMW 74 trang: 71 giây), không cần GPU.
 
 ## Làm nét ảnh scan — Real-ESRGAN (`realesrgan-ncnn-vulkan-v0.2.0-windows\lam-net.bat`)
 

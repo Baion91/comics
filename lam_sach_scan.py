@@ -21,6 +21,11 @@ Làm gì với từng ảnh của 1 chương (thứ tự tên như reader):
     cần GPU qua Vulkan), 1 lần gọi exe cho cả chương. Mảng tram mịn thành xám phẳng. Không phóng được
     (không GPU / exe lỗi) -> giữ cỡ gốc + báo. Tắt: --khong-phong hoặc "phong": false trong cấu hình.
   - Trang đen trắng lưu XÁM 1 kênh: nguồn PNG/BMP/GIF -> PNG, nguồn JPG/WebP/AVIF -> JPEG q92.
+  - Tuỳ chọn ĐỔI CHỮ LỆCH FONT (doi_font.py): dòng nhóm dịch gõ bằng font hệ thống (mặc định Calibri Bold) giữa các
+    bóng font truyện -> xoá đúng nét chữ cũ, in lại bằng font truyện (mặc định CC Wild Words Roman — phải cài trên
+    máy chạy). Đọc chữ bằng khớp khuôn font đã biết + tự kiểm, không OCR. Dòng chắc tự đổi; dòng nghi (dính viền,
+    còn dấu chưa đọc được, tràn chỗ...) chỉ đổi khi duyệt trong cấu hình. --soat-font xem trước, --doi-font đổi
+    (chương đã làm sạch đổi tại chỗ), "doi_font": {"bat": true} = đổi luôn mỗi lần làm sạch.
 Thang đo: u = chiều cao trang / 2020 (trang scan 300 dpi). Hằng số hình học (cửa sổ gáy, lề, khung,
 vật thể...) nhân u; ngưỡng mức xám, cỡ hạt nhiễu, bán kính làm nét giữ theo điểm ảnh. Làm sạch ở CỠ GỐC
 (thử phóng lên 300 dpi rồi mới làm: mất nét mảnh sát gáy, số trang nhạt đi), phóng AI là bước SAU CÙNG.
@@ -44,7 +49,13 @@ folder chương (có arc thì "Arc/Chương"), "*" = mọi chương; ảnh = tê
    "khong_ghep": {...},                    giữ 1 ảnh, không đụng gáy
    "tach":       {...},                    ép tách
    "bo_qua":     {...},                    chép nguyên, không xử lý gì
-   "phong": true | false}                  phóng AI 2x trang thấp (mặc định true)
+   "phong": true | false,                  phóng AI 2x trang thấp (mặc định true)
+   "doi_font": {"bat": false,              true = đổi chữ lệch font ngay khi làm sạch
+                "nguon": "Calibri Bold", "font": "CC Wild Words Roman",   tên font như Windows hiện / đường dẫn
+                "duyet": {"Chapter 1": ["033:BOOMERAN"]},   dòng cần soát: đổi như ảnh xem trước
+                "sua": {"Chapter 2": {"028:EFECTO": "SFX:"}},  đổi thành chữ ghi ở đây
+                "bo": {"Chapter 1": ["014:CUT"]}}}       giữ nguyên chữ cũ
+   (khoá "<ảnh>:<chữ đọc được>" lấy trong .lam-sach\\soat\\doi-font\\<chương>\\danh-sach.txt)
 
 An toàn (như pdf_import): mỗi chương ghi ra <truyện>/.lam-sach/tmp/, kiểm từng ảnh giải mã được rồi mới
 đổi chỗ: chương gốc -> <truyện>/.lam-sach/goc/<chương>/,
@@ -63,6 +74,8 @@ Cách dùng:
   python lam_sach_scan.py "..." --tra-goc      # trả bản gốc, bỏ bản đã làm sạch
   python lam_sach_scan.py "..." --trai-truoc   # truyện đọc trái->phải (truyện Tây / bản đã lật)
   python lam_sach_scan.py "..." --khong-phong  # không phóng AI trang thấp (giữ cỡ gốc)
+  python lam_sach_scan.py "..." --soat-font    # dò chữ lệch font -> .lam-sach\\soat\\doi-font\\ (thư viện y nguyên)
+  python lam_sach_scan.py "..." --doi-font     # đổi chữ lệch font (chương đã làm sạch: đổi tại chỗ)
 Hoặc bấm `Lam sach scan.bat` (kéo-thả folder vào cũng được).
 
 Máy: 1 tiến trình, tuần tự từng ảnh, OpenCV 2 luồng, ưu tiên thấp (reader vẫn mượt); ~1 s / 1 triệu
@@ -127,18 +140,26 @@ PHONG_H = 1400        # trang (sau tách) thấp hơn -> phóng AI; MMW: trang 6
 PHONG_SCALE = 2
 SEC_PER_PHONG = 1.0   # ước: ~0,7 s / trang 450 px (Intel Iris Xe, PC dev)
 
+FONT_REVIEW = REVIEW_DIR + "/doi-font"   # ảnh trước|sau + danh-sach.txt của bước đổi font, mỗi chương 1 folder
+
 CONF_TEMPLATE = {
     "_huong_dan": ("doc: 'phai-truoc' (manga) hoac 'trai-truoc'. Cac muc con lai: {ten chuong: [ten anh goc]} "
                    "(chuong co arc: 'Arc/Chuong'; '*' = moi chuong; ten anh co/khong duoi). giu_nguyen = to "
                    "tranh lien gay giu 1 anh (tu bo khe gay neu do chac); khong_ghep = giu 1 anh, khong dung gay; "
                    "tach = ep tach; bo_qua = chep nguyen. phong: true/false = phong AI 2x trang thap (< 1400 px, "
-                   "Real-ESRGAN, can GPU). Sua xong chay lai voi --lam-lai."),
+                   "Real-ESRGAN, can GPU). Sua xong chay lai voi --lam-lai. doi_font: doi chu go bang font he "
+                   "thong (nguon, mac dinh Calibri Bold) sang font truyen (font, mac dinh CC Wild Words Roman); "
+                   "bat = tu doi ngay khi lam sach; duyet / sua / bo: {ten chuong: [khoa]} / {ten chuong: {khoa: "
+                   "chu moi}} voi khoa '<anh>:<chu>' in trong .lam-sach\\soat\\doi-font\\<chuong>\\danh-sach.txt, "
+                   "sua xong chay --doi-font."),
     "doc": "phai-truoc",
     "phong": True,
     "giu_nguyen": {},
     "khong_ghep": {},
     "tach": {},
     "bo_qua": {},
+    "doi_font": {"bat": False, "nguon": "Calibri Bold", "font": "CC Wild Words Roman",
+                 "duyet": {}, "sua": {}, "bo": {}},
 }
 RULE_KEYS = ("bo_qua", "khong_ghep", "giu_nguyen", "tach")   # thứ tự ưu tiên khi 1 ảnh nằm ở nhiều mục
 KIND_VI = dict(doi='tờ đôi', don='trang đơn', rong='ảnh ngang không thấy gáy', mau='ảnh màu', dong='ảnh động',
@@ -1303,6 +1324,21 @@ def load_conf(series):
         raise SystemExit(f"! {p}: 'doc' chỉ nhận 'phai-truoc' hoặc 'trai-truoc'")
     if not isinstance(conf.get('phong'), bool):
         raise SystemExit(f"! {p}: 'phong' chỉ nhận true hoặc false")
+    df = dict(CONF_TEMPLATE['doi_font'])
+    if not isinstance(conf.get('doi_font'), dict):
+        raise SystemExit(f"! {p}: 'doi_font' phải là {{\"bat\": false, \"font\": \"...\", ...}}")
+    df.update(conf['doi_font'])
+    if not isinstance(df['bat'], bool):
+        raise SystemExit(f"! {p}: 'doi_font.bat' chỉ nhận true hoặc false")
+    for k in ('nguon', 'font'):
+        if not isinstance(df[k], str) or not df[k].strip():
+            raise SystemExit(f"! {p}: 'doi_font.{k}' phải là tên font (vd \"CC Wild Words Roman\") hoặc đường dẫn file font")
+    for k in ('duyet', 'bo'):
+        if not (isinstance(df[k], dict) and all(isinstance(v, list) for v in df[k].values())):
+            raise SystemExit(f"! {p}: 'doi_font.{k}' phải là {{\"tên chương\": [\"<ảnh>:<chữ>\", ...]}}")
+    if not (isinstance(df['sua'], dict) and all(isinstance(v, dict) for v in df['sua'].values())):
+        raise SystemExit(f"! {p}: 'doi_font.sua' phải là {{\"tên chương\": {{\"<ảnh>:<chữ>\": \"chữ mới\"}}}}")
+    conf['doi_font'] = df
     return conf
 
 
@@ -1564,6 +1600,185 @@ def phong_ai(pdir, keys):
     return got, err
 
 
+# ================================================================ đổi chữ lệch font (doi_font.py)
+
+def font_engine(conf):
+    """-> (DoiFont, mô tả) hoặc (None, lỗi). Chỉ nạp doi_font khi cần (làm sạch thường không đụng tới)."""
+    try:
+        import doi_font
+    except ImportError as e:
+        return None, f"không nạp được doi_font.py ({e})"
+    df = conf['doi_font']
+    src, dst = doi_font.find_font(df['nguon']), doi_font.find_font(df['font'])
+    if src is None:
+        return None, f"không thấy font chữ lệch \"{df['nguon']}\" (doi_font.nguon trong {win(SERIES_CONF)})"
+    if dst is None:
+        return None, (f"không thấy font \"{df['font']}\" trên máy này — cài font (chuột phải file font > Install) "
+                      f"hoặc ghi đường dẫn file font vào doi_font.font trong {win(SERIES_CONF)}")
+    try:
+        return doi_font.DoiFont(src, dst), f"\"{df['nguon']}\" -> \"{df['font']}\" ({dst})"
+    except Exception as e:
+        return None, f"không mở được font: {e}"
+
+
+def font_page(fe, g, rules, name, out_dir, title, apply):
+    """Dò chữ lệch font 1 trang xám; apply = đổi các dòng được đổi, không thì chỉ xem trước. Trang có chữ lệch font
+    -> ảnh trước|sau vào out_dir. -> (ảnh mới hoặc None = không đổi gì, dòng danh sách, [dòng đã đổi] cho dấu,
+    [khoá dòng chưa đổi cần soát])."""
+    import doi_font
+    page = fe.plan(g, rules, os.path.splitext(name)[0])
+    if not page.lines:
+        return None, [], [], []
+    new = fe.render(page) if apply and any(d['ap'] for d in page.lines) else None
+    after = (g if new is None else new) if apply else fe.render(page, preview=True)
+    doi_font.sheet(g, after, page, out_dir / f"{os.path.splitext(name)[0]}.jpg", title)
+    done = [dict(n=d['n'], doc=d['doc'], moi=d['moi'], kieu=d['kieu'], box=list(d['box']))
+            for d in page.lines if d['ap']] if apply else []
+    pend = [d['khoa'] for d in page.lines if not d['ap'] and d['trang_thai'] != 'bo']
+    return new, doi_font.list_rows(name, page, applied_mode=apply), done, pend
+
+
+def font_list(out_dir, rel, conf, rows, pend, apply):
+    """<truyện>/.lam-sach/soat/doi-font/<chương>/danh-sach.txt: từng dòng + cách duyệt / sửa / bỏ."""
+    df = conf['doi_font']
+    ex = pend[0] if pend else rows[0].split('"')[1]
+    txt = [f"Đổi chữ lệch font \"{df['nguon']}\" -> \"{df['font']}\"   ({time.strftime('%Y-%m-%d %H:%M')}, "
+           f"{'--doi-font' if apply else '--soat-font'})",
+           f"Chương: {rel}",
+           "Ảnh trước|sau từng trang: cùng folder (bên trước: khung xanh = đổi, cam = chưa đổi / cần soát, xám = bỏ; "
+           "#n = số dòng bên dưới).",
+           "ĐÃ ĐỔI / CHƯA ĐỔI = kết quả lần chạy này." if apply else
+           "TỰ = --doi-font đổi luôn; SOÁT = chỉ đổi khi duyệt; DUYỆT / SỬA / BỎ = theo cấu hình. "
+           "Ảnh bên sau = xem trước như khi duyệt hết.",
+           "", *rows, "",
+           f"Duyệt / sửa / giữ nguyên 1 dòng: chép khoá (chuỗi trong ngoặc kép) vào {win(SERIES_CONF)}, "
+           f"mục \"doi_font\", vd:",
+           f'  "doi_font": {{"duyet": {{"{rel}": ["{ex}"]}},            <- đổi đúng như ảnh xem trước',
+           f'               "sua":   {{"{rel}": {{"{ex}": "CHỮ MỚI"}}}},  <- đổi thành chữ ghi ở đây',
+           f'               "bo":    {{"{rel}": ["{ex}"]}}}}             <- giữ nguyên chữ cũ',
+           "rồi chạy lại với --doi-font (dòng đã đổi không bị đổi lại). Bỏ hết đổi font của chương: --lam-lai "
+           "(làm sạch lại từ bản gốc, \"bat\": false)."]
+    out_dir.mkdir(parents=True, exist_ok=True)
+    (out_dir / 'danh-sach.txt').write_text('\n'.join(txt) + '\n', encoding='utf-8')
+
+
+def font_summary(r, rel, apply):
+    if not r['dong']:
+        return "không thấy chữ lệch font"
+    s = f"{r['dong']} dòng chữ lệch font ở {r['trang']} trang"
+    if apply:
+        s += f" — đã đổi {r['doi']} dòng ({r['trang_doi']} trang)"
+    if r['cho']:
+        s += f", {r['cho']} dòng {'chưa đổi, cần soát' if apply else 'cần soát'}"
+    return s + f" — xem {win(FONT_REVIEW)}\\{safe_name(rel)}\\danh-sach.txt"
+
+
+def write_page(p, arr):
+    """Ghi đè 1 ảnh trong chương: ghi file tạm cạnh nó (đuôi lạ, reader không thấy), đọc lại kiểm, rồi đổi tên."""
+    tmp = p.with_name(p.name + '.doi-font-tmp')
+    try:
+        im = Image.fromarray(arr)
+        if p.suffix.lower() in LOSSY_EXTS:
+            im.save(tmp, 'JPEG', quality=92, optimize=True)
+        else:
+            im.save(tmp, 'PNG', compress_level=6)
+        with Image.open(tmp) as chk:
+            chk.verify()
+    except Exception as e:
+        tmp.unlink(missing_ok=True)
+        return f"ghi lỗi: {e}"
+    for i in range(6):
+        try:
+            os.replace(tmp, p)
+            return None
+        except OSError:
+            if i < 5:
+                time.sleep(1.0)
+    tmp.unlink(missing_ok=True)
+    return "ảnh đang bị khoá (reader/Explorer đang mở?) — chạy lại sau"
+
+
+def write_marker(ch, m):
+    tmp = ch / (CONF_NAME + '.tmp')
+    tmp.write_text(json.dumps(m, ensure_ascii=False, indent=1, default=_json_default), encoding='utf-8')
+    os.replace(tmp, ch / CONF_NAME)
+
+
+def font_chapter(series, rel, conf, fe, apply, progress):
+    """--soat-font / --doi-font cho 1 chương ĐÃ làm sạch: dò từng trang xám (PNG/JPG). apply = ghi đè trang có dòng
+    được đổi + ghi vào dấu .lam-sach.json; không thì chỉ ra ảnh soát. -> dict tóm tắt."""
+    import doi_font
+    t0 = time.time()
+    ch = series.joinpath(*rel.split('/'))
+    rules = doi_font.page_rules(conf['doi_font'], rel)
+    out_dir = series / FONT_REVIEW / safe_name(rel)
+    shutil.rmtree(out_dir, ignore_errors=True)
+    for p in ch.glob('*.doi-font-tmp'):         # lần trước bị ngắt giữa lúc ghi
+        p.unlink(missing_ok=True)
+    names = list_images(ch)
+    rows, done, pend, errs, n_pages = [], {}, [], [], 0
+    for i, name in enumerate(names, 1):
+        progress(i, len(names), name)
+        p = ch / name
+        if p.suffix.lower() not in ('.png', '.jpg', '.jpeg'):
+            continue
+        try:
+            with Image.open(p) as im:
+                if im.mode != 'L':
+                    continue                     # trang màu / ảnh chép nguyên
+                g = np.asarray(im).copy()
+            new, r, dn, pk = font_page(fe, g, rules, name, out_dir, f"{series.name} / {rel} / {name}", apply)
+        except Exception as e:
+            errs.append(f"{name}: {type(e).__name__}: {e}")
+            continue
+        rows += r
+        pend += pk
+        n_pages += bool(r)
+        if new is not None:
+            e = write_page(p, new)
+            if e:
+                errs.append(f"{name}: {e}")
+            else:
+                done[name] = dn
+    if rows:
+        font_list(out_dir, rel, conf, rows, pend, apply)
+    if done:
+        m = read_marker(ch) or {}
+        f = m.setdefault('doi_font', {})
+        f.update(nguon=conf['doi_font']['nguon'], font=conf['doi_font']['font'],
+                 time=time.strftime('%Y-%m-%d %H:%M:%S'), cho_soat=len(pend))
+        tr = f.setdefault('trang', {})
+        for name, dn in done.items():
+            tr[name] = tr.get(name, []) + dn
+        write_marker(ch, m)
+    return dict(dong=len(rows), trang=n_pages, doi=sum(len(v) for v in done.values()), trang_doi=len(done),
+                cho=len(pend), loi=errs, secs=time.time() - t0)
+
+
+def run_font(series, chapters, conf, fe, apply):
+    """--soat-font (apply=False) / phần đổi tại chỗ của --doi-font, cho các chương đã làm sạch. -> 1 nếu có lỗi."""
+    bad = False
+    print()
+    for ci, rel in enumerate(chapters, 1):
+        ch = series.joinpath(*rel.split('/'))
+        head = f"[{'đổi font' if apply else 'soát font'} {ci}/{len(chapters)}] {rel}"
+        if not (ch / CONF_NAME).exists():
+            print(f"{head}: chưa làm sạch — bỏ qua (đổi font chạy trên trang đã làm sạch)")
+            continue
+
+        def progress(i, n, name, head=head):
+            print(f"\r{head}: ảnh {i}/{n} {name}"[:110].ljust(112), end='', flush=True)
+        r = font_chapter(series, rel, conf, fe, apply, progress)
+        print("\r" + " " * 112 + "\r", end='')
+        print(f"{head}: {font_summary(r, rel, apply)}  ({r['secs']:.0f}s)")
+        for e in r['loi']:
+            print(f"    ! lỗi (trang giữ nguyên) {e}")
+        bad |= bool(r['loi'])
+    if not apply:
+        print(f"\nThư viện giữ nguyên. Ảnh trước|sau + danh sách: {series / FONT_REVIEW}")
+    return 1 if bad else 0
+
+
 # ================================================================ 1 chương
 
 def chapter_plan(series, rel, redo, restore):
@@ -1609,8 +1824,9 @@ def restore_chapter(series, rel):
     return None
 
 
-def process_chapter(series, rel, plan, conf, doc, progress):
-    """Làm 1 chương vào .lam-sach\\tmp rồi đổi chỗ. Trả về dict tóm tắt (có 'loi' nếu hỏng)."""
+def process_chapter(series, rel, plan, conf, doc, progress, fe=None):
+    """Làm 1 chương vào .lam-sach\\tmp rồi đổi chỗ. fe = DoiFont: đổi chữ lệch font ở bước cuối mỗi trang.
+    Trả về dict tóm tắt (có 'loi' nếu hỏng)."""
     t0 = time.time()
     ch = series.joinpath(*rel.split('/'))
     orig = series / ORIG_DIR / Path(*rel.split('/'))
@@ -1620,6 +1836,30 @@ def process_chapter(series, rel, plan, conf, doc, progress):
         shutil.rmtree(tmp)
     tmp.mkdir(parents=True)
     names = list_images(src)
+    fnt = None
+    if fe is not None:
+        import doi_font
+        fnt = dict(rules=doi_font.page_rules(conf['doi_font'], rel), dir=series / FONT_REVIEW / safe_name(rel),
+                   rows=[], done={}, pend=[], loi=[], trang=0)
+        shutil.rmtree(fnt['dir'], ignore_errors=True)
+
+    def fix_font(arr, name):
+        """Bước cuối mỗi trang xám (sau phóng AI): đổi chữ lệch font nếu bật."""
+        if fnt is None:
+            return arr
+        try:
+            new, r, dn, pk = font_page(fe, arr, fnt['rules'], name, fnt['dir'], f"{series.name} / {rel} / {name}", True)
+        except Exception as e:
+            fnt['loi'].append(f"{name}: {type(e).__name__}: {e}")
+            return arr
+        fnt['rows'] += r
+        fnt['pend'] += pk
+        fnt['trang'] += bool(r)
+        if new is None:
+            return arr
+        fnt['done'][name] = dn
+        return new
+
     # file phụ (.done, .source.json...) lấy ở chương hiện tại (mới nhất), trừ dấu của tool
     extras = [e for e in os.scandir(ch) if e.is_file() and e.name != CONF_NAME and
               os.path.splitext(e.name)[1].lower() not in IMG_EXTS]
@@ -1662,7 +1902,7 @@ def process_chapter(series, rel, plan, conf, doc, progress):
                         Image.fromarray(arr).save(pdir / 'vao' / f"{dst.stem}.png", 'PNG', compress_level=1)
                         pend.append((dst, lossy, pages[j] if j < len(pages) else rec))
                     else:
-                        save_gray(arr, dst, lossy)
+                        save_gray(fix_font(arr, dst.name), dst, lossy)
                 rec['out'].append(dst.name)
                 outs_all.append(dst)
             th = rec.pop('_thumb', None)
@@ -1679,7 +1919,7 @@ def process_chapter(series, rel, plan, conf, doc, progress):
                         a = np.asarray(im.convert('L'))
                 else:
                     page['phong'] = PHONG_SCALE
-                save_gray(a, dst, lossy)
+                save_gray(fix_font(a, dst.name), dst, lossy)
             ph = dict(model=ESR_MODEL, scale=PHONG_SCALE, nguong=PHONG_H, cho=len(pend),
                       n=sum(v is not None for v in got.values()))
             if err:
@@ -1703,6 +1943,9 @@ def process_chapter(series, rel, plan, conf, doc, progress):
     marker = dict(tool='lam_sach_scan', version=VERSION, time=time.strftime('%Y-%m-%d %H:%M:%S'),
                   doc=doc, goc=f"{ORIG_DIR}/{rel}", n_in=len(names), n_out=n,
                   phong=ph if ph is not None else bool(conf.get('phong', True)), pages=recs, hoan_tat=True)
+    if fnt is not None and fnt['done']:
+        marker['doi_font'] = dict(nguon=conf['doi_font']['nguon'], font=conf['doi_font']['font'],
+                                  time=marker['time'], cho_soat=len(fnt['pend']), trang=fnt['done'])
     (tmp / CONF_NAME).write_text(json.dumps(marker, ensure_ascii=False, indent=1, default=_json_default),
                                  encoding='utf-8')
     # đổi chỗ
@@ -1729,10 +1972,16 @@ def process_chapter(series, rel, plan, conf, doc, progress):
     if thumbs:
         gutter_sheet(thumbs, series / REVIEW_DIR / f"{safe_name(rel)} - gay.jpg",
                      f"{series.name} / {rel}: do = cat (tach), xanh = giu nguyen, cam NGHI = co the la tranh lien gay")
+    font = None
+    if fnt is not None:
+        if fnt['rows']:
+            font_list(fnt['dir'], rel, conf, fnt['rows'], fnt['pend'], True)
+        font = dict(dong=len(fnt['rows']), trang=fnt['trang'], doi=sum(len(v) for v in fnt['done'].values()),
+                    trang_doi=len(fnt['done']), cho=len(fnt['pend']), loi=fnt['loi'])
     kinds = {}
     for r in recs:
         kinds[r.get('kind', '?')] = kinds.get(r.get('kind', '?'), 0) + 1
-    return dict(n_in=len(names), n_out=n, kinds=kinds, secs=time.time() - t0, phong=ph,
+    return dict(n_in=len(names), n_out=n, kinds=kinds, secs=time.time() - t0, phong=ph, font=font,
                 nghi=[r['src'] for r in recs if r.get('seam', {}).get('nghi') and r.get('decision') == 'tach'],
                 tu_giu=[r['src'] for r in recs if r.get('decision') == 'giu_tu_dong'],
                 giu=[r['src'] for r in recs if r.get('decision') in ('giu', 'giu_ghep')],
@@ -1836,9 +2085,21 @@ def main():
     ap.add_argument('--tra-goc', action='store_true', help='trả bản gốc về chỗ, bỏ bản đã làm sạch')
     ap.add_argument('--trai-truoc', action='store_true', help='truyện đọc trái->phải (trang trái trước)')
     ap.add_argument('--khong-phong', action='store_true', help=f'không phóng AI trang thấp (< {PHONG_H} px)')
+    ap.add_argument('--soat-font', action='store_true',
+                    help='dò chữ lệch font (Calibri) ở chương đã làm sạch -> ảnh trước|sau + danh sách vào '
+                         '.lam-sach\\soat\\doi-font\\, thư viện y nguyên')
+    ap.add_argument('--doi-font', action='store_true',
+                    help='đổi chữ lệch font sang font truyện (CC Wild Words Roman): chương đã làm sạch đổi tại chỗ, '
+                         'chương làm sạch trong lần này đổi luôn')
     a = ap.parse_args()
     if _IMPORT_ERR is not None:
         print(f"! Thiếu thư viện ({_IMPORT_ERR}). Cài: python -m pip install numpy opencv-python-headless Pillow")
+        return 2
+    if a.soat_font and a.doi_font:
+        print("! Chọn 1: --soat-font (chỉ soát) hoặc --doi-font (đổi thật).")
+        return 2
+    if (a.soat_font or a.doi_font) and (a.thu or a.tra_goc):
+        print("! --soat-font / --doi-font không đi cùng --thu / --tra-goc.")
         return 2
     series, only, err = resolve_target(Path(a.target))
     if err:
@@ -1848,7 +2109,7 @@ def main():
     doc = 'trai-truoc' if a.trai_truoc else conf['doc']
     if a.khong_phong:
         conf['phong'] = False
-    writes = not a.dry_run and not a.thu
+    writes = not a.dry_run and not a.thu and not a.soat_font
     if writes and not take_lock(series):
         print(f"! Truyện này đang được làm ở cửa sổ khác ({series / TMP_DIR / 'lock.json'}).")
         return 2
@@ -1878,16 +2139,29 @@ def _run(a, series, chapters, conf, doc):
         print(f"  ! Có bản '{twin.name}' — reader đang hiện bản đó, không phải folder này.")
     if a.thu:
         return run_trial(series, chapters, conf, doc, a.thu)
+    fe = None
+    if (a.soat_font or a.doi_font or conf['doi_font']['bat']) and not a.tra_goc:
+        fe, fdesc = font_engine(conf)
+        if fe is None:
+            if a.soat_font or a.doi_font:
+                print(f"! Đổi font: {fdesc}")
+                return 2
+            print(f"  ! doi_font.bat = true nhưng {fdesc} — lần này làm sạch KHÔNG đổi font.")
+        else:
+            print(f"  đổi chữ lệch font: {fdesc}")
+    if a.soat_font:
+        return run_font(series, chapters, conf, fe, False)
     plans = {rel: chapter_plan(series, rel, a.lam_lai, a.tra_goc) for rel in chapters}
     todo_status = ('tra_goc',) if a.tra_goc else ('moi', 'lam_lai')
     todo = [rel for rel in chapters if plans[rel]['status'] in todo_status]
+    font_only = [rel for rel in chapters if a.doi_font and plans[rel]['status'] == 'da_lam']
     # bảng kế hoạch
     tot_mp, tot, tot_ph = 0.0, dict(doi=0, don=0, khac=0), 0
     lab = dict(moi='LÀM', lam_lai='LÀM LẠI', tra_goc='TRẢ GỐC', da_lam='đã làm (bỏ qua)', loi='LỖI', bo='bỏ qua')
     print()
     for rel in chapters:
         p = plans[rel]
-        line = f"  {lab[p['status']]:<16} {rel}"
+        line = f"  {lab[p['status']] if rel not in font_only else 'ĐỔI FONT':<16} {rel}"
         if p['status'] in ('moi', 'lam_lai'):
             cnt, n_ph = dict(doi=0, don=0, khac=0), 0
             for name in list_images(p['src']):
@@ -1908,10 +2182,15 @@ def _run(a, series, chapters, conf, doc):
         elif p.get('note'):
             line += f"  — {p['note']}"
         print(line)
-    if not todo:
+    if not todo and not font_only:
         print("\nKhông có chương nào cần làm.")
         return 1 if any(p['status'] == 'loi' for p in plans.values()) else 0
-    if not a.tra_goc:
+    if font_only:
+        print(f"\nĐổi chữ lệch font tại chỗ {len(font_only)} chương đã làm sạch: chỉ ghi đè trang có dòng được đổi, "
+              f"dòng cần soát để nguyên. Ảnh trước|sau + danh sách: {series.name}\\{win(FONT_REVIEW)}\\.")
+    if todo and fe is not None:
+        print(f"\nChương làm sạch lần này: đổi chữ lệch font ở bước cuối mỗi trang.")
+    if todo and not a.tra_goc:
         print(f"\nSẽ làm {len(todo)} chương: {tot['doi']} tờ đôi -> tách (trừ tờ tranh vắt qua gáy rõ / ghi giữ trong cấu hình), "
               f"{tot['don']} trang đơn, {tot['khac']} ảnh chép nguyên (ảnh màu đo lúc chạy, cũng chép nguyên).")
         print(f"Ước ~{max(1, round((tot_mp * SEC_PER_MP + tot_ph * SEC_PER_PHONG) / 60))} phút. "
@@ -1943,7 +2222,7 @@ def _run(a, series, chapters, conf, doc):
 
         def progress(i, n, name, head=head):
             print(f"\r{head}: ảnh {i}/{n} {name}"[:110].ljust(112), end='', flush=True)
-        r = process_chapter(series, rel, plans[rel], conf, doc, progress)
+        r = process_chapter(series, rel, plans[rel], conf, doc, progress, fe)
         print("\r" + " " * 112 + "\r", end='')
         if 'loi' in r:
             print(f"{head}: LỖI — {r['loi']}")
@@ -1966,13 +2245,22 @@ def _run(a, series, chapters, conf, doc):
             left = ph['cho'] - ph['n']
             print(f"    ! KHÔNG phóng AI được{f' {left} trang' if left else ''} — giữ cỡ gốc ({ph['loi']}). "
                   f"Sửa xong (GPU / exe) thì chạy lại với --lam-lai.")
+        if r.get('font') is not None:
+            print(f"    đổi font: {font_summary(r['font'], rel, True)}")
+            for e in r['font']['loi']:
+                print(f"    ! đổi font lỗi (trang giữ chữ cũ) {e}")
         sums.append(r)
-    if not a.tra_goc:
+    if todo and not a.tra_goc:
         print(f"\nXong {len(sums)}/{len(todo)} chương trong {time.time() - t_all:.0f}s.", end='')
         if sums:
             print(f" Ảnh soát (lưới gáy từng chương): {series / REVIEW_DIR}")
         else:
             print()
+    if font_only:
+        if todo:
+            print()
+        if run_font(series, font_only, conf, fe, True):
+            errors.append("đổi font: có trang lỗi (xem trên)")
     if errors:
         print("\nCác chương lỗi:")
         for e in errors:

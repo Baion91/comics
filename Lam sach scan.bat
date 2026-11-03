@@ -19,6 +19,9 @@ echo  - Truyen doc trai-^>phai: sua "doc": "trai-truoc" trong .lam-sach\cau-hinh
 echo  - Trang nho (cao ^< 1400 px) duoc PHONG AI 2x (Real-ESRGAN, can GPU) cho net tren dien thoai.
 echo    Khong muon: chon "k" ben duoi, hoac sua "phong": false trong .lam-sach\cau-hinh.json.
 echo  - Anh soat (luoi gay tung chuong, anh lam thu): ^<truyen^>\.lam-sach\soat\
+echo  - Chu go nham font (Calibri) giua cac bong: chon "x" xem truoc, "f" doi sang font truyen
+echo    (CC Wild Words Roman, phai cai font tren may). Dong can soat: duyet / sua / bo trong
+echo    .lam-sach\cau-hinh.json muc "doi_font" (huong dan trong .lam-sach\soat\doi-font\^<chuong^>\danh-sach.txt).
 echo ============================================================
 echo.
 set "target="
@@ -36,11 +39,15 @@ echo   t = lam thu 6 anh (anh truoc^|sau vao .lam-sach\soat\thu\, thu vien giu n
 echo   l = lam lai chuong DA lam (tu ban goc trong .lam-sach\goc)
 echo   g = tra ban goc ve cho cu (bo ban da lam sach)
 echo   k = lam that nhung KHONG phong AI (giu co goc)
+echo   x = soat chu lech font (anh truoc^|sau vao .lam-sach\soat\doi-font\, thu vien giu nguyen)
+echo   f = doi chu lech font sang font truyen (chuong da lam sach: doi tai cho)
 set "go="
-set /p go="Chon y / t / l / g / k (Enter = thoi): "
+set /p go="Chon y / t / l / g / k / x / f (Enter = thoi): "
 echo.
 if /i "%go%"=="y" python "%~dp0lam_sach_scan.py" "%target%"
 if /i "%go%"=="k" python "%~dp0lam_sach_scan.py" "%target%" --khong-phong
+if /i "%go%"=="x" python "%~dp0lam_sach_scan.py" "%target%" --soat-font
+if /i "%go%"=="f" python "%~dp0lam_sach_scan.py" "%target%" --doi-font
 if /i "%go%"=="t" python "%~dp0lam_sach_scan.py" "%target%" --thu 6
 if /i "%go%"=="l" python "%~dp0lam_sach_scan.py" "%target%" --lam-lai
 if /i "%go%"=="g" python "%~dp0lam_sach_scan.py" "%target%" --tra-goc
